@@ -2,6 +2,8 @@ import os
 from datetime import datetime, timezone
 
 import numpy as np
+import shutil
+
 import pytest
 import soundfile as sf
 
@@ -12,6 +14,9 @@ from salescoach.store import stores
 SRC_RATE = 44100
 MTIME = 1_780_000_000
 
+
+pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+                                reason="ffmpeg/ffprobe not installed")
 
 def _tone(seconds, freq, amp):
     t = np.arange(int(seconds * SRC_RATE)) / SRC_RATE

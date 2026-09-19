@@ -33,6 +33,16 @@ jobs:
       # The only network use in this workflow. The test suite itself is offline: no model, no
       # Gmail, no calendar, no recorder API. The asr extra is not installed (MLX is Apple Silicon
       # only, and the speech tests use fakes).
+      # ffmpeg is optional for the app (audio import only); installing it here lets those tests run
+      # instead of being skipped.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
       - name: Install
         run: |
           python -m pip install --upgrade pip

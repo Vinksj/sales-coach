@@ -1,3 +1,4 @@
+import os
 """ASR model registry (config/asr.yaml) and the transcriber implementations.
 
 No implicit downloads. mlx_whisper.transcribe() calls snapshot_download() on
@@ -62,17 +63,40 @@ def _complete(path: Path) -> bool:
     return (path / "config.json").exists() and any((path / w).exists() for w in WEIGHT_FILES)
 
 
+def hub_cache_dir(cache_dir=None) -> Path:
+    """The Hugging Face hub cache, honouring HF_HUB_CACHE and HF_HOME like the hub library does."""
+    if cache_dir:
+        return Path(cache_dir).expanduser()
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    home = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface")).expanduser()
+    return home / "hub"
+
+
 def local_path(repo: str, cache_dir=None) -> Optional[Path]:
-    """Local directory holding `repo`, or None. Never touches the network."""
+    """Local directory holding `repo`, or None. Never touches the network.
+
+    Reads the hub cache layout directly (models--org--name/refs/main -> snapshots/<rev>), so the
+    check works without the hub library installed: it only comes with the transcription extra.
+    """
     direct = Path(repo).expanduser()
     if direct.is_dir():
         return direct if _complete(direct) else None
+    folder = hub_cache_dir(cache_dir) / f"models--{repo.replace('/', '--')}"
+    snapshots = folder / "snapshots"
+    ref = folder / "refs" / "main"
+    candidates = []
     try:
-        from huggingface_hub import snapshot_download
-        path = Path(snapshot_download(repo_id=repo, cache_dir=cache_dir, local_files_only=True))
-    except Exception:
+        if ref.is_file():
+            candidates.append(snapshots / ref.read_text().strip())
+        if snapshots.is_dir():
+            candidates += sorted(p for p in snapshots.iterdir() if p.is_dir())
+    except OSError:
         return None
-    return path if _complete(path) else None
+    for path in candidates:
+        if path.is_dir() and _complete(path):
+            return path
+    return None
 
 
 def is_downloaded(repo: str, cache_dir=None) -> bool:
