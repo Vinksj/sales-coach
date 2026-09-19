@@ -1,0 +1,14 @@
+# How meeting times are proposed in emails ([SLOTS]). Times are always
+# calendar-verified; if the calendar cannot be read, [SLOTS] stays and blocks Send.
+# timezone: Europe/London         # default: the timezone in your seller profile
+never_before: "09:00"              # hard floor, whatever working_hours says
+working_hours: {start: "10:00", end: "18:30"}
+avoid:
+  - {start: "13:00", end: "14:00"}   # lunch
+min_notice_business_days: 1        # nothing today; earliest is the next business day
+meeting_minutes: 30
+buffer_minutes: 15                 # kept free before and after existing events
+horizon_business_days: 5           # how far ahead to look
+preferred_weekdays: [Tue, Wed, Thu]
+slots_to_propose: 3                # 2 or 3
+grid_minutes: 30                   # slots start on the hour or half hour

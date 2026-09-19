@@ -1,0 +1,68 @@
+{# Longitudinal coach fragment. Fetched by coach.html through static/intel.js. Numbers come from the pattern snapshot, never from the model's prose. #}
+{% macro refs(items) -%}
+{% for r in items or [] %}<span class="ref">{% if r.quote %}"{{ r.quote }}" {% endif %}<a class="meta" href="/calls/{{ r.call_id }}{% if r.turns %}#t{{ r.turns[0] }}{% endif %}">{{ titles.get(r.call_id) or r.call_id }}{% if r.turns %}, turn {{ r.turns[0] }}{% endif %}</a></span>{% endfor %}
+{%- endmacro %}
+{% macro nums(p) -%}
+{% if p %}<span class="meta">{{ p.frequency|pct }}% of the last {{ p.calls_window }} calls · seen on {{ p.calls_seen }} · trend {{ p.trend|human }}</span>{% endif %}
+{%- endmacro %}
+<div class="intel-root"{% if pending %} data-refresh="5"{% endif %}>
+{% if report %}
+<section class="callout longitudinal">
+  <div class="eyebrow">Across {{ report.calls_analysed }} analysed call{{ '' if report.calls_analysed == 1 else 's' }} · written {{ report.created_at|dt }}</div>
+  <div class="h2like">{{ report.headline }}</div>
+  <p><span class="traj traj-{{ report.trajectory.label }}">{{ report.trajectory.label|human }}</span> {{ report.trajectory.explanation }}</p>
+</section>
+
+{% set pr = report.priority %}
+{% if pr and pr.tag %}
+<section class="card coach-priority">
+  <div class="eyebrow">Your coaching priority</div>
+  <div class="h3">{{ pr.pattern.name if pr.pattern else pr.tag|human }}</div>
+  {{ nums(pr.pattern) }}
+  <p>{{ pr.why }}</p>
+  <p><span class="label">Next call</span> {{ pr.practice }}</p>
+</section>
+{% endif %}
+
+<section class="grid-2 section">
+  <div class="card">
+    <div class="eyebrow">Recurring strengths</div>
+    <ul class="plain">{% for s in report.strengths %}<li><span class="strong">{{ s.pattern.name }}</span> {{ nums(s.pattern) }}<p>{{ s.summary }}</p>{{ refs(s.evidence) }}</li>{% else %}<li class="muted">None recurring yet.</li>{% endfor %}</ul>
+  </div>
+  <div class="card">
+    <div class="eyebrow">Recurring weaknesses</div>
+    <ul class="plain">{% for s in report.weaknesses %}<li><span class="strong">{{ s.pattern.name }}</span> {{ nums(s.pattern) }}<p>{{ s.summary }}</p>{{ refs(s.evidence) }}</li>{% else %}<li class="muted">None recurring yet.</li>{% endfor %}</ul>
+  </div>
+</section>
+
+{% if report.say_differently %}
+<section class="section">
+  <div class="section-head"><h3>Say it differently next call</h3></div>
+  {% for s in report.say_differently %}
+  <div class="card say">
+    <div class="label">{{ s.situation }}</div>
+    {% if s.instead_of %}<p class="meta">You said: {{ refs([s.instead_of]) }}</p>{% endif %}
+    <p class="suggested">"{{ s.say }}"</p>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if report.well_handled %}
+<section class="section">
+  <div class="section-head"><h3>Calls you handled well</h3></div>
+  <ul class="plain">{% for w in report.well_handled %}<li class="card"><a class="strong" href="/calls/{{ w.call_id }}">{{ titles.get(w.call_id) or w.call_id }}</a><p>{{ w.why }}</p>{{ refs(w.evidence) }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if report.nudges %}<p class="meta">Live nudges shown: {{ report.nudges.shown }}{% if report.nudges.adherence_pct is not none %} · followed {{ report.nudges.adherence_pct }}% of those with a known outcome{% endif %}{% for k, v in report.nudges.counts.items() %} · {{ k }} {{ v }}{% endfor %}</p>{% endif %}
+{% if report.notes %}<details class="raw"><summary class="meta">{{ report.notes|length }} validator note{{ '' if report.notes|length == 1 else 's' }}</summary><ul class="plain">{% for n in report.notes %}<li class="meta">{{ n }}</li>{% endfor %}</ul></details>{% endif %}
+{% else %}
+<div class="callout"><p>No longitudinal report yet. It is written automatically once {{ min_calls }} calls are analysed ({{ n_calls }} so far){% if n_calls %}, or now on request{% endif %}.</p></div>
+{% endif %}
+<div class="intel-actions">
+  {% if pending %}<span class="meta">A coach report is queued{% if not worker_on %}; the worker is not running here (run <span class="mono">salescoach coach-report</span>){% endif %}.</span>
+  {% elif n_calls %}<form method="post" action="/coach/report"><button class="btn btn-sm">{% if report %}Regenerate{% else %}Write it now{% endif %}</button></form>{% endif %}
+  {% if error %}<span class="meta accent">Last attempt failed: {{ error }}</span>{% endif %}
+</div>
+</div>

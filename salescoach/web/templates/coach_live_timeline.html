@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Coach timeline · {{ call.title or call.node_id }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/coach_live.css">
+<div class="page-head">
+  <div class="eyebrow">Live coach · nudge timeline</div>
+  <h1>{{ call.title or 'Untitled call' }}</h1>
+  <div class="meta">
+    <a href="/calls/{{ call.node_id }}">Call review</a>
+    {% if call.wf_state == 'live' %} · <a href="/live/{{ call.node_id }}">Live console</a>{% endif %}
+    {% if session %} · session <span class="mono">{{ session }}</span>{% endif %}
+  </div>
+  {% if sessions|length > 1 %}
+  <div class="meta coach-sessions">Other runs:
+    {% for s in sessions %}{% if s.session != session %}<a href="/coach/live/{{ call.node_id }}?session={{ s.session }}">{{ s.mode }} {{ s.started|dt }} ({{ s.shown or 0 }} shown)</a>{% endif %}{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if not rows %}
+<div class="callout">
+  <p>No coaching recorded for this call yet. {% if has_turns %}Replay it below to see what the coach would have shown.{% else %}It has no transcript to replay.{% endif %}</p>
+</div>
+{% else %}
+<div class="coach-stats">
+  <div class="card"><div class="label">Shown</div><div class="stat num">{{ summary.shown }}</div><div class="meta">budget {{ budget.max_per_call }} per call</div></div>
+  <div class="card"><div class="label">Followed</div><div class="stat num">{{ summary.outcomes.get('followed', 0) }}</div><div class="meta">acted on within a minute</div></div>
+  <div class="card"><div class="label">Ignored</div><div class="stat num">{{ summary.outcomes.get('ignored', 0) }}</div><div class="meta">{{ summary.outcomes.get('unknown', 0) }} unknown</div></div>
+  <div class="card"><div class="label">Adherence</div><div class="stat num">{% if summary.adherence is not none %}{{ (summary.adherence * 100)|round|int }}%{% else %}-{% endif %}</div><div class="meta">followed / (followed + ignored)</div></div>
+  <div class="card"><div class="label">Held back</div><div class="stat num">{{ summary.suppressed }}</div><div class="meta">of {{ summary.candidates }} candidates</div></div>
+</div>
+
+<section class="card">
+  <div class="eyebrow">Shown on screen</div>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>At</th><th>Trigger</th><th>Nudge</th><th>Source</th><th>Score</th><th>Outcome</th></tr></thead>
+    <tbody>
+    {% for n in shown %}
+    <tr id="n{{ n.id }}">
+      <td class="num">{{ n.t_call|mmss }}</td>
+      <td><span class="label">{{ labels.get(n.trigger, n.trigger) }}</span></td>
+      <td><strong>{{ n.text }}</strong>
+        {% if n.anchor_text %}<div class="coach-anchor">{{ n.anchor_t|mmss }} · {{ n.anchor_text }}</div>{% endif %}
+        {% if n.rationale %}<div class="coach-anchor">Why: {{ n.rationale }}</div>{% endif %}</td>
+      <td class="meta">{{ n.source }}</td>
+      <td class="num">{{ '%.2f'|format(n.score or 0) }}</td>
+      <td><span class="outcome-{{ n.outcome or 'unknown' }}">{{ n.outcome or 'pending' }}</span>{% if n.dismissed %}<div class="meta">dismissed</div>{% endif %}
+        {% if n.outcome_evidence %}<div class="coach-anchor">{{ n.outcome_evidence }}</div>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">Nothing cleared the budget in this run.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="eyebrow">Held back, and why</div>
+  <div class="coach-reasons">{% for reason, count in summary.reasons %}<span class="pill pill-muted">{{ reason|human }} · {{ count }}</span>{% endfor %}</div>
+  <details>
+    <summary>All {{ suppressed|length }} held-back candidates</summary>
+    <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Raised</th><th>Trigger</th><th>Nudge</th><th>Source</th><th>Score</th><th>Reason</th></tr></thead>
+      <tbody>
+      {% for n in suppressed %}
+      <tr>
+        <td class="num">{{ n.raised_t|mmss }}</td>
+        <td><span class="label">{{ labels.get(n.trigger, n.trigger) }}</span></td>
+        <td>{{ n.text }}{% if n.anchor_text %}<div class="coach-anchor">{{ n.anchor_text }}</div>{% endif %}</td>
+        <td class="meta">{{ n.source }}</td>
+        <td class="num">{{ '%.2f'|format(n.score or 0) }}</td>
+        <td class="meta">{{ n.suppressed_reason|human }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+</section>
+{% endif %}
+
+{% if has_turns %}
+<section class="card">
+  <div class="eyebrow">Replay</div>
+  {% if replaying %}
+  <p class="meta">A replay of {{ replay_call }} is running. Reload this page to see nudges as they arrive.</p>
+  {% else %}
+  <p class="meta">Runs this call's transcript through the live coach, as if it were happening now. Nudges also appear on the overlay.</p>
+  <form method="post" action="/coach/replay/{{ call.node_id }}" class="coach-replay">
+    <label>Speed<input type="number" name="speed" value="20" min="0" step="1"></label>
+    <label><span><input type="checkbox" name="slow" value="1"> Include the Claude slow pass</span></label>
+    <button class="btn btn-secondary">Replay this call</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,60 @@
+{# Phase 4 sections for the Today page. Expects `auto` from automation_today(request). #}
+{% if auto.error %}
+<section class="section"><p class="err-text">Follow-ups, replies and upcoming calls could not load: {{ auto.error }}</p></section>
+{% else %}
+<section class="section" id="followups-due">
+  <div class="section-head"><h2>Follow-ups due</h2><span class="purpose">The follow-up agent decides these each morning. Nudges wait for your Send. <a href="/followups">All follow-ups</a></span></div>
+  {% if auto.nudges %}
+  <ul class="plain">
+    {% for n in auto.nudges %}
+    <li class="card"><a class="strong" href="/nudges/{{ n.id }}">{{ n.subject or 'Nudge' }}</a>
+      <div class="meta">Nudge to {{ n.to|join(', ') }}{% if n.deal_name %} · {{ n.deal_name }}{% endif %} · {{ n.status|human }}{% if n.decision %} · {{ n.decision.description }}{% endif %}</div></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if auto.decided %}
+  <ul class="plain dash">
+    {% for d in auto.decided %}
+    <li><span class="tag">{{ d.decision|human }}</span> {{ d.description }}{% if d.deal_name %} <span class="meta">· {{ d.deal_name }}</span>{% endif %}
+      <div class="meta">{{ d.rationale }}</div></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if auto.due %}
+  <p class="meta">{{ auto.due|length }} loop{{ '' if auto.due|length == 1 else 's' }} due for a follow-up check and not decided yet. <a href="/followups">Review them</a></p>
+  {% endif %}
+  {% if not auto.nudges and not auto.decided and not auto.due %}<p class="empty">No follow-ups need you today.</p>{% endif %}
+</section>
+
+<section class="section" id="replies-received">
+  <div class="section-head"><h2>Replies received</h2><span class="purpose">Buyer replies to emails you sent, mapped to open loops for your review. <a href="/replies">All replies</a></span></div>
+  {% for r in auto.replies %}
+  <div class="card">
+    <div><span class="strong">{{ r.from_name or r.from_addr }}</span>{% if r.deal_name %} <span class="meta">· {{ r.deal_name }}</span>{% endif %} <span class="meta">· {{ r.received_at|dt }}</span>
+      {% if r.open_items %}<span class="pill pill-alert"><i></i>{{ r.open_items }} to decide</span>{% endif %}
+      {% if r.needs_user %}<span class="pill pill-alert"><i></i>needs your answer</span>{% endif %}
+      {% if r.status == 'new' %}<span class="pill pill-muted"><i></i>not analysed yet</span>{% elif r.status == 'failed' %}<span class="pill pill-alert"><i></i>analysis failed</span>{% endif %}</div>
+    <p class="meta">{{ r.summary or (r.body[:200] ~ ('...' if r.body|length > 200 else '')) }}</p>
+  </div>
+  {% else %}
+  <p class="empty">No new replies.</p>
+  {% endfor %}
+</section>
+
+{% import "automation_meetings.html" as cal %}
+<section class="section" id="upcoming-calls">
+  <div class="section-head"><h2>Upcoming calls</h2><span class="purpose">Every meeting on your calendar. Choose which to record; armed ones start by themselves.</span>
+    <form method="post" action="/calendar/refresh" class="inline-form"><input type="hidden" name="next" value="/"><button class="btn btn-sm"{% if auto.calendar.refresh_pending %} disabled{% endif %}>{% if auto.calendar.refresh_pending %}Reading calendar…{% else %}Refresh calendar{% endif %}</button></form>
+    <a class="btn btn-sm btn-quiet" href="/calendar">All meetings →</a></div>
+  {% if auto.upcoming %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>When</th><th>Meeting</th><th>Deal</th><th>Record</th></tr></thead>
+    <tbody>{{ cal.meeting_rows(auto.upcoming, auto.calendar.live, "/") }}</tbody>
+  </table></div>
+  {% else %}
+  <p class="empty">{% if auto.calendar.last_sync %}No meetings on your calendar for the next week.{% elif auto.calendar.unavailable %}The calendar could not be read: {{ auto.calendar.unavailable.why }}{% else %}The calendar has not been read yet; it is read within two minutes of the server starting, or press Refresh.{% endif %}</p>
+  {% endif %}
+  <p class="meta">{% if auto.calendar.last_sync %}Calendar read {{ auto.calendar.last_sync.at|dt }} (read-only).{% endif %}
+    A recording starts {{ auto.calendar.record_cfg.get('lead_minutes', 1) }} min before the meeting and stops {{ auto.calendar.record_cfg.get('grace_minutes', 15) }} min after its end time unless you stop it first.</p>
+</section>
+{% endif %}

@@ -1,0 +1,79 @@
+{% macro conf(c) -%}
+<span class="conf conf-{{ c }}" title="confidence">{{ c }}</span>
+{%- endmacro %}
+
+{% macro prio(p) -%}
+<span class="prio prio-{{ p }}">{{ p }}</span>
+{%- endmacro %}
+
+{% macro review_pill(state) -%}
+<span class="pill {% if state == 'confirmed' %}pill-good{% elif state == 'proposed' %}pill-alert{% else %}pill-muted{% endif %}"><i></i>{% if state == 'proposed' %}needs you{% else %}{{ state }}{% endif %}</span>
+{%- endmacro %}
+
+{% macro trefs(idxs, call_id=None) -%}
+{% for i in idxs %}<a class="tref" href="{% if call_id %}/calls/{{ call_id }}{% endif %}#t{{ i }}">#{{ i }}</a>{% endfor %}
+{%- endmacro %}
+
+{% macro play(call_id, idxs, enabled) -%}
+{% if enabled and idxs %}<button type="button" class="play" data-src="/calls/{{ call_id }}/clip?turns={{ idxs|join(',') }}" title="Play this moment" aria-label="Play the audio behind this">▶</button>{% endif %}
+{%- endmacro %}
+
+{% macro next_field(next) -%}
+<input type="hidden" name="next" value="{{ next }}">
+{%- endmacro %}
+
+{% macro loop_quick(l, next) -%}
+<div class="quick">
+  {% if l.review_state == 'proposed' %}
+  <form method="post" action="/loops/{{ l.node_id }}/confirm">{{ next_field(next) }}<button class="btn btn-sm btn-primary">Confirm</button></form>
+  {% endif %}
+  {% if l.status in ('open', 'waiting') and l.review_state != 'rejected' %}
+  <form method="post" action="/loops/{{ l.node_id }}/status">{{ next_field(next) }}<input type="hidden" name="status" value="done"><button class="btn btn-sm">Done</button></form>
+  <form method="post" action="/loops/{{ l.node_id }}/status">{{ next_field(next) }}<input type="hidden" name="status" value="cancelled"><button class="btn btn-sm btn-quiet" data-confirm="Cancel this loop? It stops being tracked.">Cancel</button></form>
+  {% elif l.status in ('done', 'cancelled', 'superseded') %}
+  <form method="post" action="/loops/{{ l.node_id }}/status">{{ next_field(next) }}<input type="hidden" name="status" value="open"><button class="btn btn-sm btn-quiet">Reopen</button></form>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{% macro run_card(r, open=False) %}
+<article class="card run" id="run-{{ r.id }}">
+  <div class="run-head">
+    <div>
+      <div class="eyebrow">Run {{ r.id }} · {{ r.started_at|dt }}</div>
+      <h2><a href="/runs/{{ r.id }}">{{ r.agent|human }}</a></h2>
+    </div>
+    <span class="pill {% if r.status == 'ok' %}pill-good{% elif r.status == 'running' %}pill-muted{% else %}pill-alert{% endif %}"><i></i>{{ r.status }}</span>
+  </div>
+  <dl class="facts">
+    <div><dt>Provider</dt><dd>{{ r.provider or 'none' }}</dd></div>
+    <div><dt>Model</dt><dd class="mono">{{ r.model or 'none' }}</dd></div>
+    <div><dt>Isolation</dt><dd>{{ r.isolation or 'n/a' }}</dd></div>
+    <div><dt>Duration</dt><dd class="num">{% if r.duration_ms is not none %}{{ '%.1f'|format(r.duration_ms / 1000) }} s{% else %}none{% endif %}</dd></div>
+    <div><dt>Cost</dt><dd class="num">{% if r.cost_usd is not none %}${{ '%.4f'|format(r.cost_usd) }}{% else %}none{% endif %}</dd></div>
+    <div><dt>Prompt version</dt><dd class="mono">{{ r.prompt_version or 'none' }}</dd></div>
+  </dl>
+  {% if r.error %}<div class="callout callout-err"><div class="label">Error</div><pre class="pre">{{ r.error }}</pre></div>{% endif %}
+  {% if r.rejected %}
+  <div class="label">Rejected or downgraded by the validators</div>
+  <ul class="plain rejected">
+    {% for item in r.rejected %}
+    <li>{% if item is mapping %}{% for k, v in item.items() %}<span class="label">{{ k|human }}</span> {% if v is string %}{{ v }}{% else %}{{ v|tojson }}{% endif %} {% endfor %}{% else %}{{ item }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if r.created %}
+  <div class="label">Created</div>
+  <ul class="plain">{% for item in r.created %}<li>{{ item }}</li>{% endfor %}</ul>
+  {% endif %}
+  <details class="raw"{% if open %} open{% endif %}>
+    <summary>Inputs and raw output</summary>
+    <div class="label">Input refs</div>
+    <pre class="pre">{{ r.input_refs_p }}</pre>
+    <div class="label">Input sha</div>
+    <pre class="pre">{{ r.input_sha or 'none' }}</pre>
+    <div class="label">Output</div>
+    <pre class="pre">{{ r.output_p or 'no output recorded' }}</pre>
+  </details>
+</article>
+{% endmacro %}

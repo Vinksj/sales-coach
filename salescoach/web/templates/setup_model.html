@@ -1,0 +1,102 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}Which model does the thinking?{% endblock %}
+{% block step_intro %}The coach needs a language model to read calls and draft emails. Pick where it comes from. {% if not provider_state.chosen %}Until you choose, it uses {{ provider_state.label }}.{% endif %}{% endblock %}
+{% block step %}
+{% set c = copy.get(selected.key, {}) %}
+<div class="provider-grid">
+  {% for d in catalog %}
+  {% set dc = copy.get(d.key, {}) %}
+  <a class="card provider-card{% if d.key == selected.key %} is-selected{% endif %}" href="/setup/model?provider={{ d.key }}#provider-panel"{% if d.key == selected.key %} aria-current="true"{% endif %}>
+    <span class="h3">{{ dc.name or d.label }}</span>
+    <span class="provider-pills">
+      {% if d.active %}<span class="pill pill-good"><i></i>in use</span>{% endif %}
+      {% if d.api_key_env and d.key_set %}<span class="pill pill-muted"><i></i>key is set</span>{% endif %}
+      {% if d.key == 'claude_code' and not d.available %}<span class="pill pill-alert"><i></i>not installed</span>{% endif %}
+    </span>
+    <span class="meta">{{ dc.summary or d.notes }}</span>
+    <span class="provider-kind">{{ dc.kind or ('API key' if d.needs_key else 'No API key') }}</span>
+  </a>
+  {% endfor %}
+</div>
+
+<section class="card provider-panel" id="provider-panel" aria-labelledby="provider-panel-title">
+  <div class="eyebrow">Set up</div>
+  <h2 id="provider-panel-title">{{ c.name or selected.label }}</h2>
+  {% if c.needs %}<p class="meta">{{ c.needs }}</p>{% endif %}
+  {% if selected.key == 'claude_code' and not selected.available %}
+  <div class="callout">{% if hosted() %}The Claude CLI is not available in a hosted install, so this option cannot be used here. Pick a provider with an API key.{% else %}The Claude CLI was not found on this machine, so this option cannot be used yet. Install it and sign in once in a terminal, or pick a provider with an API key.{% endif %}</div>
+  {% endif %}
+
+  <form method="post" action="/setup/model/use" class="stack" autocomplete="off" data-provider-form>
+    <input type="hidden" name="provider" value="{{ selected.key }}">
+
+    {% if selected.base_url_editable %}
+    <label for="f-base_url">Address of your endpoint
+      <input id="f-base_url" name="base_url" type="url" value="{{ base_url or '' }}" placeholder="https://models.yourcompany.com/v1" spellcheck="false" aria-describedby="hint-base_url">
+      <span class="hint" id="hint-base_url">The address your IT team gave you, ending in /v1 for most servers.</span>
+    </label>
+    {% endif %}
+
+    {% if selected.api_key_env %}
+    <label for="f-api_key"{% if key_error %} class="has-error"{% endif %}>API key
+      <span class="pill {% if selected.key_set %}pill-good{% else %}pill-muted{% endif %} key-status" data-key-status><i></i>{% if selected.key_set %}key is set{% else %}not set{% endif %}</span>
+      <input id="f-api_key" name="api_key" type="password" value="" autocomplete="new-password" spellcheck="false" placeholder="{% if selected.key_set %}Leave empty to keep the stored key{% else %}Paste your key{% endif %}" aria-describedby="hint-api_key{% if key_error %} err-api_key{% endif %}"{% if key_error %} aria-invalid="true"{% endif %}>
+      {% if key_error %}<span class="field-error" id="err-api_key" role="alert">{{ key_error }}</span>{% endif %}
+      <span class="hint" id="hint-api_key">{{ c.key_help }} It is stored on this machine only and is never shown again, here or anywhere else.</span>
+    </label>
+    {% endif %}
+
+    <fieldset class="tiers">
+      <legend>Models <span class="hint">{{ tier_help }}</span></legend>
+      <div class="form-grid-2">
+        {% for tier, label in (('heavy', 'Heavy tier'), ('light', 'Light tier')) %}
+        <label for="f-{{ tier }}">{{ label }}
+          <select id="f-{{ tier }}" name="{{ tier }}" data-tier="{{ tier }}">
+            {% if not tiers[tier] %}<option value="">{% if models %}Choose a model{% else %}Load models first{% endif %}</option>{% endif %}
+            {% for m in models %}<option value="{{ m }}"{% if m == tiers[tier] %} selected{% endif %}>{{ m }}</option>{% endfor %}
+          </select>
+        </label>
+        {% endfor %}
+      </div>
+      {% if selected.key != 'claude_code' %}
+      <details class="custom-model">
+        <summary>My model is not in the list</summary>
+        <div class="form-grid-2">
+          <label for="f-heavy_custom">Heavy tier, typed<input id="f-heavy_custom" name="heavy_custom" spellcheck="false" placeholder="Exact model name"></label>
+          <label for="f-light_custom">Light tier, typed<input id="f-light_custom" name="light_custom" spellcheck="false" placeholder="Exact model name"></label>
+        </div>
+        <span class="hint">A typed name wins over the list.</span>
+      </details>
+      {% endif %}
+    </fieldset>
+
+    <div class="actions provider-actions">
+      <button class="btn" formaction="/setup/model/models" data-ajax="models" data-busy="Loading models">Load models</button>
+      <button class="btn" formaction="/setup/model/test" data-ajax="test" data-busy="Testing, up to 30 seconds">Test connection</button>
+    </div>
+
+    <div id="model-result" class="model-result" role="status" aria-live="polite">
+      {% if models_error %}<div class="callout callout-err"><div class="label">Could not load the models</div>{{ models_error }}</div>
+      {% elif models_loaded and selected.key != 'claude_code' %}<div class="callout callout-good">{{ models|length }} models loaded. Choose one for each tier.</div>{% endif %}
+      {% if test %}
+        {% if test.ok %}<div class="callout callout-good"><div class="label">Connection works</div>{{ test.model }} answered in {{ '%.1f'|format((test.latency_ms or 0) / 1000) }} seconds.{% if test.at %} <span class="meta">Tested {{ test.at|dt }}.</span>{% endif %}</div>
+        {% else %}<div class="callout callout-err"><div class="label">Could not connect</div>{{ test.error or 'The provider did not answer.' }}</div>{% endif %}
+      {% endif %}
+    </div>
+
+    <div class="setup-foot">
+      <a class="btn btn-quiet" href="{{ back_href }}">Back</a>
+      <div class="actions">
+        {% if selected.active %}
+        {% if configured %}<button class="btn" name="go" value="stay">Save</button>{% endif %}
+        <button class="btn btn-primary" name="go" value="next">Save and continue</button>
+        {% else %}
+        <a class="btn btn-quiet" href="{{ next_href }}">Skip, keep {{ provider_state.label }}</a>
+        <button class="btn btn-primary" name="go" value="next">Use this provider and continue</button>
+        {% endif %}
+      </div>
+    </div>
+  </form>
+</section>
+{% endblock %}

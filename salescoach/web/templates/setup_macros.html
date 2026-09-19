@@ -1,0 +1,41 @@
+{# Form fields for the setup pages: every label is bound to its input, every error sits beside it. #}
+{% macro field_error(errors, field) -%}
+{% set found = errors.get(field) %}{% if found %}<span class="field-error" id="err-{{ field }}" role="alert">{% if found is string %}{{ found }}{% else %}{{ found|join(' ') }}{% endif %}</span>{% endif %}
+{%- endmacro %}
+
+{% macro described(errors, field, hint) -%}
+{% if errors.get(field) %} aria-invalid="true" aria-describedby="err-{{ field }}"{% elif hint %} aria-describedby="hint-{{ field }}"{% endif %}
+{%- endmacro %}
+
+{% macro text(errors, field, label, value, hint='', placeholder='', required=False, type='text', autocomplete='off', list='') -%}
+<label for="f-{{ field }}"{% if errors.get(field) %} class="has-error"{% endif %}>{{ label }}{% if required %} <span class="req" aria-hidden="true">required</span>{% endif %}
+  <input id="f-{{ field }}" name="{{ field }}" type="{{ type }}" value="{{ value }}"{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}{% if required %} required{% endif %} autocomplete="{{ autocomplete }}"{% if list %} list="{{ list }}"{% endif %}{{ described(errors, field, hint) }}>
+  {{ field_error(errors, field) }}
+  {% if hint %}<span class="hint" id="hint-{{ field }}">{{ hint }}</span>{% endif %}
+</label>
+{%- endmacro %}
+
+{% macro area(errors, field, label, value, hint='', placeholder='', required=False, rows=2, cls='') -%}
+<label for="f-{{ field }}"{% if errors.get(field) %} class="has-error"{% endif %}>{{ label }}{% if required %} <span class="req" aria-hidden="true">required</span>{% endif %}
+  <textarea id="f-{{ field }}" name="{{ field }}" rows="{{ rows }}"{% if cls %} class="{{ cls }}"{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}{% if required %} required{% endif %}{{ described(errors, field, hint) }}>{{ value }}</textarea>
+  {{ field_error(errors, field) }}
+  {% if hint %}<span class="hint" id="hint-{{ field }}">{{ hint }}</span>{% endif %}
+</label>
+{%- endmacro %}
+
+{% macro footer(back_href, primary='Save and continue', configured=False, secondary='Save') -%}
+<div class="setup-foot">
+  {% if back_href %}<a class="btn btn-quiet" href="{{ back_href }}">Back</a>{% else %}<span></span>{% endif %}
+  <div class="actions">
+    {% if configured and secondary %}<button class="btn" name="go" value="stay">{{ secondary }}</button>{% endif %}
+    <button class="btn btn-primary" name="go" value="next">{{ primary }}</button>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro link_footer(back_href, next_href, label='Continue') -%}
+<div class="setup-foot">
+  {% if back_href %}<a class="btn btn-quiet" href="{{ back_href }}">Back</a>{% else %}<span></span>{% endif %}
+  {% if next_href %}<a class="btn btn-primary" href="{{ next_href }}">{{ label }}</a>{% endif %}
+</div>
+{%- endmacro %}

@@ -1,0 +1,18 @@
+/* Learning page and the deal outcome fragment. Layout only; colours come from app.css. */
+.belief { margin-bottom: 10px; }
+.belief .counts { display: flex; gap: 14px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.belief .counts b { font-weight: 600; }
+.belief-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.belief-actions form { margin: 0; display: inline-flex; gap: 6px; align-items: center; }
+.belief-actions select { max-width: 240px; }
+.belief-closed { opacity: .75; }
+.proposal { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+.proposal form { margin: 0; display: inline-block; }
+.series-values { font-variant-numeric: tabular-nums; }
+.outcome-form .confirm-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; }
+.outcome-form .confirm-row input { width: auto; }
+.belief .used-in { margin-top: 6px; }
+.belief .used-in .vtag { margin-right: 4px; }
+.digest { margin-bottom: 16px; }
+.digest summary { cursor: pointer; }
+.digest-text { margin-top: 10px; white-space: pre-wrap; }

@@ -1,0 +1,18 @@
+/* Phase 4 pages (follow-ups, nudges, replies) and the Today sections. Built on app.css classes. */
+form.inline { display: inline; }
+.auto-head-actions { margin-top: .75rem; display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.auto-row-actions { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
+.auto-row-actions input[type="date"] { width: auto; padding: .2rem .35rem; font-size: .85em; }
+.auto-rationale { margin: .25rem 0 0; }
+.auto-decision { text-transform: none; white-space: nowrap; }
+.auto-reply-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; margin: .5rem 0 0; }
+.auto-proposals li { padding: .5rem 0; border-top: 1px solid var(--line); }
+.auto-proposals li:first-child { border-top: 0; }
+.auto-warn { color: var(--warn); }
+.auto-history li { margin: .35rem 0; }
+.auto-slot-note { margin: .25rem 0 0; }
+
+/* calendar: record controls */
+.inline-form { display: inline-flex; gap: 6px; align-items: center; }
+.section-head .inline-form { margin-left: auto; }
+.row-now td { background: var(--accent-wash); }

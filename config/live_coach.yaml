@@ -1,0 +1,307 @@
+# Live coaching (Phase 2). Every threshold the coach uses lives here, so tuning
+# after a replay is an edit to this file, not a code change.
+#
+# Over-coaching is the failure mode this file exists to prevent: during a call
+# The seller gets at most ONE short nudge on screen, and only when it matters.
+# Everything the ranker declines is still logged (nudges table, shown=0, with
+# the reason), so a replay shows what was held back and why.
+#
+# Cue lists are matched on lower-cased text at word boundaries. An entry that
+# starts with "re:" is a regular expression. Hindi appears both in Latin script
+# (what the Hinglish ASR models emit) and in Devanagari (what Whisper emits in
+# Hindi mode), so the common spellings are listed in both.
+
+budget:
+  max_visible: 1
+  display_s: 12            # a shown nudge fades after this long
+  cooldown_s: 90           # after one is shown, nothing else for this long ...
+  objection_min_gap_s: 20  # ... except an objection, which may follow after this gap (still one on screen at a time)
+  max_per_call: 8
+  min_score: 0.35
+  repeat_window_s: 300     # the same trigger not again within 5 minutes ...
+  repeat_margin: 0.25      # ... unless it scores 25% above the last one shown
+  moment_stale_s: 25       # a moment trigger is useless after this
+  state_stale_s: 150       # a state trigger (something still unknown) lasts longer
+  warmup_s: 60             # nothing in the first minute ...
+  warmup_exempt: [objection]   # ... except an objection
+
+scoring:
+  weights:
+    objection: 1.0
+    weak_commitment: 0.9
+    buying_signal: 0.85
+    stakeholder_gap: 0.8
+    buying_process: 0.8
+    dig_deeper: 0.75
+    quantify_impact: 0.75
+    root_cause: 0.65
+    status_quo: 0.6
+  novelty: {first: 1.0, repeat_trigger: 0.7, repeat_entity: 0.4}
+  recency_floor: 0.5       # score multiplier at the moment a candidate goes stale
+  phase_fit:
+    opening:     {objection: 1.0, buying_signal: 0.8, stakeholder_gap: 0.7, weak_commitment: 0.4, buying_process: 0.5, dig_deeper: 0.6, quantify_impact: 0.5, root_cause: 0.5, status_quo: 0.4}
+    discovery:   {objection: 1.0, buying_signal: 1.0, stakeholder_gap: 0.9, weak_commitment: 0.6, buying_process: 0.8, dig_deeper: 1.0, quantify_impact: 1.0, root_cause: 1.0, status_quo: 0.9}
+    pitch:       {objection: 1.0, buying_signal: 1.0, stakeholder_gap: 0.9, weak_commitment: 0.7, buying_process: 0.9, dig_deeper: 0.8, quantify_impact: 0.8, root_cause: 0.6, status_quo: 0.8}
+    negotiation: {objection: 1.0, buying_signal: 0.9, stakeholder_gap: 1.0, weak_commitment: 0.9, buying_process: 1.0, dig_deeper: 0.6, quantify_impact: 0.6, root_cause: 0.4, status_quo: 0.7}
+    close:       {objection: 1.0, buying_signal: 0.8, stakeholder_gap: 0.9, weak_commitment: 1.0, buying_process: 1.0, dig_deeper: 0.5, quantify_impact: 0.4, root_cause: 0.3, status_quo: 0.5}
+
+phase:
+  opening_s: 180           # before this, the call is in its opening
+  window_s: 150            # content cues are counted over this recent stretch
+  pitch_me_share: 0.65     # ME talking this much of the window, with pitch cues, is a pitch
+  min_cue_hits: 2
+  slow_hold_s: 120         # a phase set by the slow pass holds this long
+
+fast:
+  follow_up_s: 20          # how long ME has to follow up before it counts as moving on
+  min_me_words: 4          # "Okay." / "Right, sir." is not moving on
+  refire_s: 20             # a detector does not re-emit the same trigger within this
+  local_model:             # optional classifier for ambiguous buyer lines; off by default
+    enabled: false
+    model: "llama3.2:3b"
+    endpoint: http://localhost:11434
+    timeout_s: 1.5
+    min_words: 8
+    min_confidence: 0.65
+
+slow:
+  enabled: true
+  agent: live_coach        # providers.route(agent) gives provider, model, effort
+  effort: low              # used when models.yaml sets none for the agent
+  interval_s: 60
+  window_s: 480            # the last 8 minutes of transcript
+  max_age_s: 45            # results that arrive later than this are dropped
+  timeout_s: 40
+  min_new_segments: 3      # nothing new said, no pass
+  strong_signal: 0.8       # a fast candidate this confident asks for an early pass ...
+  min_gap_s: 20            # ... but never two passes closer than this
+  max_interventions: 2
+  max_passes: 0            # 0 = no cap; `coach-replay --max-slow N` caps Claude spend on a replay
+  urgency_confidence: {high: 0.9, medium: 0.7, low: 0.5}
+
+outcome:
+  window_s: 60             # did ME act on a shown nudge within this long?
+
+# ---- the nine triggers -------------------------------------------------------
+# kind: moment (useful for seconds) | state (useful while something stays unknown)
+# slot: the conversation-state slot the trigger is about; a state candidate is
+#       dropped as "resolved" once ME has asked about it or it becomes known.
+triggers:
+  dig_deeper:
+    label: Dig deeper
+    kind: moment
+    slot: pain
+    text: "Dig deeper: ask why this matters operationally."
+    max_overlap: 0.12      # ME's next line shares fewer content words than this => moved on
+    long_them_words: 25    # a long buyer line with a problem in it counts as important too
+  quantify_impact:
+    label: Quantify impact
+    kind: state
+    slot: impact
+    text: "Quantify the impact."
+  root_cause:
+    label: Root cause
+    kind: state
+    slot: root_cause
+    text: "Ask what causes this today."
+  status_quo:
+    label: Status quo
+    kind: state
+    slot: status_quo_cost
+    text: "Ask what happens if nothing changes."
+  buying_process:
+    label: Buying process
+    kind: state
+    slot: decision_process
+    text: "Clarify how this decision gets approved."
+    text_entity: "Ask how {entity} signs off on this."
+    cues:
+      strong: [approve, approval, approvals, approved, sign off, signoff, sign-off, signs off, final call, final say,
+               final decision, go ahead, go-ahead, green signal, green light, budget approval, board approval, committee,
+               procurement process, purchase order, tender, rfp, rfq, vendor registration, vendor onboarding, vendor code,
+               legal review, paperwork, discuss internally, internal discussion, take it to management,
+               present to management, "re:discuss (this |it )?(offline|internally)", management se, upar se, upar baat,
+               approve karna, approve karenge, approval lena, sign karna, final karenge, decide karenge, puchna padega,
+               poochna padega, discuss karke]
+      weak: [decide, decides, decision, decision maker, contract, agreement, internally, offline, baat karke, discuss karenge]
+  stakeholder_gap:
+    label: Stakeholder
+    kind: state
+    slot: stakeholders
+    text: "Ask who else is involved."
+    text_entity: "Ask how {entity} is involved in this."
+    decision_words: [approve, approval, sign, decide, decision, final, budget, agree, convince, pitch, present]
+    # role cue -> how the nudge names it
+    roles:
+      cfo: the CFO
+      ceo: the CEO
+      coo: the COO
+      cio: the CIO
+      cto: the CTO
+      md: the MD
+      managing director: the MD
+      chairman: the chairman
+      promoter: the promoters
+      promoters: the promoters
+      founder: the founder
+      board: the board
+      director: the director
+      vp: the VP
+      vice president: the VP
+      gm: the GM
+      general manager: the GM
+      procurement: procurement
+      purchase team: the purchase team
+      purchase department: the purchase team
+      finance team: finance
+      finance head: the finance head
+      accounts team: accounts
+      it team: IT
+      it head: IT
+      it department: IT
+      legal: legal
+      legal team: legal
+      boss: their boss
+      my manager: their manager
+      management: management
+      top management: management
+      plant head: the plant head
+      logistics head: the logistics head
+      supply chain head: the supply chain head
+      sir ko: their senior
+      bade sir: their senior
+      "re:head of [a-z]+": "{match}"
+    names: ["re:\\bmr\\.? ([a-z]{3,})", "re:\\bmrs\\.? ([a-z]{3,})", "re:\\bms\\.? ([a-z]{3,})", "re:\\b([a-z]{3,}) ji\\b"]
+    not_names: [aap, haan, han, nahi, theek, accha, acha, achha, achcha, bilkul, sahi, ok, okay, sir, hello, namaste,
+                namaskar, arre, arrey, chalo, sorry, thanks, thank, welcome, done, please, hanji, haanji, yes, right, good]
+  weak_commitment:
+    label: Next step
+    kind: moment
+    slot: next_step
+    text: "Make the next step specific: who, what, by when."
+    cues:
+      strong: [let's see, lets see, let us see, we'll see, we will see, i'll try, i will try, we'll try, we will try,
+               let me think, will think, think about it, get back to you, will get back, will let you know, let you know,
+               sometime next week, next week sometime, some time next week, in some time, dekhte hain, dekhte hai,
+               dekhenge, dekh lenge, dekh lete, try karta, try karunga, try karenge, try karte, sochte hain, sochenge,
+               soch ke, baad mein, baad me, batata hoon, batata hu, bata dunga, bataunga,
+               देखते हैं, देखते है, देखेंगे, देख लेंगे, देख लेते, सोचते हैं, सोचेंगे, सोच के, बाद में, बताता हूँ, बताता हूं,
+               बता दूंगा, बताऊंगा]
+      weak: [maybe, probably, possibly, perhaps, hopefully, shayad, karenge, kar lenge, will check, let me check, soon, later,
+             शायद, करेंगे, कर लेंगे]
+    commit_nouns: [meeting, call, intro, introduce, introduction, connect, send, share, schedule, set up, setup, data,
+                   proposal, pilot, contract, sign, visit, demo, discuss, review, decision, approval, next step, mail,
+                   email, whatsapp, date, week, milwa, milwata, milwaunga, bhej, bhejta, bhejunga, bhejenge]
+  buying_signal:
+    label: Buying signal
+    kind: moment
+    slot: buying_signals
+    text: "Explore this. They are visualizing ownership."
+    cues:
+      strong: [when we implement, once we implement, when we start, once we start, when we go live, go live, go-live,
+               our team would, our team will, our team can, my team will, my team would, our people will, our people would,
+               we would use, we will use, onboarding, onboard our, roll out, rollout, integrate with our, integration with our,
+               how soon can, how quickly can, start date, use karenge, hamare log, humare log, hamari team, humari team,
+               implement karenge, implement karte, lagayenge, laga denge, shuru karenge, start karenge, chalu karenge,
+               kab se start, "re:(implement|deploy|use) (this|it) in"]
+      weak: [pilot, trial, poc, proof of concept, implementation, implement, integration, timeline, kick off, kickoff,
+             deploy, deployment]
+  objection:
+    label: Objection
+    kind: moment
+    slot: objections
+    text: "Don't answer yet. Understand the concern first."
+    cues:
+      price: [too expensive, expensive, costly, too high, too much money, price is high, pricing is high, cost is high,
+              no budget, don't have budget, dont have budget, budget issue, budget constraint, budget nahi, paisa nahi,
+              mehenga, mehnga, mahenga, mahanga, bahut zyada, zyada hai, jyada hai, zyada lag, increase the existing cost,
+              महंगा, महँगा, बहुत ज्यादा, ज्यादा है, बजट नहीं, पैसा नहीं]
+      incumbent: [we already have, already have, already using, already use, we have a vendor, existing vendor,
+                  existing system, existing partner, pehle se hai, already hai, pehle se kar, पहले से है, पहले से कर]
+      timing: [not now, not right now, not the right time, abhi nahi, abhi nai, abhi mat, baad mein dekhenge,
+               next year, not a priority, अभी नहीं, अभी मत, बाद में देखेंगे]
+      doubt: [not sure, not convinced, don't need, dont need, not needed, not interested, why should we,
+              what is the guarantee, what's the guarantee, risky, too risky, doubt, doubtful, nahi chahiye, zarurat nahi,
+              bharosa nahi, nahi lagta, won't work, will not work, not possible, नहीं चाहिए, जरूरत नहीं, ज़रूरत नहीं,
+              भरोसा नहीं, नहीं लगता]
+    variants:
+      price: "Don't defend the price yet. Ask what they compare it with."
+      incumbent: "Don't compete yet. Ask what works and what doesn't today."
+      timing: "Don't push. Ask what would make now the right time."
+      doubt: "Don't answer yet. Understand the concern first."
+
+# ---- shared vocabulary -------------------------------------------------------
+lexicon:
+  # blanked out before problem / objection / role cues run
+  neutralisers: [no problem, not a problem, no problems, no issue, no issues, not an issue, no doubt, without doubt,
+                 no worries, koi problem nahi, koi dikkat nahi, koi issue nahi, on board, onboard]
+  problem: [problem, problems, issue, issues, pain, painful, challenge, challenges, struggle, struggling,
+            "re:frustrat[a-z]*", headache, difficult, difficulty, not working, doesn't work, broken, delay, delays,
+            delayed, leakage, overpay, overpaying, paying more, extra cost, extra pay, wastage, waste, mess, manual,
+            errors, mistake, mistakes, complaint, complaints, escalation, dikkat, dikkatein, pareshani, pareshan,
+            gadbad, galat, nuksan, nuksaan, loss, losing, zyada lagta, time lagta]
+  business: [cost, costs, freight, truck, trucks, trip, trips, delivery, deliveries, dispatch, shipment, shipments,
+             load, loads, rate, rates, transporter, transporters, vendor, vendors, customer, customers, detention,
+             warehouse, inventory, order, orders, billing, invoice, invoices, payment, payments, planning, process,
+             data, plant, plants, factory, route, routes, fleet, logistics, supply chain, margin, margins, revenue,
+             operations, ops, tracking, visibility, report, reports, excel, sheet, driver, drivers, lr, pod,
+             e-way bill, ewaybill, gaadi, gaadiyan, maal, kiraya, bhada, team]
+  symptom: [happens, happening, keeps, always, every time, every month, month end, month-end, again and again,
+            repeatedly, recurring, often, frequently, delayed, stuck, breakdown, fails, failing, baar baar, hamesha,
+            har baar, har mahine, hota hai, hota he, ho jata hai, ho jaata hai, reh jata, atak, atka]
+  dissatisfaction: [not happy, unhappy, not satisfied, "re:frustrat[a-z]*", fed up, tired of, annoying, headache,
+                    not good, too much, painful, pareshan, pareshani, pasand nahi, theek nahi, accha nahi, bekar,
+                    tang aa, dikkat]
+  urgency: [deadline, this quarter, next quarter, by march, target, mandate, board wants, must, have to fix,
+            need to fix, priority, urgent, urgently, asap, competitor, competition, losing customers, audit, zaroori,
+            jaldi, turant]
+  importance: [biggest, main problem, main issue, main concern, most important, critical, crucial, key issue,
+               real issue, real problem, honestly, frankly, to be honest, worried, worry, concerned, the thing is,
+               the challenge is, what bothers, sabse bada, sabse badi, asli, main baat, important hai, zaroori hai,
+               dikkat yeh hai, problem yeh hai, sach bolu, sach kahun]
+  quantity: ["re:\\d[\\d,.]*\\s*(%|percent|per cent|lakh|lakhs|lac|lacs|crore|crores|cr|k|thousand|hazar|hazaar|million|mn|bn|rupees|rs|inr|hours?|hrs|days?|weeks?|months?|trucks?|trips?|shipments?|tons?|tonnes?|kg|km)\\b",
+             "re:(rs\\.?|inr|₹)\\s*\\d",
+             "re:\\b(ek|do|teen|char|paanch|das|bees|pachas|sau|one|two|three|four|five|ten|twenty|fifty|hundred)\\s+(lakh|lakhs|crore|crores|percent|hazar|thousand|million)\\b"]
+  question: ["re:^(what|how|why|who|when|where|which|can you|could you|do you|does|did you|is there|are you|would you|will you)\\b",
+             kya, kaise, kitna, kitne, kitni, kaun, kaunsa, kab, kyun, kyon, kahan, kidhar]
+  pitch: [our platform, our product, we do, we have built, our agents, our agent, our solution, slide, slides, deck,
+          presentation, demo, my screen, let me show, as you can see, dashboard, our model]
+  price: [price, pricing, fee, fees, commercial, commercials, cost to you, discount, payment terms, invoice, monthly fee,
+          annual fee, retainer, percent of savings, per month, per quarter, subscription, outcome based, outcome-based]
+  close: [next step, next steps, wrap up, wrapping up, to summarise, to summarize, follow up, send you, i'll send,
+          i will send, schedule, let's meet, next meeting, next call, thank you, thanks for your time, shukriya,
+          dhanyavad, chaliye, chalo]
+  stopwords: [the, and, for, you, your, are, was, were, this, that, with, have, has, had, but, not, can, will, would,
+              what, how, why, who, when, our, we, they, them, their, there, here, about, just, like, "yes", yeah, okay,
+              sir, right, correct, so, also, then, very, into, from, its, it's, i'm, let, me, my, is, of, to, in, "on",
+              at, be, do, an, or, if, as, by, hai, hain, ki, ka, ke, ko, se, me, mein, toh, to, bhi, aur, ye, yeh, woh,
+              vo, na, nahi, haan, jo, kya, ek, hum, aap, main, par, pe, tha, thi, the, raha, rahe, rahi]
+
+# What counts as ME asking about a slot. Two uses: an ask marks the slot
+# "asked" (so the coach stops nudging on it), and it is the outcome test for a
+# shown nudge ("did he act on it within a minute?").
+asks:
+  impact: [how much, how many, kitna, kitne, kitni, what does it cost, cost you, costing you, what's the cost,
+           what is the cost, how big, number, numbers, percentage, impact, per month, per year, annually, in rupees,
+           quantify]
+  pain: [why, kyun, kyon, tell me more, what do you mean, matlab, elaborate, can you explain, explain, how does that,
+         how so, give me an example, for example, example, kaise]
+  root_cause: [why, kyun, kyon, what causes, what's causing, cause, reason, root cause, wajah, kaaran, because of what,
+               kis wajah, kyu hota]
+  status_quo_cost: [what happens if, if nothing changes, if you don't, if you do not, agar nahi, aise hi chalta,
+                    cost of doing nothing, what if you, continue like this, stay as it is, same as today]
+  decision_process: [how do you decide, who decides, approval process, how does approval, how will approval, sign off,
+                     signoff, kaun decide, kaise approve, process kya, procurement, who signs, decision process,
+                     how do you buy, approve]
+  stakeholders: [who else, anyone else, kaun kaun, aur kaun, who all, other people, who is involved, who will be involved,
+                 involve, whom should, kisko, kise]
+  next_step: [by when, kab tak, which date, what date, when can, tomorrow, kal tak, monday, tuesday, wednesday,
+              thursday, friday, saturday, "re:\\d{1,2}(st|nd|rd|th)?\\s+(sep|sept|september|oct|october|nov|november)",
+              calendar invite, block the time, lock the date, confirm the date, same time]
+  buying_signals: [how would, what would, how do you see, how will your team, tell me more, kaise, walk me through,
+                   what would that look like, who would use]
+  # the objection variants ask him to compare, to ask what works today, or what would make now right
+  objections: [what do you mean, help me understand, compared to, compare, comparing, compared with, comparison,
+               why do you, concern, kyun, what makes you, what would it take, what would make, right time,
+               what works, what's working, what is working, what doesn't work, not working, what worries,
+               worried about, tell me more, understand]

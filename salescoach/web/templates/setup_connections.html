@@ -1,0 +1,22 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}Email, calendar and recording{% endblock %}
+{% block step_intro %}{% if hosted() %}This is a hosted install: it runs on a server, not on your Mac, so nothing on this list can be reached from it. Calls come in through a recorder, the webhook or an upload; the model is reached with an API key; drafts are copied into your own mail.{% else %}What the coach can reach on this machine right now. Nothing on this page contacts a service or changes anything: it only looks at what is installed and what earlier runs left behind.{% endif %}{% endblock %}
+{% block step %}
+<div class="status-list">
+  {% for r in rows %}
+  <section class="card status-row status-{{ 'ok' if r.ok else 'off' }}" id="conn-{{ r.key }}" data-ok="{{ 'yes' if r.ok else 'no' }}">
+    <div class="status-head">
+      <h2>{{ r.title }}</h2>
+      <span class="pill {% if r.ok %}pill-good{% elif r.optional %}pill-muted{% else %}pill-alert{% endif %}"><i></i>{{ r.status }}</span>
+      {% if r.optional and not r.ok %}<span class="opt">optional</span>{% endif %}
+    </div>
+    <p>{{ r.enables }}</p>
+    <p class="meta">{{ r.detail }}</p>
+    {% if r.fix %}<div class="fix"><span class="label">How to fix it</span>{{ r.fix }}</div>{% endif %}
+  </section>
+  {% endfor %}
+</div>
+<p class="meta">Emails are only ever sent when you press Send. The calendar is read-only.</p>
+{{ f.link_footer(back_href, next_href) }}
+{% endblock %}

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Follow-ups{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/automation.css">
+<div class="page-head">
+  <div class="eyebrow">Follow-ups · {{ today_label }}</div>
+  <h1>{% if drafted %}{{ drafted|length }} nudge{{ '' if drafted|length == 1 else 's' }} to send{% elif due %}{{ due|length }} due for a check{% else %}Nothing needs chasing{% endif %}</h1>
+  <div class="meta">The follow-up agent checks due loops every day at {{ run_at }} {{ tz_label() }}, and checks before it reminds: already done, replied, overtaken, too soon, or bad for the relationship.
+    {% if last_eval %}Last run {{ last_eval.at|dt }}, {{ last_eval.decisions }} decision{{ '' if last_eval.decisions == 1 else 's' }}.{% else %}It has not run yet.{% endif %}</div>
+  <div class="meta">Nothing is sent without your Send. Auto-send: {% if autosend.armed %}<span class="accent">armed under {{ autosend.email_policy }}</span>{% elif autosend.enabled %}dry run only{% else %}off{% endif %} (email policy {{ autosend.email_policy }}).</div>
+  <div class="auto-head-actions">
+    <form method="post" action="/followups/run" class="inline"><button class="btn btn-primary btn-sm">Check due loops now</button></form>
+    <a class="btn btn-sm" href="/replies">Replies</a>
+  </div>
+</div>
+
+<section class="section first" id="nudges">
+  <div class="section-head"><h2>Nudges to send</h2><span class="purpose">Drafted in your voice. Review, edit, then Send.</span></div>
+  {% for n in drafted %}
+  <a class="card call-row" href="/nudges/{{ n.id }}">
+    <div class="call-row-main">
+      <div class="call-title">{{ n.subject or 'Nudge' }}</div>
+      <div class="meta">To {{ n.to|join(', ') }}{% if n.deal_name %} · {{ n.deal_name }}{% endif %} · drafted {{ n.created_at|dt }}</div>
+      {% if n.decision %}<div class="meta">{{ n.decision.description }}: {{ n.decision.rationale }}</div>{% endif %}
+    </div>
+    <div class="call-row-side"><span class="pill {% if n.status in ('failed', 'sending') %}pill-alert{% else %}pill-muted{% endif %}"><i></i>{{ n.status|human }}</span><span class="btn btn-primary btn-sm">Review</span></div>
+  </a>
+  {% else %}
+  <p class="empty">No nudges waiting.</p>
+  {% endfor %}
+</section>
+
+<section class="section" id="due">
+  <div class="section-head"><h2>Due for a check</h2><span class="purpose">Confirmed loops whose check date has come. The next run decides them; you can act first.</span></div>
+  {% if due %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Check</th><th>Loop</th><th>Owner</th><th>Nudges</th><th></th></tr></thead>
+    <tbody>
+    {% for l in due %}
+    <tr id="loop-{{ l.node_id }}">
+      <td class="nowrap">{{ l.next_check_at|day }}{% if l.due_date %}<div class="meta">due {{ l.due_date|day }}</div>{% endif %}</td>
+      <td>{{ l.description }}
+        <div class="meta">{{ m.prio(l.priority) }} · {{ l.type|human }}{% if l.deal_name %} · <a href="/deals/{{ l.deal_id }}">{{ l.deal_name }}</a>{% endif %}{% if l.call_id %} · <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">call</a>{% endif %}</div>
+        {% if l.last %}<p class="meta auto-rationale">Last decision {{ l.last.eval_date|day }}: <span class="tag">{{ l.last.decision|human }}</span> {{ l.last.rationale }}</p>{% endif %}</td>
+      <td>{{ l.owner }}{% if l.owner_name %}<div class="meta">{{ l.owner_name }}</div>{% endif %}</td>
+      <td class="num">{{ l.follow_up_count }}</td>
+      <td><div class="auto-row-actions">
+        {% if l.owner not in ('me', 'internal') %}
+        <form method="post" action="/followups/{{ l.node_id }}/nudge" class="inline">{{ m.next_field('/followups') }}<button class="btn btn-sm btn-primary">Draft a nudge now</button></form>
+        {% endif %}
+        <form method="post" action="/followups/{{ l.node_id }}/snooze" class="inline">{{ m.next_field('/followups') }}<input type="date" name="until" required><button class="btn btn-sm">Snooze</button></form>
+        <form method="post" action="/loops/{{ l.node_id }}/status" class="inline">{{ m.next_field('/followups') }}<input type="hidden" name="status" value="done"><button class="btn btn-sm">Done</button></form>
+      </div></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="empty">Nothing is due for a check.</p>
+  {% endif %}
+</section>
+
+{% if proposals or escalations %}
+<section class="section" id="decide">
+  <div class="section-head"><h2>Needs your decision</h2><span class="purpose">The agent never closes or escalates on its own say-so.</span></div>
+  {% for p in proposals %}
+  <div class="card">
+    <div class="strong">{{ p.description }}</div>
+    <div>{{ p.field.split('.')[-1] }}: <span class="mono">{{ p.existing_value or 'empty' }}</span> → <span class="mono accent">{{ p.proposed_value }}</span></div>
+    {% if p.reason %}<p class="meta">{{ p.reason }}</p>{% endif %}
+    <div class="quick">
+      <form method="post" action="/conflicts/{{ p.id }}/resolve">{{ m.next_field('/followups#decide') }}<input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept</button></form>
+      <form method="post" action="/conflicts/{{ p.id }}/resolve">{{ m.next_field('/followups#decide') }}<input type="hidden" name="accept" value="0"><button class="btn btn-sm btn-quiet">Keep it open</button></form>
+    </div>
+  </div>
+  {% endfor %}
+  {% for l in escalations %}
+  <div class="card" id="loop-{{ l.node_id }}">
+    <div><span class="tag tag-block">deal risk</span> <span class="strong">{{ l.description }}</span></div>
+    <div class="meta">{% if l.deal_name %}{{ l.deal_name }} · {% endif %}{{ l.review_state }}</div>
+    <div class="quick">
+      {% if l.review_state == 'proposed' %}<form method="post" action="/loops/{{ l.node_id }}/confirm">{{ m.next_field('/followups#decide') }}<button class="btn btn-sm btn-primary">Confirm the risk</button></form>{% endif %}
+      <form method="post" action="/loops/{{ l.node_id }}/reject">{{ m.next_field('/followups#decide') }}<button class="btn btn-sm btn-quiet">Not a risk</button></form>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="section" id="decisions">
+  <div class="section-head"><h2>Decisions, last 14 days</h2><span class="purpose">Every decision, rule-made or agent-made, with its reason.</span></div>
+  {% if recent %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Date</th><th>Loop</th><th>Decision</th><th>Why</th><th>Next look</th><th></th></tr></thead>
+    <tbody>
+    {% for d in recent %}
+    <tr>
+      <td class="nowrap">{{ d.eval_date|day }}</td>
+      <td>{{ d.description }}<div class="meta">{{ d.owner }}{% if d.owner_name %} · {{ d.owner_name }}{% endif %}{% if d.deal_name %} · {{ d.deal_name }}{% endif %}</div></td>
+      <td><span class="tag auto-decision">{{ d.decision|human }}</span><div class="meta">{{ d.stage|who }} · {{ d.check_name|human }}</div></td>
+      <td>{{ d.rationale }}{% if d.relationship_risk %}<div class="meta">relationship risk {{ d.relationship_risk }}{% if d.relationship_note %}: {{ d.relationship_note }}{% endif %}</div>{% endif %}</td>
+      <td class="nowrap">{{ d.next_check_at|day if d.next_check_at else 'stopped' }}</td>
+      <td class="nowrap">{% if d.email_id %}<a href="/nudges/{{ d.email_id }}">nudge {{ d.email_status|human }}</a> {% endif %}{% if d.run_id %}<a class="why" href="/runs/{{ d.run_id }}">Why?</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="empty">No decisions yet.</p>
+  {% endif %}
+</section>
+
+{% if sent %}
+<section class="section">
+  <div class="section-head"><h2>Nudges sent</h2></div>
+  <ul class="plain dash">{% for s in sent %}<li><a href="/nudges/{{ s.id }}">{{ s.subject }}</a> <span class="meta">to {{ s.to|join(', ') }} · {{ s.sent_at|dt }} · {{ s.approved_by|who }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% endblock %}

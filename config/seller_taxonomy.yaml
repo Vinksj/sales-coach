@@ -1,0 +1,72 @@
+# Controlled vocabulary for seller behaviour. The call analyst tags observations
+# with these; anything else arrives as new:<snake_case> and stays a candidate
+# until it recurs on a second call.
+patterns:
+  - tag: pitch_before_understanding
+    name: Pitching before understanding the problem
+    polarity: weakness
+    recommended_intervention: Hold the pitch until you can restate their problem and its cost in their words.
+  - tag: no_follow_up_questions
+    name: Good first questions, no follow-up
+    polarity: weakness
+    recommended_intervention: After every answer that matters, ask one more "why" or "what does that cost you".
+  - tag: verbose_when_challenged
+    name: Getting verbose when challenged
+    polarity: weakness
+    recommended_intervention: When pushed back on, answer in two sentences, then ask what is behind the concern.
+  - tag: avoids_budget
+    name: Avoiding the budget conversation
+    polarity: weakness
+    recommended_intervention: Ask who owns the budget and what range they expected before the call ends.
+  - tag: no_decision_process
+    name: Not establishing the decision process
+    polarity: weakness
+    recommended_intervention: Ask how this decision gets approved, by whom, and in what order.
+  - tag: friendliness_as_intent
+    name: Reading friendliness as buying intent
+    polarity: weakness
+    recommended_intervention: Count only concrete actions (data shared, meetings booked, people introduced) as signal.
+  - tag: accepts_vague_commitments
+    name: Accepting vague commitments
+    polarity: weakness
+    recommended_intervention: Before ending, make owner, action and date explicit and say them back.
+  - tag: leaves_open_loops
+    name: Leaving too many open loops
+    polarity: weakness
+    recommended_intervention: Close or reassign two open items before adding new ones.
+  - tag: over_explains_technical
+    name: Over-explaining technical detail
+    polarity: weakness
+    recommended_intervention: Lead with the business effect; offer the technical detail only if asked.
+  - tag: no_status_quo_challenge
+    name: Not challenging the status quo
+    polarity: weakness
+    recommended_intervention: Ask what happens if nothing changes this year, and put a number on it.
+  - tag: no_impact_quantification
+    name: Not quantifying impact
+    polarity: weakness
+    recommended_intervention: Turn every stated problem into a rupee, hour or percentage figure with the buyer.
+  - tag: prospect_controls_agenda
+    name: Letting the prospect dictate the agenda
+    polarity: weakness
+    recommended_intervention: Open with a stated agenda and outcome, and steer back to it when the call drifts.
+  - tag: quantifies_impact
+    name: Quantifies impact with the buyer
+    polarity: strength
+    recommended_intervention: Keep doing it; tie the number to the buyer's own data.
+  - tag: secures_specific_next_step
+    name: Secures a specific next step
+    polarity: strength
+    recommended_intervention: Keep doing it.
+  - tag: explores_objections
+    name: Explores objections before answering
+    polarity: strength
+    recommended_intervention: Keep doing it.
+  - tag: teaches_new_insight
+    name: Teaches the buyer something new
+    polarity: strength
+    recommended_intervention: Keep doing it; land the insight on their numbers.
+  - tag: multi_threads
+    name: Multi-threads beyond the champion
+    polarity: strength
+    recommended_intervention: Keep doing it.

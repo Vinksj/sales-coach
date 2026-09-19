@@ -1,0 +1,54 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}How do you sell?{% endblock %}
+{% block step_intro %}The coach scores every deal against one methodology: what is known, what is missing, what to ask next. Pick the one your team already uses. {% if not chosen %}Until you choose, it uses MEDDPICC.{% endif %}{% endblock %}
+{% block step %}
+<form method="post" action="/setup/method">
+  <fieldset class="choice-list">
+    <legend class="sr-only">Methodology</legend>
+    {% for m in methods %}
+    <div class="card choice{% if m.key == active_key %} is-selected{% endif %}" id="m-{{ m.key }}">
+      <label class="choice-head" for="pick-{{ m.key }}">
+        <input type="radio" id="pick-{{ m.key }}" name="key" value="{{ m.key }}"{% if m.key == active_key %} checked{% endif %}>
+        <span class="choice-title">
+          <span class="h3">{{ m.name }}</span>
+          <span class="tag tag-kind-{{ m.kind }}">{{ m.kind }}</span>
+          {% if not m.builtin %}<span class="tag">your own</span>{% endif %}
+          {% if m.key == active_key %}<span class="pill pill-good"><i></i>{% if chosen %}in use{% else %}in use · default{% endif %}</span>{% endif %}
+        </span>
+      </label>
+      {% if m.description %}<p class="choice-desc">{{ m.description }}</p>{% endif %}
+      <details class="choice-more"{% if m.key == active_key %} open{% endif %}>
+        <summary>The {{ m.elements|length }} things it tracks on every deal</summary>
+        <dl class="element-list">
+          {% for e in m.elements %}
+          <div>
+            <dt>{{ e.label }}{% if e.critical %} <span class="tag tag-block" title="While this is not known, deal health cannot go above {{ e.cap_when_not_known }}">deal-breaker</span>{% endif %}</dt>
+            <dd><span class="label-inline">Known when</span> {{ e.known_when }}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+      </details>
+      {% if not m.builtin %}
+      <div class="actions choice-actions">
+        <a class="btn btn-sm" href="/setup/method/custom/{{ m.key }}">Edit</a>
+        <button class="btn btn-sm btn-quiet" form="delete-{{ m.key }}" data-confirm="Delete {{ m.name }}? What the coach already learned under it stays stored, unread.">Delete</button>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </fieldset>
+
+  <div class="card custom-cta">
+    <div>
+      <div class="h3">Your team sells its own way?</div>
+      <p class="meta">Describe it in plain words: the things you need to know about a deal, and how you can tell each one is known. It takes about ten minutes.</p>
+    </div>
+    <a class="btn btn-secondary" href="/setup/method/custom">Build your own</a>
+  </div>
+
+  <p class="meta">Changing the methodology re-reads your open deals against the new one. Nothing is deleted: what was learned under the old one comes back if you switch back.</p>
+  {{ f.footer(back_href, 'Save and continue', configured) }}
+</form>
+{% for m in methods if not m.builtin %}<form method="post" action="/setup/method/custom/{{ m.key }}/delete" id="delete-{{ m.key }}"></form>{% endfor %}
+{% endblock %}

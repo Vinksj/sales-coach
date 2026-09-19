@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Live · {{ call.title or call.node_id }}{% endblock %}
+{% block content %}
+<div id="live" class="live"{% if is_live %} data-events="/live/{{ call.node_id }}/events"{% endif %}
+     data-call-url="/calls/{{ call.node_id }}" data-started="{{ call.started_at }}" data-silence="{{ silence_s }}">
+  <div class="live-main">
+    <div class="page-head">
+      <div class="eyebrow">{% if is_live %}<span class="rec-dot" aria-hidden="true"></span>Recording · <span id="live-elapsed" class="num">00:00</span>{% else %}Not live · {{ call.wf_state|step_label }}{% endif %}</div>
+      <h1>{{ call.title or 'Untitled call' }}</h1>
+      <div class="meta">{{ call.lang_mode }}{% if deal %} · {{ deal.name }}{% endif %} · started {{ call.started_at|dt }}</div>
+    </div>
+
+    <link rel="stylesheet" href="/static/coach_live.css">
+    <div id="coach-live" class="coach-live" data-stream="/coach/live/stream" data-call="{{ call.node_id }}"{% if not is_live %} hidden{% endif %}>
+      <div class="coach-status"><span class="coach-dot" aria-hidden="true"></span><span id="coach-status-text">Coach idle</span><a href="/coach/live/{{ call.node_id }}">timeline</a></div>
+      <div class="coach-card" id="coach-card" role="status" aria-live="polite" hidden>
+        <div class="coach-card-head"><span class="coach-trigger" id="coach-trigger"></span>
+          <button type="button" class="coach-dismiss" id="coach-dismiss">Dismiss</button></div>
+        <p class="coach-text" id="coach-text"></p>
+      </div>
+    </div>
+
+    {% if not is_live %}
+      {% if orphan %}
+      <div class="callout callout-err">
+        <p>This call is marked live, but no capture is running in this server (it may have restarted). Stop it to finalise the saved audio and start processing.</p>
+        <form method="post" action="/live/{{ call.node_id }}/stop"><button class="btn btn-primary">Finalise and process</button></form>
+      </div>
+      {% else %}
+      <div class="callout">
+        <p>This call is not being recorded now.</p>
+        <a class="btn btn-primary" href="/calls/{{ call.node_id }}">Open the call review</a>
+        <a class="btn btn-secondary" href="/coach/live/{{ call.node_id }}">Coach timeline</a>
+      </div>
+      {% endif %}
+    {% endif %}
+
+    {% if is_live %}
+    <div class="meters">
+      {% for ch, label in [('me', 'Me · microphone'), ('them', 'Them · call audio')] %}
+      {% set lv = levels.get(ch) or {} %}
+      <div class="meter" id="meter-{{ ch }}">
+        <div class="meter-head"><span class="label">{{ label }}</span><span class="meter-db num">{% if lv %}{{ lv.rms_dbfs|round|int }} dBFS{% else %}waiting{% endif %}</span></div>
+        <div class="meter-bar"><div class="meter-fill"></div></div>
+        <div class="meter-note meta">Waiting for audio</div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="live-status meta" id="live-status">Connecting to the capture stream</p>
+    <ul class="plain live-alerts" id="live-alerts"{% if not status.alerts %} hidden{% endif %}>
+      {% for a in (status.alerts or [])|reverse %}<li><span class="label">{{ a.kind|human }}</span> {{ a.message }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="live-pane" id="live-pane">
+      <ol class="turns live-turns" id="live-turns">
+        {% for t in turns %}
+        <li class="turn turn-{{ t.channel }}">
+          <span class="turn-meta"><span class="who">{% if t.channel == 'me' %}Me{% else %}Them{% endif %}</span> <span class="num">{{ t.t_start|mmss }}</span></span>
+          <span class="turn-text">{{ t.text }}</span>
+        </li>
+        {% else %}
+        <li class="empty" id="live-empty">{% if is_live %}The transcript appears here as people speak. The recording is saved even if live transcription falls behind.{% else %}No live transcript was saved for this call.{% endif %}</li>
+        {% endfor %}
+      </ol>
+    </div>
+  </div>
+
+  <aside class="live-side">
+    {% if is_live %}
+    <form method="post" action="/live/{{ call.node_id }}/stop" class="stop-form">
+      <button class="btn btn-primary btn-block" data-confirm="Stop recording and start processing this call?">Stop call</button>
+    </form>
+    {% endif %}
+
+    <section class="card">
+      <div class="eyebrow">Deal context</div>
+      {% if deal %}
+      <div class="h3"><a href="/deals/{{ deal.node_id }}">{{ deal.name }}</a></div>
+      <dl class="stack-dl">
+        <dt>Recorded next step</dt><dd>{{ deal.next_step or 'None recorded' }}</dd>
+        {% if prev_next %}<dt>Last call's next step</dt><dd>{{ prev_next.text }} <span class="meta">({{ prev_next.call.started_at|dt }})</span></dd>{% endif %}
+      </dl>
+      <div class="label">Open loops ({{ loops|length }})</div>
+      <ul class="plain side-loops">
+        {% for l in loops %}
+        <li><span class="{% if l.due_date and l.due_date < today %}due-over{% endif %}">{{ l.description }}</span>
+          <div class="meta">{{ l.owner }}{% if l.owner_name %} · {{ l.owner_name }}{% endif %}{% if l.due_date %} · due {{ l.due_date|day }}{% endif %}</div></li>
+        {% else %}<li class="muted">No open loops on this deal.</li>{% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">No deal linked. You can link one on the review page after the call.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <div class="eyebrow">On the call</div>
+      <ul class="plain">{% for p in participants %}<li>{{ p.name }}{% if p.is_me %} (you){% endif %}{% if p.title %} <span class="meta">{{ p.title }}</span>{% endif %}</li>{% else %}<li class="muted">Nobody recorded.</li>{% endfor %}</ul>
+    </section>
+  </aside>
+</div>
+<script src="/static/coach_live.js" defer></script>
+{% endblock %}

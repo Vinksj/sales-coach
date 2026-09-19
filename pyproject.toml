@@ -1,0 +1,94 @@
+[build-system]
+# 77 is the first setuptools that reads an SPDX `license` expression and `license-files` (PEP 639).
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "salescoach"
+version = "0.1.0"
+description = "Local-first sales coach for B2B sellers: records or imports calls, analyses them, tracks commitments, drafts follow-ups that are sent only on a click."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "callcap/vendor/LICENSE-audiotee.md"]
+authors = [{name = "The Sales Coach authors"}]
+requires-python = ">=3.11,<3.14"
+keywords = ["sales", "b2b", "sales-coaching", "meddpicc", "call-analysis", "transcription", "local-first", "llm", "crm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+  "pydantic>=2.7",
+  "fastapi",
+  "uvicorn[standard]",
+  "jinja2",
+  "python-multipart",
+  "pyyaml",
+  "numpy",
+  "soundfile",
+  "httpx",
+  "google-api-python-client",
+  "google-auth",
+]
+
+[project.optional-dependencies]
+asr = ["mlx-whisper", "whisperlivekit", "sherpa-onnx"]
+dev = ["pytest", "ruff"]
+
+# PLACEHOLDERS: the repository URL is not decided yet. Replace every REPLACE-ME (here, in SECURITY.md
+# and in CODE_OF_CONDUCT.md) before the first public release. `.invalid` never resolves.
+[project.urls]
+Homepage = "https://example.invalid/REPLACE-ME/salescoach"
+Repository = "https://example.invalid/REPLACE-ME/salescoach"
+Issues = "https://example.invalid/REPLACE-ME/salescoach/issues"
+Documentation = "https://example.invalid/REPLACE-ME/salescoach/tree/main/docs"
+
+[project.scripts]
+salescoach = "salescoach.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["salescoach*"]
+
+# Everything the package reads at run time that is not a .py file. Checked against the tree:
+# every prompts/ folder, the core schema, every plugin schema, the templates and the static files.
+# NOT shipped by a wheel: config/ (the tracked defaults), callcap/, overlay/, launchd/ and scripts/
+# live beside the package, and salescoach/config.py finds them relative to the checkout. The
+# supported install is therefore an editable one from a clone: pip install -e .
+[tool.setuptools.package-data]
+salescoach = [
+  "store/*.sql",
+  "plugins/*.sql",
+  "agents/prompts/*.md",
+  "automation/prompts/*.md",
+  "coach/prompts/*.md",
+  "intel/prompts/*.md",
+  "web/templates/*.html",
+  "web/static/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# What CI enforces: pyflakes (F) and syntax / IO errors (E9). Nothing stylistic.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures imported from another test module look unused (F401) and look redefined when a
+# test takes them as an argument (F811). Both are how fixtures work, not mistakes.
+"tests/**" = ["F401", "F811"]

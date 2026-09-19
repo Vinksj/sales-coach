@@ -1,0 +1,36 @@
+{# Deal outcome fragment (learning plugin). Fetched by deal.html through static/intel.js; no page chrome. #}
+<link rel="stylesheet" href="/static/learning.css">
+<div class="section-head">
+  <h2>Stage and outcome</h2>
+  <span class="purpose">Yours to set. Won and lost are the ground truth the coach learns from; no agent changes them.</span>
+</div>
+<div class="grid-2">
+  <form method="post" action="/deals/{{ deal.node_id }}/outcome" class="card edit-form outcome-form">
+    <div class="form-grid">
+      <label>Stage<input name="stage" list="deal-stages" value="{{ deal.stage or '' }}" maxlength="60"></label>
+      <datalist id="deal-stages">{% for s in stages %}<option value="{{ s }}">{% endfor %}</datalist>
+      <label>Status<select name="status">{% for s in statuses %}<option value="{{ s }}"{% if s == deal.status %} selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+      <label>Deal value<input name="value" inputmode="decimal" value="{% if deal.value is not none %}{{ '%g'|format(deal.value) }}{% endif %}"></label>
+      <label>Currency<input name="currency" maxlength="8" value="{{ deal.currency or '' }}" placeholder="USD"></label>
+      <label>Close target<input name="close_target" type="date" value="{{ (deal.close_target or '')[:10] }}"></label>
+    </div>
+    <div class="form-grid">
+      <label>If lost, why<select name="lost_reason_code"><option value="">Choose a reason</option>{% for code, label in lost_reasons.items() %}<option value="{{ code }}"{% if code == reason_code %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      <label>In your words<input name="lost_reason_text" maxlength="300" value="{{ reason_text }}"></label>
+    </div>
+    <label class="confirm-row"><input type="checkbox" name="confirm" value="yes"> I am closing this deal as won or lost</label>
+    <button class="btn btn-primary btn-sm">Save</button>
+    <p class="meta">Marking a deal won or lost needs the box ticked. A lost deal needs a reason.</p>
+  </form>
+  <div class="card">
+    <div class="label">History</div>
+    {% if history %}
+    <ul class="plain dash">
+      {% for h in history %}
+      <li>{% if h.from_status != h.to_status %}<span class="strong">{{ h.from_status }} → {{ h.to_status }}</span>{% endif %}{% if h.from_stage != h.to_stage %}{% if h.from_status != h.to_status %} · {% endif %}stage {{ h.from_stage or 'none' }} → {{ h.to_stage or 'none' }}{% endif %}
+        <span class="meta">{{ h.changed_at|dt }} · {{ h.by }}{% if h.lost_reason %} · {{ h.lost_reason }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty">No stage or status change recorded yet.</p>{% endif %}
+  </div>
+</div>

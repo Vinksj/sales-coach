@@ -1,0 +1,24 @@
+# Follow-up cadence for open loops. First matching rule wins.
+# Reference date = the loop's due_date when it has one, else the call date.
+# check_after_days is counted in business days when business_days_only is true.
+business_days_only: true
+
+rules:
+  - when: {type: deal_risk, priority: critical}
+    check_after_days: 1
+  - when: {type: prospect_action, due_date_confidence: explicit}
+    check_after_days: 1          # shortly after an explicit deadline passes
+  - when: {type: prospect_action}
+    check_after_days: 4          # "I'll get back to you" with no date
+  - when: {type: my_action, due_date_confidence: explicit}
+    check_after_days: 0          # surface on the day it is due
+  - when: {type: my_action}
+    check_after_days: 2
+  - when: {type: info_request, priority: low}
+    check_after_days: 7
+  - when: {}
+    check_after_days: 5
+
+escalation:
+  max_follow_ups: 2
+  then: flag_deal_risk

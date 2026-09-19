@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Coach{% endblock %}
+
+{% macro pattern(p) %}
+<article class="card pattern{% if p.is_priority %} pattern-priority{% endif %}" id="p-{{ p.tag }}">
+  <div class="loop-top">
+    <div>
+      <div class="h3">{{ p.name }}</div>
+      {% if p.description and p.description != p.name %}<p class="meta">{{ p.description }}</p>{% endif %}
+    </div>
+    <div class="loop-badges">
+      <span class="pill {% if p.status == 'active' %}{% if p.polarity == 'weakness' %}pill-alert{% else %}pill-good{% endif %}{% else %}pill-muted{% endif %}"><i></i>{{ p.status }}</span>
+      <span class="sev sev-{{ p.severity }}">{{ p.severity }} severity</span>
+    </div>
+  </div>
+  <div class="freq">
+    <div class="bar{% if p.polarity == 'strength' %} bar-good{% endif %}" role="img" aria-label="{{ p.frequency|pct }} percent of calls"><i style="width: {{ p.frequency|pct }}%"></i></div>
+    <span class="num">{{ p.frequency|pct }}%</span>
+  </div>
+  <p class="meta">Seen on {{ p.calls_seen }} call{{ '' if p.calls_seen == 1 else 's' }} · {{ p.calls_seen if p.calls_seen < p.calls_window else p.calls_window }} of the last {{ p.calls_window }} analysed · trend {{ p.trend|human }}{% if p.contexts_list %} · mostly {{ p.contexts_list|join(', ')|replace('_', ' ') }}{% endif %}{% if p.last_detected %} · last {{ p.last_detected|dt }}{% endif %}</p>
+  {% if p.recommended_intervention %}<div class="label">Do this</div><p>{{ p.recommended_intervention }}</p>{% endif %}
+  {% if p.examples_list %}
+  <div class="label">Latest examples</div>
+  <ul class="plain examples">
+    {% for ex in p.examples_list %}
+    {% set c = titles.get(ex.call_id) %}
+    <li>{% if ex.quote %}"{{ ex.quote }}" {% endif %}<a href="/calls/{{ ex.call_id }}{% if ex.turns %}#t{{ ex.turns[0] }}{% endif %}" class="meta">{{ c.title if c else ex.call_id }}{% if ex.turns %}, turn {{ ex.turns[0] }}{% endif %}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</article>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Coach</div>
+  <h1>How you sell</h1>
+  <div class="meta">Counted from what the analyst saw on each call. Frequency is calls with the pattern out of the last calls analysed.</div>
+</div>
+
+<link rel="stylesheet" href="/static/intel.css">
+<section class="section" id="coach-intel" data-intel-src="/coach/intel">
+  <p class="meta">Loading the longitudinal report...</p>
+</section>
+<script src="/static/intel.js" defer></script>
+
+{% if priority %}
+<section class="callout priority-hero">
+  <div class="eyebrow">Work on this next</div>
+  <div class="h2like">{{ priority.name }}</div>
+  {% if priority.recommended_intervention %}<p class="lead">{{ priority.recommended_intervention }}</p>{% endif %}
+  <p class="meta">{{ priority.frequency|pct }}% of the last {{ priority.calls_window }} calls · {{ priority.severity }} severity · trend {{ priority.trend|human }}</p>
+</section>
+{% else %}
+<div class="callout"><p>No active weakness yet. A pattern becomes active once it shows up on 2 calls.</p></div>
+{% endif %}
+
+{% if insights %}
+<section class="section">
+  <div class="section-head"><h2>Recent coaching insights</h2><span class="purpose">One per call, newest first.</span></div>
+  <ul class="plain insights">
+    {% for i in insights %}
+    <li class="card">
+      <div class="meta"><a href="/calls/{{ i.call_id }}">{{ i.call.title if i.call else i.call_id }}</a>{% if i.call %} · {{ i.call.started_at|dt }}{% endif %}{% if i.verdict %} · <span class="vtag v-{{ i.verdict.label }}">{{ i.verdict.label }}</span>{% endif %}</div>
+      <p class="lead">{{ i.insight.insight }}{% if i.insight.evidence_turns %} <a class="tref" href="/calls/{{ i.call_id }}#t{{ i.insight.evidence_turns[0] }}">#{{ i.insight.evidence_turns[0] }}</a>{% endif %}</p>
+      <p><span class="label">Practise</span> {{ i.insight.practice_next_call }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="section">
+  <div class="section-head"><h2>Weaknesses</h2><span class="purpose">{{ weaknesses|length }} tracked.</span></div>
+  {% for p in weaknesses %}{{ pattern(p) }}{% else %}<p class="empty">None recorded yet.</p>{% endfor %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Strengths</h2><span class="purpose">Keep doing these.</span></div>
+  {% for p in strengths %}{{ pattern(p) }}{% else %}<p class="empty">None recorded yet.</p>{% endfor %}
+</section>
+{% endblock %}

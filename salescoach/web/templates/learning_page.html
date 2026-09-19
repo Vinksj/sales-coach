@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Learning{% endblock %}
+
+{% macro verdict_form(p, action, label, cls='') -%}
+<form method="post" action="/learning/patterns"><input type="hidden" name="id" value="{{ p.id }}"><input type="hidden" name="action" value="{{ action }}"><button class="btn btn-sm {{ cls }}">{{ label }}</button></form>
+{%- endmacro %}
+
+{% macro belief(p, fam) %}
+<article class="card belief{% if p.status == 'retired' %} belief-closed{% endif %}" id="{{ p.id }}">
+  <div class="loop-top">
+    <div>
+      <div class="h3">{{ p.summary }}</div>
+      <p class="meta mono">{{ p.key }}{% if p.includes %} · includes {{ p.includes|join(', ') }}{% endif %}{% if p.merged_into_key %} · merged into {{ p.merged_into_key }}{% endif %}</p>
+    </div>
+    <div class="loop-badges">
+      <span class="pill {% if p.status == 'active' %}{% if p.polarity == 'weakness' %}pill-alert{% else %}pill-good{% endif %}{% else %}pill-muted{% endif %}"><i></i>{{ p.status }}</span>
+      {% if p.label %}<span class="vtag">{{ p.label }}</span>{% endif %}
+      {% if p.returned %}<span class="vtag">returned</span>{% endif %}
+      {% if p.user_state %}<span class="you-set" title="Your verdict. A recompute never changes it.">you: {{ p.user_state }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="counts meta">
+    {% if fam.family in ('seller', 'objection') %}<span><b>{{ p.n_calls }}</b> call{{ '' if p.n_calls == 1 else 's' }}</span><span><b>{{ p.n_deals }}</b> deal{{ '' if p.n_deals == 1 else 's' }}</span><span><b>{{ p.support }}</b> of the last {{ p.stats.window or 0 }} analysed calls</span>
+    {% elif fam.family == 'persona' %}<span><b>{{ p.n_deals }}</b> deal{{ '' if p.n_deals == 1 else 's' }}</span><span><b>{{ p.n_obs }}</b> stakeholder{{ '' if p.n_obs == 1 else 's' }}</span>
+    {% elif fam.family == 'email_voice' %}<span><b>{{ p.n_obs }}</b> sent edit{{ '' if p.n_obs == 1 else 's' }} (active at {{ p.stats.active_at or 3 }}, or when you confirm)</span><span><b>{{ p.n_deals }}</b> deal{{ '' if p.n_deals == 1 else 's' }}</span>
+    {% elif fam.family == 'followup' %}<span><b>{{ p.stats.sent or 0 }}</b> sent</span><span><b>{{ p.stats.replied or 0 }}</b> replied</span><span><b>{{ p.stats.no_reply or 0 }}</b> no reply</span><span><b>{{ p.stats.pending or 0 }}</b> still open</span>{% if p.stats.rate is not none and p.stats.rate is defined %}<span>reply rate <b>{{ (p.stats.rate * 100)|round|int }}%</b> of n={{ p.stats.decided }}</span>{% else %}<span>no rate below n={{ rate_min_n }}</span>{% endif %}
+    {% elif fam.family == 'nudge_trigger' %}<span><b>{{ p.stats.shown or 0 }}</b> shown live</span><span><b>{{ p.stats.followed or 0 }}</b> followed</span><span><b>{{ p.stats.ignored or 0 }}</b> ignored</span><span><b>{{ p.stats.dismissed or 0 }}</b> dismissed</span><span><b>{{ p.stats.unknown or 0 }}</b> unrated</span>
+    {% endif %}
+    {% if p.first_seen %}<span>first {{ p.first_seen|dt }}</span>{% endif %}{% if p.last_seen %}<span>last {{ p.last_seen|dt }}</span>{% endif %}
+  </div>
+  {% if fam.family in ('persona', 'objection') and p.status == 'candidate' %}<p class="meta">Observation only: nothing here is promoted before {{ p.stats.min_deals or 8 }} deals carry an observation ({{ p.stats.family_deals or 0 }} so far) and {{ p.stats.min_per_bucket or 3 }} of them are in this bucket.</p>{% endif %}
+  {% if fam.family in fed_families and p.status != 'retired' %}
+  {% set u = used_in.get(p.id) %}
+  <p class="meta used-in">
+    {% if p.no_prompt %}<span class="you-set" title="Your choice. A recompute never changes it.">you: not used in prompts</span>
+    {% elif u and u.targets %}Used in: {% for t in u.targets %}<span class="vtag">{{ target_labels[t] }}</span>{% endfor %}
+    {% elif p.status == 'active' %}Active, but not in any prompt right now (at most 3 per prompt, the feed for it may be off, or no live nudge counters it).
+    {% else %}Not used in any prompt: only active patterns are.{% endif %}
+    {% if u and u.runs %} · seen by <b>{{ u.runs }}</b> agent run{{ '' if u.runs == 1 else 's' }} ({% for t, n in u.by_target|dictsort %}{{ target_labels.get(t, t) }} {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
+  </p>
+  {% endif %}
+  {% if p.evidence %}<p class="meta">Evidence: {% for e in p.evidence %}{% if e.href %}<a href="{{ e.href }}">{{ e.text }}</a>{% else %}{{ e.text }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+  {% if p.not_counted.low_confidence or p.not_counted.replay or p.not_counted.marked_wrong %}<p class="meta">Not counted: {{ p.not_counted.low_confidence }} low-confidence, {{ p.not_counted.replay }} from replays, {{ p.not_counted.marked_wrong }} marked wrong.</p>{% endif %}
+  <div class="belief-actions">
+    {% if fam.family in fed_families and p.status != 'retired' %}{% if p.no_prompt %}{{ verdict_form(p, 'use_prompt', 'Use in prompts again', 'btn-quiet') }}{% else %}{{ verdict_form(p, 'no_prompt', 'Do not use in prompts', 'btn-quiet') }}{% endif %}{% endif %}
+    {% if p.merged_into_key %}{{ verdict_form(p, 'unmerge', 'Unmerge') }}
+    {% elif p.user_state %}{{ verdict_form(p, 'undo', 'Undo my verdict') }}
+    {% else %}
+      {{ verdict_form(p, 'confirm', 'Confirm', 'btn-secondary') }}
+      {{ verdict_form(p, 'wrong', 'Wrong') }}
+      {{ verdict_form(p, 'retire', 'Retire') }}
+      {% if fam.merge_targets|length > 1 %}
+      <form method="post" action="/learning/patterns"><input type="hidden" name="id" value="{{ p.id }}"><input type="hidden" name="action" value="merge">
+        <select name="target" aria-label="Merge into"><option value="">Merge into…</option>{% for t in fam.merge_targets if t.id != p.id %}<option value="{{ t.id }}">{{ t.key }}</option>{% endfor %}</select>
+        <button class="btn btn-sm btn-quiet">Merge</button></form>
+      {% endif %}
+    {% endif %}
+  </div>
+</article>
+{% endmacro %}
+
+{% block content %}
+<link rel="stylesheet" href="/static/intel.css">
+<link rel="stylesheet" href="/static/learning.css">
+<div class="page-head">
+  <div class="eyebrow">Learning</div>
+  <h1>What the coach believes</h1>
+  <div class="meta">Every number here is counted in code from calls, emails and nudges in the store. Labels, never percentages, and always n. Your verdicts outrank every recompute. Active patterns feed the prompts marked "Used in" below: at most 3 per prompt, as a rule or a tag name with a coarse count, never text from a call or an email.</div>
+  <div class="meta">Feeds: {% for f in feeds %}<span class="vtag">{{ f.label }} {{ 'on' if f.on else 'off' }}</span>{% endfor %} <span class="muted">(config/learning.yaml, feedback)</span></div>
+  <div class="actions"><form method="post" action="/learning/recompute"><button class="btn btn-sm">Recompute now</button></form></div>
+</div>
+
+<details class="card digest" id="digest">
+  <summary><span class="strong">What changed in the last {{ digest.days }} days</span> <span class="meta">{% if digest.empty %}nothing{% else %}{{ digest.new_active|length }} new active · {{ digest.returned|length }} returned · {{ digest.dormant|length }} dormant · {{ digest.open_proposals|length }} open proposal{{ '' if digest.open_proposals|length == 1 else 's' }} · {{ digest.deals|length }} deal{{ '' if digest.deals|length == 1 else 's' }} closed{% endif %}</span></summary>
+  <pre class="pre digest-text">{{ digest.text }}</pre>
+  <p class="meta">Counted in code from the store. Shown here and by <span class="mono">salescoach learn --digest</span>; it is not emailed.</p>
+</details>
+
+{% if last_error %}<div class="callout callout-err"><div class="label">The last recompute failed</div><p class="meta">{{ last_error }}</p></div>{% endif %}
+
+<section class="section" id="proposals">
+  <div class="section-head"><h2>Proposals</h2><span class="purpose">Suggestions only. Nothing is merged and no setting changes unless you accept.</span></div>
+  {% for pr in proposals %}
+  <div class="card proposal" id="proposal-{{ pr.id }}">
+    <div><div class="eyebrow">{{ 'Tag merge' if pr.kind == 'merge' else 'Live nudge weight' }}</div><p>{{ pr.summary }}</p></div>
+    <div class="actions">
+      <form method="post" action="/learning/proposals/{{ pr.id }}/accept"><button class="btn btn-sm btn-primary">Accept</button></form>
+      <form method="post" action="/learning/proposals/{{ pr.id }}/dismiss"><button class="btn btn-sm">Dismiss</button></form>
+    </div>
+  </div>
+  {% else %}<p class="empty">No open proposals.</p>{% endfor %}
+  {% if decided %}
+  <details><summary class="meta">{{ decided|length }} decided earlier</summary>
+    <ul class="plain">{% for pr in decided %}<li><span class="vtag">{{ pr.status }}</span> {{ pr.summary }} <span class="meta">{{ pr.resolved_at|dt }}{% if pr.decided_n is not none %} · n={{ pr.decided_n }} when you decided{% endif %}</span></li>{% endfor %}</ul>
+    <p class="meta">A decided proposal comes back only when its evidence has at least doubled and the condition still holds.</p>
+  </details>
+  {% endif %}
+</section>
+
+{% for fam in families %}
+<section class="section" id="family-{{ fam.family }}">
+  <div class="section-head"><h2>{{ fam.title }}</h2><span class="purpose">{{ fam.patterns|length }} pattern{{ '' if fam.patterns|length == 1 else 's' }}</span></div>
+  {% for p in fam.patterns %}{{ belief(p, fam) }}{% else %}<p class="empty">Nothing observed yet.</p>{% endfor %}
+  {% if fam.family == 'seller' and series %}
+  <div class="card">
+    <div class="label">Per-call numbers, live captures and stereo imports only</div>
+    {% for s in series %}<p class="series-values"><span class="strong">{{ s.key|human }}</span> <span class="meta">n={{ s.n }}</span> · {% for pt in s.points[-12:] %}<a href="/calls/{{ pt.call_id }}" title="{{ pt.title or pt.call_id }}{% if pt.from_replay %} (from a replay){% endif %}">{{ '%g'|format(pt.value) }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endfor %}
+    <p class="meta">Oldest to newest. No judgement is attached to these.</p>
+  </div>
+  {% endif %}
+  {% if fam.closed %}
+  <details><summary class="meta">{{ fam.closed|length }} retired, merged or marked wrong</summary>
+    {% for p in fam.closed %}{{ belief(p, fam) }}{% endfor %}
+  </details>
+  {% endif %}
+</section>
+{% endfor %}
+
+<section class="section" id="outcomes">
+  <div class="section-head"><h2>Outcomes</h2><span class="purpose">The ground truth. Deal stage and status are set by you on each deal page.</span></div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="label">Deals by status and stage</div>
+      {% if outcomes.by_status %}
+      <div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Stage</th><th>Deals</th></tr></thead>
+        <tbody>{% for r in outcomes.by_status %}<tr><td>{{ r.status }}</td><td>{{ r.stage }}</td><td class="num">{{ r.n }}</td></tr>{% endfor %}</tbody></table></div>
+      {% else %}<p class="empty">No deals yet.</p>{% endif %}
+    </div>
+    <div class="card">
+      <div class="label">Derived from the store</div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Outcome</th><th>Yes</th><th>No</th><th>Still open</th></tr></thead>
+        <tbody>{% for c in outcomes.derived %}<tr><td>{{ c.kind|human }}</td><td class="num">{{ c.yes }}</td><td class="num">{{ c.no }}</td><td class="num">{{ c.pending }}</td></tr>{% endfor %}</tbody></table></div>
+      <p class="meta">Replied = a reply within {{ reply_days }} business days. Meeting = on the calendar within {{ meeting_days }} days of the email. Advanced = a new buyer-side person, a buyer loop closed on time, or an element that became known; never a model's verdict.</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Won and lost · {{ outcomes.n_closed }} closed</div>
+    {% if outcomes.closed %}
+    <div class="table-wrap"><table class="table"><thead><tr><th>Deal</th><th>Outcome</th><th>Value</th><th>Reason</th><th>When</th></tr></thead>
+      <tbody>{% for d in outcomes.closed %}<tr><td><a href="/deals/{{ d.node_id }}#outcome">{{ d.name }}</a></td><td>{{ d.status }}</td><td class="num">{% if d.value is not none %}{{ '%g'|format(d.value) }} {{ d.currency or '' }}{% endif %}</td><td>{{ d.reason_label or '' }}{% if d.reason_text %}<div class="meta">{{ d.reason_text }}</div>{% endif %}</td><td class="nowrap">{{ d.closed_at|dt }}</td></tr>{% endfor %}</tbody></table></div>
+    {% if outcomes.lost_by_reason %}<p class="meta">Lost by reason: {% for reason, n in outcomes.lost_by_reason %}{{ reason }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+    {% else %}<p class="empty">No deal has been marked won or lost yet. Until some are, the coach can only count what co-occurs, not what works.</p>{% endif %}
+    {% if outcomes.n_closed < 10 %}<p class="meta">No causal claim is made before 10 closed deals ({{ outcomes.n_closed }} so far): everything above is co-occurrence with n.</p>{% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "automation_meetings.html" as cal %}
+{% block title %}Calendar{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/automation.css">
+<div class="page-head">
+  <div class="eyebrow">Calendar · next {{ days }} days</div>
+  <h1>{% if meetings %}{{ meetings|length }} meeting{{ '' if meetings|length == 1 else 's' }}{% else %}No meetings{% endif %}</h1>
+  <div class="meta">Every meeting on your Google Calendar (read-only, through the connector). Press Record on the ones the coach should
+    capture: the capture starts {{ record_cfg.get('lead_minutes', 1) }} min before the meeting and stops {{ record_cfg.get('grace_minutes', 15) }} min after
+    its end time, or when you press Stop. "Record now" starts at once.
+    {% if last_sync %}Last read {{ last_sync.at|dt }}.{% elif unavailable %}<span class="accent">The calendar could not be read: {{ unavailable.why }}</span>{% else %}Not read yet.{% endif %}
+    {% if live.active %}A call is live now: <a href="/live/{{ live.call_id }}">{{ live.title or live.call_id }}</a>.{% elif not live.available %}<span class="accent">Live capture is not available in this server{% if live.error %}: {{ live.error }}{% endif %}.</span>{% endif %}</div>
+  <div class="auto-head-actions">
+    <form method="post" action="/calendar/refresh" class="inline-form"><input type="hidden" name="next" value="/calendar"><button class="btn"{% if refresh_pending %} disabled{% endif %}>{% if refresh_pending %}Reading calendar…{% else %}Refresh calendar{% endif %}</button></form>
+  </div>
+</div>
+<section class="section" id="upcoming-calls">
+  {% if meetings %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>When</th><th>Meeting</th><th>Deal</th><th>Record</th></tr></thead>
+    <tbody>{{ cal.meeting_rows(meetings, live, "/calendar") }}</tbody>
+  </table></div>
+  {% else %}
+  <p class="empty">Nothing in the next {{ days }} days{% if not last_sync %} (or the calendar has not been read yet){% endif %}.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,133 @@
+# Learning layer (Phase F). Every threshold the pattern store uses lives here.
+# Counting is done in code (salescoach/learning); no number shown to the user
+# comes from a model. Labels, never percentages; n is always shown.
+
+promotion:
+  window_calls: 10           # the window = the last N analysed calls
+  emerging:
+    min_calls: 3             # distinct calls, all time
+    min_deals: 2             # distinct deals, all time
+    min_window_share: 0.30   # calls in the window with the pattern / calls in the window
+  established:
+    min_calls: 6
+    min_deals: 3
+    both_halves: true        # seen in the newer AND the older half of the window
+  dormant_after_calls: 10    # not seen in the last N analysed calls
+  retire_after_calls: 20     # not seen in the last N analysed calls (only once that many exist)
+
+email_voice:
+  active_at_edits: 3         # or when the user confirms the rule
+  shorten_ratio: 0.80        # final words / draft words at or below this = "you shorten"
+  lengthen_ratio: 1.25
+  min_draft_words: 25        # a very short draft says nothing about length
+  # Fixed list: only these phrases can ever become a "remove this phrase" rule, so no
+  # text from an email (which may quote a customer) reaches a rule.
+  filler_phrases:
+    hope_finds_you_well: "i hope this email finds you well"
+    hope_doing_well: "i hope you are doing well"
+    hope_youre_doing_well: "i hope you're doing well"
+    just_wanted_to: "just wanted to"
+    just_checking_in: "just checking in"
+    wanted_to_reach_out: "wanted to reach out"
+    dont_hesitate: "don't hesitate"
+    earliest_convenience: "at your earliest convenience"
+    look_forward_hearing: "looking forward to hearing from you"
+    touch_base: "touch base"
+    circle_back: "circle back"
+    kindly: "kindly"
+    as_per: "as per"
+  signoffs: [thanks, thank you, best, best regards, regards, warm regards, kind regards, cheers, sincerely]
+  closing_lines:
+    - "let me know if you have any questions"
+    - "please let me know if you have any questions"
+    - "feel free to reach out"
+    - "happy to discuss"
+    - "looking forward"
+    - "look forward to"
+
+followup:
+  reply_business_days: 5
+  meeting_within_days: 10
+  rate_min_n: 20             # below this a bucket shows raw counts only
+  gap_buckets: [[0, 2], [3, 5], [6, 10], [11, null]]   # days since the last touch on the deal
+
+nudge_trigger:
+  propose_min_shown: 15
+  unhelpful_share: 0.60      # (ignored + dismissed) / shown at or above this proposes a lower weight
+  lower_factor: 0.8          # proposed weight = current weight x this, floored
+  weight_floor: 0.3
+
+observation_only:            # persona and objection families
+  min_deals: 8               # deals with at least one observation in the family
+  min_per_bucket: 3          # deals in the bucket
+
+persona_buckets:             # first bucket with a matching word wins; matched on whole words of the title
+  finance: [cfo, finance, financial, controller, treasury, accounts, accounting]
+  procurement: [procurement, purchase, purchasing, sourcing, buyer, vendor]
+  supply_chain: [supply, logistics, operations, ops, warehouse, distribution, freight, transport, plant, scm, coo]
+  technology: [cio, cto, technology, engineering, digital, data, systems, erp]
+  executive: [ceo, md, founder, owner, president, chairman, promoter, director, chief]
+  commercial: [sales, commercial, marketing, business, revenue]
+
+objection:
+  claim_subjects:            # analyst claim subjects that count as an objection type
+    buyer.constraint: constraint
+    buyer.fear: fear
+    buyer.risk_signal: risk_signal
+    deal.competition: incumbent
+
+tag_hygiene:
+  min_similarity: 0.5        # token-set (Jaccard) similarity that proposes a merge
+  stop_words: [a, an, the, of, to, in, on, for, and, with, at, by, is, it]
+
+deal:
+  stages: [lead, discovery, qualification, proposal, pilot, negotiation, contract, closed]
+  lost_reasons:
+    no_budget: No budget
+    no_decision: No decision / went quiet
+    competitor: Chose a competitor
+    incumbent: Stayed with the incumbent
+    timing: Wrong timing
+    no_fit: Product did not fit
+    champion_left: Champion left
+    other: Other
+
+prompt_targets:              # which families patterns.for_prompt may return per target
+  prep: [seller]
+  live_coach: [seller]
+  email_drafter: [email_voice]
+  nudge_drafter: [email_voice]
+  strategist: [persona, objection]
+
+# Phase F2: what is learned goes back into the prompts that act on it. Only active patterns the
+# user has not marked wrong, retired or "do not use", at most 3 per prompt, each with its id and a
+# coarse count. What is fed is a rule or a tag name, never text from a call or an email. The ids a
+# run saw are recorded in agent_runs.input_refs.patterns.
+feedback:
+  prep: true                 # prep writer: the top learned weaknesses, then one strength
+  email_drafter: true        # follow-up email: learned email-voice rules
+  nudge_drafter: true        # nudge email: the same rules
+  strategist: true           # persona/objection priors, only once promoted; labelled as priors
+  live_coach:
+    enabled: true
+    boost: 0.1               # added to the weight of the trigger behind the top learned weakness. Never
+                             # above 1.0; applied after the methodology's weights and BEFORE your own
+                             # live_coach.yaml, so a weight you set yourself always wins
+  max_patterns: 3            # per prompt; values above 3 are ignored
+  # A prompt shows "seen on 6+ calls", never the exact n: the exact count moves with every new call,
+  # and a prompt that changes makes every cached step re-run. The text only changes at these steps.
+  count_buckets: [1, 2, 3, 6, 10, 20, 50, 100]
+  # Seller-taxonomy weakness -> the live nudge that counters it. Only the one-to-one cases; a tag
+  # that is not listed here never boosts anything.
+  live_triggers:
+    no_follow_up_questions: dig_deeper
+    no_impact_quantification: quantify_impact
+    no_status_quo_challenge: status_quo
+    no_decision_process: buying_process
+    accepts_vague_commitments: weak_commitment
+
+proposals:
+  # A proposal you accepted or dismissed is raised again for the same subject only when the evidence
+  # has grown to this many times the n it had when you decided, and the condition still holds
+  # (for a nudge weight: over everything counted AND over what was shown since your decision).
+  repropose_factor: 2

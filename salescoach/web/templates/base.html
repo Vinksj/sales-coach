@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{% block title %}Sales coach{% endblock %} · {{ brand() or 'Sales Coach' }}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="{% block body_class %}{% endblock %}"{% if autorefresh %} data-autorefresh="{{ autorefresh }}"{% endif %}>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/"><span class="wm">{{ brand() or 'Sales Coach' }}<i class="wm-dot" aria-hidden="true"></i></span>{% if brand() %}<span class="brand-sub">Sales coach</span>{% endif %}</a>
+    <nav class="nav" aria-label="Main">
+      {% for href, label in [("/", "Today"), ("/loops", "Loops"), ("/deals", "Deals"), ("/coach", "Coach"), ("/import", "Import")] + (nav_ext or []) %}
+      <a href="{{ href }}" class="{% if (href == '/' and path == '/') or (href != '/' and path.startswith(href)) %}active{% endif %}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="topbar-status">
+      {% if live.active %}<a class="pill pill-alert pill-live" href="/live/{{ live.call_id }}"><i></i>Live</a>{% endif %}
+      <span class="pill {% if nav_failed %}pill-alert{% elif nav_queued %}pill-muted{% else %}pill-good{% endif %}"
+            title="{% if nav_current %}Working on {{ nav_current }}. {% endif %}{{ nav_queued }} workflow events queued, {{ nav_failed }} failed.{% if not nav_worker_on %} The worker is not running in this server.{% endif %}">
+        <i></i>{% if nav_queued %}{{ nav_queued }} queued{% else %}idle{% endif %}{% if nav_failed %} · {{ nav_failed }} failed{% endif %}{% if not nav_worker_on %} · worker off{% endif %}
+      </span>
+      {% if auth_on() and path != '/login' %}<form method="post" action="/logout" class="logout"><button class="btn btn-sm btn-quiet" type="submit">Log out</button></form>{% endif %}
+    </div>
+  </div>
+</header>
+<main class="wrap">
+  {% if flash_err %}<div class="flash flash-err" role="alert">{{ flash_err }}</div>{% endif %}
+  {% if flash_msg %}<div class="flash flash-ok" role="status">{{ flash_msg }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

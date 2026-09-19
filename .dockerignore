@@ -1,0 +1,34 @@
+# What never belongs in the image. Everything the app writes lives on the /data volume.
+.git
+.gitignore
+.venv
+data/
+runtime/
+secrets.env
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# Swift helpers and their build output: macOS only, nothing to run in a container
+callcap/.build/
+callcap/build/
+overlay/.build/
+overlay/build/
+
+# Recordings and audio that may sit in a checkout
+*.flac
+*.wav
+*.pcm
+
+# Not needed to run; keep the image small
+tests/
+Dockerfile
+fly.toml
+render.yaml
+railway.json

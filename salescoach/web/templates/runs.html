@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Why? · {{ call.title or call.node_id }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Why? · agent runs</div>
+  <h1>{{ call.title or call.node_id }}</h1>
+  <div class="meta"><a href="/calls/{{ call.node_id }}">Back to the review</a> · {{ runs|length }} run{{ '' if runs|length == 1 else 's' }}, including failed and retried attempts.</div>
+</div>
+{% for r in runs %}
+{{ m.run_card(r) }}
+{% else %}
+<p class="empty">No agent has run on this call yet.</p>
+{% endfor %}
+{% endblock %}

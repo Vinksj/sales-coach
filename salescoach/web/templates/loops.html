@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Open loops{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Open loops</div>
+  <h1>{% if overdue %}{{ overdue }} overdue{% else %}Nothing overdue{% endif %}{% if unconfirmed %} · {{ unconfirmed }} unconfirmed{% endif %}</h1>
+  <div class="meta">{{ loops|length }} loop{{ '' if loops|length == 1 else 's' }} match these filters.</div>
+</div>
+
+<form method="get" action="/loops" class="filters card">
+  <label>Deal<select name="deal"><option value="">All deals</option>{% for d in deals %}<option value="{{ d.node_id }}"{% if f.deal == d.node_id %} selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></label>
+  <label>Owner<select name="owner"><option value="">Anyone</option>{% for o in owners %}<option value="{{ o }}"{% if f.owner == o %} selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
+  <label>Priority<select name="priority"><option value="">Any</option>{% for p in priorities %}<option value="{{ p }}"{% if f.priority == p %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+  <label>Status<select name="status">{% for v, label in [('open', 'Open or waiting'), ('waiting', 'Waiting'), ('done', 'Done'), ('cancelled', 'Cancelled'), ('all', 'All, incl. rejected')] %}<option value="{{ v }}"{% if f.status == v %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Due<select name="due">{% for v, label in [('any', 'Any time'), ('overdue', 'Overdue'), ('week', 'Next 7 days, incl. overdue')] %}<option value="{{ v }}"{% if f.due == v %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <div class="filters-go"><button class="btn btn-primary btn-sm">Filter</button> <a href="/loops" class="meta">Reset</a></div>
+</form>
+
+{% if loops %}
+<div class="table-wrap"><table class="table loops-table">
+  <thead><tr><th>Due</th><th>Loop</th><th>Owner</th><th>Priority</th><th>Status</th><th>Deal</th><th></th></tr></thead>
+  <tbody>
+  {% for l in loops %}
+  {% set over = l.due_date and l.due_date < today and l.status in ('open', 'waiting') %}
+  <tr id="loop-{{ l.node_id }}" class="{% if l.review_state == 'rejected' %}row-muted{% endif %}">
+    <td class="nowrap">{% if l.due_date %}<span class="{% if over %}due-over{% endif %}">{{ l.due_date|day }}</span><div class="meta">{{ l.due_date_confidence }}{% if over %} · <span class="accent">overdue</span>{% endif %}</div>{% else %}<span class="muted">none</span>{% endif %}</td>
+    <td>{{ l.description }}
+      <div class="meta">{{ l.type|human }} · {{ l.source|human }} · {{ m.conf(l.confidence) }}{% if l.call_id %} · <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">{{ l.call_title or 'call' }}</a>{% if l.call_started %} {{ l.call_started|day }}{% endif %}{% endif %}</div></td>
+    <td>{{ l.owner }}{% if l.owner_name %}<div class="meta">{{ l.owner_name }}</div>{% endif %}</td>
+    <td>{{ m.prio(l.priority) }}</td>
+    <td>{{ l.status }}<div>{{ m.review_pill(l.review_state) }}</div></td>
+    <td>{% if l.deal_id %}<a href="/deals/{{ l.deal_id }}">{{ l.deal_name }}</a>{% endif %}</td>
+    <td>{{ m.loop_quick(l, here) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}
+<p class="empty">No loops match.</p>
+{% endif %}
+{% endblock %}

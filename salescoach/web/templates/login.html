@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{# The login page of a hosted install (web/auth.py). One password, no user name: one seller per
+   install. The password is never written back into the form, whatever the outcome. #}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Hosted install</div>
+  <h1>Log in</h1>
+  <div class="meta">This coach is reachable over the internet, so it asks for its password once per browser. The session lasts thirty days.</div>
+</div>
+{% if error %}<div class="flash flash-err" role="alert" id="login-error">{{ error }}</div>{% endif %}
+<form method="post" action="/login" class="card" id="login-form" style="max-width: 420px">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label for="f-password">Password
+    <input id="f-password" name="password" type="password" autocomplete="current-password" required autofocus>
+  </label>
+  <div class="actions">
+    <button class="btn btn-primary" type="submit">Log in</button>
+  </div>
+</form>
+<p class="meta">Forgotten it? Whoever runs this install sets it (the SALESCOACH_PASSWORD secret) and can change it; changing it logs every browser out.</p>
+{% endblock %}

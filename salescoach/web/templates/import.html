@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Import{% endblock %}
+
+{% macro common_fields() %}
+<div class="form-grid">
+  <label>Deal<select name="deal_id"><option value="">No deal yet</option>{% for d in deals %}<option value="{{ d.node_id }}">{{ d.name }}{% if d.account_name and d.account_name != d.name %} ({{ d.account_name }}){% endif %}</option>{% endfor %}</select></label>
+  <label>Language<select name="lang_mode"><option value="auto">Auto</option><option value="en">English</option>{% if 'Hindi' in languages() %}<option value="hinglish">Hindi-English</option>{% endif %}</select></label>
+</div>
+<label>Participants<select name="participants" multiple size="5">{% for p in people %}<option value="{{ p.node_id }}">{{ p.name }}{% if p.account_name %} · {{ p.account_name }}{% endif %}</option>{% endfor %}</select>
+  <span class="hint">Cmd-click to pick several. You are added automatically. Buyer-side participants with an email are who the follow-up can go to.</span></label>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Import</div>
+  <h1>Bring in a call you did not record live</h1>
+  <div class="meta">Calls older than 48 hours are analysed but never get a drafted follow-up.</div>
+</div>
+
+<div class="grid-2 import-grid">
+  <form method="post" action="/import/text" class="card stack">
+    <div class="eyebrow">Paste a transcript</div>
+    <label>Title<input name="title" required placeholder="Weekly review with Anita"></label>
+    <label>Call date and time ({{ tz_label() }})<input type="datetime-local" name="started_at"></label>
+    {{ common_fields() }}
+    <label>Transcript<textarea name="text" rows="14" required placeholder="Me: Thanks for making time, Anita.&#10;Them: Sure. Our CFO will want the savings by site.&#10;Anita: I'll set up the CFO meeting."></textarea>
+      <span class="hint">One turn per line: "Me:" or your own name is you; "Them:" or any other name is the other side.</span></label>
+    <button class="btn btn-primary">Import transcript</button>
+  </form>
+
+  <form method="post" action="/import/file" enctype="multipart/form-data" class="card stack">
+    <div class="eyebrow">Upload a transcript from any recorder</div>
+    <label>Transcript file<input type="file" name="file" accept=".txt,.vtt,.srt,.json,.md,text/plain,text/vtt,application/json" required>
+      <span class="hint">Otter, Fireflies, Fathom, tl;dv, Zoom, Meet, Teams, Gong: export the transcript (.txt, .vtt, .srt or .json) and drop it here. The same file is never imported twice.</span></label>
+    <label>Title<input name="title" placeholder="Taken from the file if empty"></label>
+    <label>Your name in this transcript<input name="me_label" placeholder="Only if it is not the name in your profile">
+      <span class="hint">Leave empty: the coach recognises your name and aliases, and asks when it cannot tell.</span></label>
+    {{ common_fields() }}
+    <button class="btn btn-primary">Import transcript file</button>
+  </form>
+
+  <form method="post" action="/import/audio" enctype="multipart/form-data" class="card stack">
+    <div class="eyebrow">Upload a recording</div>
+    {% if not audio_available %}
+    <p class="callout">Audio import is not available yet in this build. Paste a transcript instead.</p>
+    {% endif %}
+    <label>Title<input name="title" placeholder="Taken from the file name if empty"></label>
+    <label>Audio file<input type="file" name="file" accept="audio/*,.flac,.wav,.m4a,.mp3" required></label>
+    <label>Channel layout<select name="layout">{% for l in layouts %}<option value="{{ l }}">{{ {'stereo_me_left': 'Stereo, me on the left channel', 'mono_them': 'Mono, everyone mixed'}.get(l, l) }}</option>{% endfor %}</select></label>
+    {{ common_fields() }}
+    <button class="btn btn-primary"{% if not audio_available %} disabled{% endif %}>Import recording</button>
+  </form>
+</div>
+{% endblock %}

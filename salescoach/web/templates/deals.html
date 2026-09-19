@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Deals{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Deals</div>
+  <h1>{{ deals|length }} deal{{ '' if deals|length == 1 else 's' }}</h1>
+</div>
+
+<div class="today-grid">
+  <div>
+    {% if deals %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Deal</th><th class="r">Health</th><th>Next best action</th><th>Stage</th><th class="r">Open loops</th><th class="r">Calls</th><th>Last call</th></tr></thead>
+      <tbody>
+      {% for d in deals %}
+      <tr>
+        <td><a href="/deals/{{ d.node_id }}" class="strong">{{ d.name }}</a><div class="meta">{{ d.account_name or '' }}{% if d.status != 'active' %} · {{ d.status }}{% endif %}</div></td>
+        <td class="r num" data-intel-health="{{ d.node_id }}"><span class="muted">-</span></td>
+        <td data-intel-nba="{{ d.node_id }}">{% if d.next_step %}<span class="meta">Recorded: {{ d.next_step }}</span>{% endif %}</td>
+        <td>{{ d.stage or '' }}</td>
+        <td class="r num">{{ d.open_loops }}{% if d.overdue %}<div class="meta accent">{{ d.overdue }} overdue</div>{% endif %}</td>
+        <td class="r num">{{ d.n_calls }}</td>
+        <td class="nowrap">{{ d.last_call|dt if d.last_call else '' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="empty">No deals yet. Create the first one.</p>
+    {% endif %}
+  </div>
+  <aside>
+    <form method="post" action="/deals" class="card stack">
+      <div class="eyebrow">New deal</div>
+      <label>Deal name<input name="name" required placeholder="Acme pilot"></label>
+      <label>Account<input name="account" placeholder="Acme Industries"></label>
+      <label>Email domains<input name="domains" placeholder="acme.com, acme.in"><span class="hint">Used to recognise their people and allow them as recipients.</span></label>
+      <label>Stage<input name="stage" placeholder="discovery"></label>
+      <button class="btn btn-primary">Create deal</button>
+    </form>
+  </aside>
+</div>
+<link rel="stylesheet" href="/static/intel.css">
+<script src="/static/intel.js" defer></script>
+{% endblock %}

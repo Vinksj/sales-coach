@@ -1,0 +1,56 @@
+# Which model runs each agent.
+#   provider   the active provider: every agent uses it unless its entry pins `provider:`
+#   providers  per provider: its settings and the model behind each tier
+#   agents     per agent: the tier it needs (heavy | light) and, optionally, an effort
+# Setup writes your choices to data/settings/models.yaml, which overrides this file. API keys
+# are never stored here: a provider names the secret (api_key_env) that holds its key.
+# LOCAL / CLOUD / HYBRID is still one file: an agent entry may pin `provider:` and/or `model:`,
+# and an explicit model beats the tier.
+provider: claude_code
+
+providers:
+  claude_code:                  # `claude -p` on a Claude subscription; models are CLI aliases or full ids
+    binary: ~/.local/bin/claude
+    timeout_s: 600
+    tiers: {heavy: opus, light: sonnet}
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+    tiers: {heavy: claude-opus-5, light: claude-sonnet-5}
+  openai:                       # no shipped model ids: Setup lists the account's models, you pick
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    tiers: {}
+  xai:
+    base_url: https://api.x.ai/v1
+    api_key_env: XAI_API_KEY
+    tiers: {}
+  openai_compatible:            # any endpoint that speaks Chat Completions
+    base_url: ""
+    api_key_env: LLM_API_KEY
+    tiers: {}
+  ollama:
+    endpoint: http://localhost:11434
+    num_ctx: 32768
+    tiers: {heavy: "qwen2.5:14b", light: "qwen2.5:14b"}
+
+# Effort is advisory (a provider maps it or ignores it). Tuned 2026-09-11 after the first real
+# eval (60-min Hinglish call): at high effort the four call agents took 216 + 58 + 189 + 183 s.
+agents:
+  quality:               {tier: light, effort: low}
+  summary:               {tier: light, effort: low}
+  call_analyst:          {tier: heavy, effort: medium}
+  actions:               {tier: heavy, effort: medium}
+  email:                 {tier: heavy}
+  live_coach:            {tier: light, effort: low}    # slow path during a call, ~7 s per pass
+  followup:              {tier: light}
+  nudge:                 {tier: light}
+  reply_analysis:        {tier: light}
+  deal_strategist:       {tier: heavy, effort: medium}
+  assessment_reconciler: {tier: light, effort: low}
+  longitudinal_coach:    {tier: light, effort: medium}
+  prep_writer:           {tier: light, effort: low}
+
+# Used only for agents that set `fallback: true`, and only when the primary provider
+# errors (never on a rate limit, never for an invalid answer). No agent opts in: on
+# 2026-09-12 qwen2.5:14b timed out on every 20k-token call transcript.
+fallback: {provider: ollama, model: "qwen2.5:14b"}

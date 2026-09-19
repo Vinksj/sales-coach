@@ -1,0 +1,174 @@
+{# Deal intelligence fragment. Fetched by deal.html through static/intel.js; no page chrome. #}
+{% macro ev(items) -%}
+{% for e in items or [] %}{% if e.quote or e.turns %}
+<div class="quote{% if e.found is defined and not e.found %} unverified{% endif %}">{% if e.quote %}"{{ e.quote }}"{% endif %}
+  {% for t in (e.turns or [])[:3] %}<a class="tref" href="/calls/{{ e.call_id }}#t{{ t }}">#{{ t }}</a>{% endfor %}
+  <span class="meta">{{ titles.get(e.call_id) or e.call_id }}</span>{% if e.found is defined and not e.found %} <span class="meta accent">not found in the transcript</span>{% endif %}</div>
+{% endif %}{% endfor %}
+{%- endmacro %}
+{% macro mine(item, field) -%}
+{% if field in item.user_set %}<span class="you-set" title="You set this. The strategist cannot overwrite it.">you</span>{% endif %}
+{%- endmacro %}
+{% macro opts(name, current) -%}
+{% for o in choices[name] %}<option value="{{ o }}"{% if o == current %} selected{% endif %}>{{ o }}</option>{% endfor %}
+{%- endmacro %}
+{% set here = '/deals/' ~ deal.node_id %}
+<div class="intel-root"{% if pending %} data-refresh="5"{% endif %}>
+<div class="section-head">
+  <h2>Deal intelligence</h2>
+  <span class="purpose">
+    {% if pending %}A strategy run is queued{% if not worker_on %}, but the worker is not running in this server (run <span class="mono">salescoach strategy --deal {{ deal.node_id }}</span>){% endif %}.
+    {% elif strategy_row %}From the strategist run of {{ strategy_row.created_at|dt }} on <a href="/calls/{{ strategy_row.call_id }}">{{ titles.get(strategy_row.call_id) or strategy_row.call_id }}</a>{% if strategy_row.run_id %} · <a href="/runs/{{ strategy_row.run_id }}">Why?</a>{% endif %}.
+    {% elif anchor %}No strategist run yet.
+    {% else %}Appears after the first call on this deal is analysed.{% endif %}
+  </span>
+</div>
+<div class="intel-actions">
+  {% if anchor %}<form method="post" action="{{ here }}/strategy"><button class="btn btn-sm{% if not strategy_row %} btn-primary{% endif %}">{% if strategy_row %}Re-run strategy{% else %}Run strategy{% endif %}</button></form>{% endif %}
+  <a class="btn btn-sm" href="{{ here }}/prep">Prep for the next call</a>
+</div>
+{% if failed %}<div class="callout callout-err"><div class="label">{% if failed.rate_limited %}The model quota ran out during the last strategy run{% else %}The last strategy run failed{% endif %}</div>{% if failed.rate_limited %}<p class="meta">Nothing was changed. A queued run retries on its own once the quota is back.</p>{% endif %}<p class="meta">{{ failed_row.created_at|dt }}: {{ failed.failed }}</p>{% if strategy_row %}<p class="meta">Showing the previous successful run.</p>{% endif %}</div>{% endif %}
+
+{% if health %}
+<section class="grid-2 intel-top">
+  <div class="card nba">
+    <div class="eyebrow">Next best action</div>
+    {% if nba %}
+    <p class="lead strong">{{ nba.action }}</p>
+    <p class="meta">{% if nba.owner == 'me' %}You{% elif nba.owner == 'mutual' %}Both sides{% else %}{{ nba.owner_name or 'Them' }}{% endif %}{% if nba.by_when %} · by {{ nba.by_when|day }}{% endif %}</p>
+    <div class="label">Why this beats everything else</div><p>{{ nba.why_highest_leverage }}</p>
+    <div class="label">Expected effect</div><p>{{ nba.expected_effect }}</p>
+    <div class="label">What would change this</div><p>{{ nba.what_would_change_it }}</p>
+    {{ ev(nba.evidence) }}
+    {% for n in nba.validation_notes or [] %}<p class="meta accent">{{ n }}</p>{% endfor %}
+    {% endif %}
+  </div>
+  <div class="card health health-{{ (health.label or '')|replace(' ', '-') }}">
+    <div class="eyebrow">Deal health {{ mine(health, 'score') }}</div>
+    <div class="stat">{{ health.score }}<span class="stat-unit">/100</span></div>
+    <p class="strong">{{ health.label }}{% if health.model_score is not none and health.model_score != health.score %} <span class="meta">(the strategist said {{ health.model_score }})</span>{% endif %}</p>
+    <p>{{ health.rationale }}</p>
+    {% if health.caps %}<ul class="plain caps">{% for c in health.caps %}<li><span class="label">Capped at {{ c.cap }}</span> {{ c.why }}</li>{% endfor %}</ul>{% endif %}
+    {% if health.history|length > 1 %}<p class="meta">Trend: {% for h in health.history %}{{ h.score }}{% if not loop.last %} → {% endif %}{% endfor %}</p>{% endif %}
+    {% if health.summary %}<p class="meta">{{ health.summary }}</p>{% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if conflicts %}
+<section class="section needs-decision">
+  <div class="section-head"><h3>Needs your decision</h3><span class="purpose">A newer read disagrees with a stronger value on record. Nothing changes until you choose.</span></div>
+  <ul class="plain proposals">
+    {% for c in conflicts %}
+    <li class="card">
+      <div><span class="strong">{{ c.what }}</span> · {{ c.field_label }}</div>
+      <div>On record: <span class="strong">{{ c.existing_value }}</span> <span class="meta">({{ c.existing_confidence }})</span> · Proposed: <span class="strong">{{ c.proposed_value }}</span> <span class="meta">({{ c.proposed_confidence }})</span></div>
+      {% if c.reason %}<p class="meta">{{ c.reason }}</p>{% endif %}
+      <div class="quick">
+        <form method="post" action="/conflicts/{{ c.id }}/resolve"><input type="hidden" name="next" value="{{ here }}#intel"><input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept proposed</button></form>
+        <form method="post" action="/conflicts/{{ c.id }}/resolve"><input type="hidden" name="next" value="{{ here }}#intel"><input type="hidden" name="accept" value="0"><button class="btn btn-sm">Keep current</button></form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="section" id="stakeholder-map">
+  <div class="section-head"><h3>Stakeholder map</h3><span class="purpose">Colour is position: champion, supporter, neutral, skeptic, blocker. "you" marks what you set.</span></div>
+  {% if unmapped %}
+  <div class="callout unmapped">
+    <p>{{ unmapped|length }} call{{ '' if unmapped|length == 1 else 's' }} on this deal {{ 'has' if unmapped|length == 1 else 'have' }} buyer-side speakers not mapped to a person
+      ({% for u in unmapped[:4] %}<a href="/calls/{{ u.node_id }}#speakers">{{ u.title or u.node_id }}</a>{% if not loop.last %}, {% endif %}{% endfor %}).
+      Their words count as "them" and cannot back a stakeholder's position until you map them on the call page.</p>
+    <p class="meta">Recognising recurring voices automatically (voiceprints) is not enabled: it needs speaker models that are not approved for download.</p>
+  </div>
+  {% endif %}
+  <div class="smap">
+    {% for s in stakeholders %}
+    <article class="card stake pos-{{ s.position or 'unmapped' }}" id="stake-{{ s.person_id }}">
+      <div class="loop-top">
+        <div>
+          <div class="h3">{{ s.name }}</div>
+          <div class="meta">{{ s.role or s.title or s.role_in_deal or 'role unknown' }}{{ mine(s, 'role') }}</div>
+        </div>
+        <span class="pos pos-{{ s.position or 'unmapped' }}">{{ s.position or 'not mapped' }}</span>{{ mine(s, 'position') }}
+      </div>
+      {% if s.mapped %}
+      <dl class="facts">
+        <div><dt>Influence</dt><dd>{{ s.influence or '-' }} {{ mine(s, 'influence') }}</dd></div>
+        <div><dt>Champion potential</dt><dd>{{ s.champion_potential or '-' }} {{ mine(s, 'champion_potential') }}</dd></div>
+        <div><dt>Can block</dt><dd>{{ s.ability_to_block or '-' }} {{ mine(s, 'ability_to_block') }}</dd></div>
+        <div><dt>Your relationship</dt><dd>{{ s.relationship_strength or '-' }} {{ mine(s, 'relationship_strength') }}</dd></div>
+        {% if s.confidence %}<div><dt>Confidence</dt><dd><span class="conf conf-{{ s.confidence }}">{{ s.confidence }}</span></dd></div>{% endif %}
+      </dl>
+      {% if s.incentives %}<div class="label">Wants</div><ul class="plain dash">{% for x in s.incentives %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+      {% if s.concerns %}<div class="label">Worries</div><ul class="plain dash">{% for x in s.concerns %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+      {{ ev(s.evidence) }}
+      {% else %}<p class="meta">Not on the map yet. The strategist maps people it hears about on calls; you can set it yourself.</p>{% endif %}
+      <details class="edit"><summary class="meta">Edit</summary>
+        <form method="post" action="{{ here }}/stakeholders/{{ s.person_id }}" class="edit-form">
+          <div class="form-grid">
+            <label>Role<input name="role" value="{{ s.role or '' }}" placeholder="CFO, economic buyer"></label>
+            <label>Position<select name="position"><option value="">unchanged</option>{{ opts('position', s.position) }}</select></label>
+            <label>Influence<select name="influence"><option value="">unchanged</option>{{ opts('influence', s.influence) }}</select></label>
+            <label>Champion potential<select name="champion_potential"><option value="">unchanged</option>{{ opts('champion_potential', s.champion_potential) }}</select></label>
+            <label>Can block<select name="ability_to_block"><option value="">unchanged</option>{{ opts('ability_to_block', s.ability_to_block) }}</select></label>
+            <label>Your relationship<select name="relationship_strength"><option value="">unchanged</option>{{ opts('relationship_strength', s.relationship_strength) }}</select></label>
+          </div>
+          <label>Wants (one per line)<textarea name="incentives" rows="2">{{ s.incentives|join('\n') }}</textarea></label>
+          <label>Worries (one per line)<textarea name="concerns" rows="2">{{ s.concerns|join('\n') }}</textarea></label>
+          <button class="btn btn-sm btn-primary">Save</button>
+        </form>
+      </details>
+    </article>
+    {% else %}<p class="empty">Nobody on this deal yet.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="section" id="meddpicc">
+  <div class="section-head"><h3>{{ methodology.name }}</h3><span class="purpose">{{ known }} of {{ methodology.count }} known. Known means the buyer confirmed it on a call.</span></div>
+  <div class="mgrid mgrid-{{ methodology.columns }}">
+    {% for m in meddpicc %}
+    <div class="card mcell st-{{ m.status or 'none' }}" id="m-{{ m.element }}">
+      <div class="loop-top"><div class="label">{{ m.label }}</div><span class="mstatus">{{ m.status or 'not assessed' }}{{ mine(m, 'status') }}</span></div>
+      {% if m.what_we_know %}<p>{{ m.what_we_know }}</p>{% endif %}
+      {% if m.gap %}<p class="meta">Gap: {{ m.gap }}</p>{% endif %}
+      {% if m.next_question %}<p class="suggested">"{{ m.next_question }}"</p>{% endif %}
+      {{ ev(m.evidence) }}
+      <details class="edit"><summary class="meta">Edit</summary>
+        <form method="post" action="{{ here }}/meddpicc/{{ m.element }}" class="edit-form">
+          <label>Status<select name="status">{% for o in meddpicc_status %}<option value="{{ o }}"{% if o == m.status %} selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
+          <label>What we know<textarea name="what_we_know" rows="2">{{ m.what_we_know or '' }}</textarea></label>
+          <label>Gap<textarea name="gap" rows="2">{{ m.gap or '' }}</textarea></label>
+          <label>Next question<textarea name="next_question" rows="2">{{ m.next_question or '' }}</textarea></label>
+          <button class="btn btn-sm btn-primary">Save</button>
+        </form>
+      </details>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section" id="risks">
+  <div class="section-head"><h3>Risks</h3><span class="purpose">{{ risks|length }} open.</span></div>
+  {% for r in risks %}
+  <div class="card risk risk-{{ r.severity }}">
+    <div class="loop-top"><div class="strong">{{ r.type|human }}</div><span class="sev sev-{{ r.severity }}">{{ r.severity }}</span></div>
+    <p>{{ r.description }}</p>
+    {% if r.mitigation %}<p><span class="label">Do</span> {{ r.mitigation }}</p>{% endif %}
+    {{ ev(r.evidence) }}
+    <div class="quick">
+      {% if r.source == 'rule' %}<span class="meta">Raised from the data, not by the model.</span>{% endif %}
+      <form method="post" action="{{ here }}/risks/{{ r.type }}/status"><input type="hidden" name="status" value="dismissed"><button class="btn btn-sm btn-quiet" data-confirm="Dismiss this risk? The strategist will not reopen it.">Dismiss</button></form>
+    </div>
+  </div>
+  {% else %}<p class="empty">{% if strategy_row %}No open risks.{% else %}No risks recorded yet.{% endif %}</p>{% endfor %}
+  {% if closed_risks %}
+  <details><summary class="meta">{{ closed_risks|length }} cleared or dismissed</summary>
+    <ul class="plain">{% for r in closed_risks %}<li>{{ r.type|human }} <span class="meta">{{ r.status }}{% if 'status' in r.user_set %} by you{% endif %}</span>
+      <form method="post" action="{{ here }}/risks/{{ r.type }}/status" class="inline"><input type="hidden" name="status" value="open"><button class="btn btn-sm btn-quiet">Reopen</button></form></li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</section>
+</div>

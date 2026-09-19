@@ -1,0 +1,84 @@
+/* Sales intelligence: stakeholder positions, methodology element grid, health, prep.
+   Uses the tokens from app.css only; no new colours outside them. */
+
+.intel-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 16px; }
+.intel-actions form { margin: 0; }
+.intel-top { margin-bottom: 8px; }
+.intel .quick, .intel-root .quick { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+form.inline { display: inline; }
+
+/* health */
+.health .stat { line-height: 1; margin: 6px 0; }
+.health-strong .stat, .health-healthy .stat { color: var(--good); }
+.health-weak .stat, .health-at-risk .stat { color: var(--accent); }
+.caps li { margin: 4px 0; }
+.nba { border-left: 4px solid var(--accent); }
+
+/* who set this */
+.you-set {
+  display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px;
+  font: 600 11px/1.6 var(--mono); color: var(--good); background: var(--good-wash);
+  vertical-align: middle;
+}
+
+/* stakeholder map: position colour on the card edge and the badge */
+.smap { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.stake { border-left: 4px solid var(--line); }
+.stake .facts { margin: 8px 0; }
+.pos {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  font: 600 12px/1.6 var(--mono); border: 1px solid var(--line); color: var(--muted);
+}
+.pos-champion { border-left-color: var(--good); }
+.pos.pos-champion { background: var(--good); color: var(--on-accent); border-color: var(--good); }
+.pos-supporter { border-left-color: var(--good); }
+.pos.pos-supporter { background: var(--good-wash); color: var(--good); border-color: var(--good); }
+.pos-neutral { border-left-color: var(--grey); }
+.pos.pos-neutral { color: var(--text); border-color: var(--grey); }
+.pos-skeptic { border-left-color: var(--accent-line); }
+.pos.pos-skeptic { background: var(--accent-wash); color: var(--accent); border-color: var(--accent-line); }
+.pos-blocker { border-left-color: var(--accent); }
+.pos.pos-blocker { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.pos-unknown, .pos-unmapped { border-left-style: dashed; }
+
+.unmapped { margin-bottom: 12px; }
+
+/* Methodology elements (MEDDPICC by default). The column count follows the number of elements so the
+   cards fall into full rows: intel/methodology.py grid_columns() picks mgrid-2 .. mgrid-5. */
+.mgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.mgrid.mgrid-1 { grid-template-columns: minmax(0, 1fr); }
+.mgrid.mgrid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mgrid.mgrid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mgrid.mgrid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) {
+  .mgrid, .mgrid.mgrid-3, .mgrid.mgrid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .mgrid, .mgrid.mgrid-2, .mgrid.mgrid-3, .mgrid.mgrid-5 { grid-template-columns: 1fr; }
+}
+.mcell { border-top: 4px solid var(--line); }
+.mcell.st-known { border-top-color: var(--good); }
+.mcell.st-partial { border-top-color: var(--grey); }
+.mcell.st-unknown { border-top-color: var(--accent); }
+.mstatus { font: 600 12px/1.6 var(--mono); color: var(--muted); }
+.st-known .mstatus { color: var(--good); }
+.st-unknown .mstatus { color: var(--accent); }
+
+/* risks */
+.risk { margin-bottom: 10px; border-left: 4px solid var(--line); }
+.risk-critical, .risk-high { border-left-color: var(--accent); }
+.risk-medium { border-left-color: var(--grey); }
+
+/* evidence */
+.quote.unverified { opacity: .7; text-decoration: line-through; text-decoration-color: var(--accent-line); }
+
+/* coach */
+.longitudinal .h2like { margin: 4px 0 8px; }
+.traj { display: inline-block; padding: 0 8px; border-radius: 999px; font: 600 12px/1.8 var(--mono);
+        border: 1px solid var(--line); margin-right: 6px; }
+.traj-improving { color: var(--good); border-color: var(--good); }
+.traj-worsening { color: var(--accent); border-color: var(--accent); }
+.coach-priority { border-left: 4px solid var(--accent); margin: 12px 0; }
+.ref { display: block; margin: 2px 0; }
+.say { margin-bottom: 10px; }
+.reconciled { margin: 4px 0 8px; padding: 8px 10px; border-left: 3px solid var(--accent); background: var(--accent-wash); }

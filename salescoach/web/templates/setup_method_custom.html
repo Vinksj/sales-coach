@@ -1,0 +1,82 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}{% if editing %}Edit {{ d.name or 'your methodology' }}{% else %}Build your own methodology{% endif %}{% endblock %}
+{% block step_intro %}List the two to twelve things you need to know about a deal. For each one, say how the coach can tell it is known. It will score every deal against this list and ask about what is missing.{% endblock %}
+{% block step %}
+{% if errors or general %}<div class="flash flash-err" role="alert">Nothing was saved yet. Each problem is marked next to its field.{% for g in general %} {{ g }}{% endfor %}</div>{% endif %}
+
+<form method="post" action="/setup/method/custom{% if editing %}/{{ editing }}{% endif %}" class="stack" novalidate data-builder>
+  <section class="card">
+    <div class="eyebrow">The methodology</div>
+    <div class="form-grid-2">
+      {{ f.text(errors, 'name', 'Name', d.name, required=True, placeholder='Acme qualification') }}
+      {% if editing %}
+      <label for="f-key">Short id<input id="f-key" value="{{ editing }}" disabled><span class="hint">Fixed once saved, so what the coach learned stays attached.</span></label>
+      {% else %}
+      {{ f.text(errors, 'key', 'Short id', d.key, placeholder='acme_qualification', hint='Made from the name. Lower-case letters, digits and underscores.') }}
+      {% endif %}
+    </div>
+    <label for="f-kind"{% if errors.get('kind') %} class="has-error"{% endif %}>Kind
+      <select id="f-kind" name="kind">
+        <option value="qualification"{% if d.kind != 'conversation' %} selected{% endif %}>Qualification: a checklist of what must be true for the deal to close</option>
+        <option value="conversation"{% if d.kind == 'conversation' %} selected{% endif %}>Conversation: a way of running the call itself</option>
+      </select>
+      {{ f.field_error(errors, 'kind') }}
+    </label>
+    {{ f.area(errors, 'description', 'Description', d.description, rows=2, placeholder='Optional. One or two sentences on when your team uses it.') }}
+  </section>
+
+  <div class="section-head builder-head"><h2>What you need to know about a deal</h2><span class="purpose">Two to twelve. Empty rows are ignored.</span></div>
+  {{ f.field_error(errors, 'elements') }}
+
+  {% for r in rows %}
+  {% set i = loop.index0 %}
+  <section class="card element-row" id="element-{{ i }}">
+    <div class="eyebrow">Element {{ loop.index }}</div>
+    {% if r.key %}<input type="hidden" name="el_key" value="{{ r.key }}">{% else %}<input type="hidden" name="el_key" value="">{% endif %}
+    <div class="form-grid-2">
+      <label for="el{{ i }}_label"{% if errors.get('el%d_label'|format(i)) %} class="has-error"{% endif %}>Name
+        <input id="el{{ i }}_label" name="el_label" value="{{ r.label }}" placeholder="Budget holder"{% if focus_row == i %} autofocus{% endif %}{% if errors.get('el%d_label'|format(i)) %} aria-invalid="true" aria-describedby="err-el{{ i }}_label"{% endif %}>
+        {{ f.field_error(errors, 'el%d_label'|format(i)) }}
+      </label>
+      <label for="el{{ i }}_partial_when"{% if errors.get('el%d_partial_when'|format(i)) %} class="has-error"{% endif %}>Partly known when <span class="opt">optional</span>
+        <input id="el{{ i }}_partial_when" name="el_partial_when" value="{{ r.partial_when }}" placeholder="We have a name but have not met them"{% if errors.get('el%d_partial_when'|format(i)) %} aria-invalid="true" aria-describedby="err-el{{ i }}_partial_when"{% endif %}>
+        {{ f.field_error(errors, 'el%d_partial_when'|format(i)) }}
+      </label>
+    </div>
+    <label for="el{{ i }}_known_when"{% if errors.get('el%d_known_when'|format(i)) %} class="has-error"{% endif %}>Known when
+      <textarea id="el{{ i }}_known_when" name="el_known_when" rows="2" placeholder="The person who signs off the spend has said so on a call, in their own words"{% if errors.get('el%d_known_when'|format(i)) %} aria-invalid="true" aria-describedby="err-el{{ i }}_known_when"{% endif %}>{{ r.known_when }}</textarea>
+      {{ f.field_error(errors, 'el%d_known_when'|format(i)) }}
+    </label>
+    <details class="element-more"{% if r.questions or r.critical or errors.get('el%d_questions'|format(i)) or errors.get('el%d_cap'|format(i)) %} open{% endif %}>
+      <summary>Questions to ask, and whether it is a deal-breaker</summary>
+      <label for="el{{ i }}_questions"{% if errors.get('el%d_questions'|format(i)) %} class="has-error"{% endif %}>Questions that uncover it <span class="opt">optional, one per line, up to six</span>
+        <textarea id="el{{ i }}_questions" name="el_questions" rows="3" placeholder="Who signs off a purchase of this size?"{% if errors.get('el%d_questions'|format(i)) %} aria-invalid="true" aria-describedby="err-el{{ i }}_questions"{% endif %}>{{ r.questions }}</textarea>
+        {{ f.field_error(errors, 'el%d_questions'|format(i)) }}
+      </label>
+      <div class="critical-row">
+        <label class="check" for="el{{ i }}_critical"><input type="checkbox" id="el{{ i }}_critical" name="el_critical" value="{{ i }}"{% if r.critical %} checked{% endif %}> Deal-breaker: while this is not known, hold deal health down</label>
+        <label for="el{{ i }}_cap"{% if errors.get('el%d_cap'|format(i)) %} class="has-error"{% endif %}>Health can be at most
+          <input id="el{{ i }}_cap" name="el_cap" inputmode="numeric" value="{{ r.cap }}" placeholder="50"{% if errors.get('el%d_cap'|format(i)) %} aria-invalid="true" aria-describedby="err-el{{ i }}_cap"{% endif %}>
+          {{ f.field_error(errors, 'el%d_cap'|format(i)) }}
+          <span class="hint">A number from 0 to 100. Only used for a deal-breaker.</span>
+        </label>
+      </div>
+    </details>
+  </section>
+  {% endfor %}
+
+  {% if rows|length < max_rows %}<button class="btn btn-quiet" name="action" value="add" formnovalidate>Add another element</button>{% endif %}
+
+  {% if not is_active %}
+  <label class="check" for="f-activate"><input type="checkbox" id="f-activate" name="activate" value="1"> Start selling with it as soon as it is saved</label>
+  {% else %}
+  <p class="meta">This is the methodology in use. Saving re-reads your open deals against the new list.</p>
+  {% endif %}
+
+  <div class="setup-foot">
+    <a class="btn btn-quiet" href="/setup/method">Back to methodologies</a>
+    <button class="btn btn-primary" name="action" value="save">Save methodology</button>
+  </div>
+</form>
+{% endblock %}

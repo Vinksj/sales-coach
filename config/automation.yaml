@@ -1,0 +1,36 @@
+# Phase 4: agentic execution. Nothing here can send mail by itself: every send
+# still goes through execution/policy.approve_and_send, and auto-send also needs
+# config/policy.yaml email_policy set to an auto-send policy by you.
+
+# Your own addresses come from the seller profile (emails). Replies from these are never ingested
+# as the buyer's. Set my_addresses here only to override the profile.
+# my_addresses: [you@company.com]
+
+followup:
+  run_at: "09:30"                       # your timezone, once a day (and on start if today's run was missed)
+  min_business_days_between_nudges: 2   # never nudge the same loop twice in quick succession
+  max_wait_days: 30                     # the agent's wait_until is clamped to this
+  escalate_after:                       # nudges with no response before escalating; default is
+    critical: 1                         # cadence.yaml escalation.max_follow_ups
+  nudge_weekends: false                 # on Sat/Sun a nudge decision becomes "wait until Monday"
+
+replies:
+  poll_minutes: 15
+  lookback_days: 45                     # threads of emails sent in this window are polled
+
+calendar:
+  scan_hours: 1                         # every meeting on the calendar is re-read this often (plus "Refresh calendar")
+  upcoming_days: 7
+  record:                               # meetings you armed with "Record" on the Today or Calendar page
+    lead_minutes: 1                     # start the capture this long before the meeting starts
+    grace_minutes: 15                   # stop it this long after the meeting's end time (Stop in the UI is sooner)
+    poll_seconds: 20
+  # own_domains: [company.com]          # never matched to a deal account; default: the profile's own_domains
+
+auto_send:
+  enabled: false                        # ship disabled; only you turn this on
+  dry_run: true                         # while true it only logs "would auto-send because ..."
+  daily_cap: 3
+  quiet_hours: {start: "09:30", end: "19:00"}   # your timezone, weekdays; outside this window nothing auto-sends
+  hold_minutes: 60                      # a draft sits at least this long, so you see it first
+  interval_minutes: 10

@@ -1,0 +1,30 @@
+# Render blueprint for a hosted Sales Coach (an alternative to Fly.io; see docs/deploy.md).
+# One web service built from the Dockerfile, one persistent disk at /data. A disk needs a paid
+# instance type and pins the service to one instance, which is what the app wants anyway.
+# Render sets PORT itself; the container's CMD listens on it. Set the secrets in the dashboard
+# (sync: false below means "ask me at deploy time, never store the value in this file").
+services:
+  - type: web
+    name: salescoach
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: false
+    disk:
+      name: salescoach-data
+      mountPath: /data
+      sizeGB: 3
+    envVars:
+      - key: SALESCOACH_DATA
+        value: /data
+      - key: SALESCOACH_RUNTIME
+        value: /data/runtime
+      - key: SALESCOACH_PASSWORD
+        sync: false
+      - key: SALESCOACH_PUBLIC_URL      # https://<service>.onrender.com, or your own domain
+        sync: false
+      - key: ANTHROPIC_API_KEY          # or OPENAI_API_KEY / XAI_API_KEY for another provider
+        sync: false
+      - key: WEBHOOK_SECRET             # optional: switches the transcript webhook on
+        sync: false

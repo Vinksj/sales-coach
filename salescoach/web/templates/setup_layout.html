@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{# The frame of every setup / Settings step: the progress rail on the left, one step on the right.
+   The rail is computed from the settings themselves (setupui/state.py), never from visits. #}
+{% block title %}{{ step_title }} · {% if configured %}Settings{% else %}Setup{% endif %}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/setup.css">
+<div class="setup">
+  <nav class="rail" aria-label="{% if configured %}Settings{% else %}Setup steps{% endif %}">
+    <div class="eyebrow">{% if configured %}Settings{% else %}Setup{% endif %}</div>
+    <ol class="rail-list">
+      {% for s in rail %}
+      <li class="rail-step rail-{{ s.status }}{% if s.key == step %} rail-current{% endif %}" data-step="{{ s.key }}" data-status="{{ s.status }}">
+        <a href="{{ s.href }}"{% if s.key == step %} aria-current="step"{% endif %}>
+          <span class="rail-mark" aria-hidden="true">{% if s.status == 'done' %}&#10003;{% elif s.status == 'attention' %}!{% else %}{{ loop.index }}{% endif %}</span>
+          <span class="rail-text">
+            <span class="rail-title">{{ s.title }}</span>
+            {% if s.note %}<span class="rail-note">{{ s.note }}</span>{% endif %}
+          </span>
+          <span class="sr-only">{% if s.status == 'done' %}Done{% elif s.status == 'default' %}Using the default{% elif s.status == 'attention' %}Needs attention{% else %}Not done yet{% endif %}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% if not configured %}<p class="rail-foot">Only step 1 is needed to start. Everything else has a working default you can change later.</p>{% endif %}
+  </nav>
+
+  <div class="setup-main">
+    {% include "settings_problems.html" %}
+    <div class="page-head">
+      <div class="eyebrow">Step {{ step_number }} of {{ step_count }}</div>
+      <h1>{% block step_heading %}{{ step_title }}{% endblock %}</h1>
+      <div class="meta setup-intro">{% block step_intro %}{% endblock %}</div>
+    </div>
+    {% block step %}{% endblock %}
+  </div>
+</div>
+<script src="/static/setup.js" defer></script>
+{% endblock %}

@@ -1,0 +1,39 @@
+# Speech-to-text. Model choices are provisional: no bake-off on real calls has yet picked a
+# live and a final model per language mode.
+sample_rate: 16000
+
+capture:
+  binary: callcap/build/callcap
+  # OFF deliberately (2026-09-12, M2 Air, macOS 26.6). Apple's voice processing
+  # starts without error and then delivers NOTHING: the input node reports a
+  # 5-channel layout and its tap is never called. Plain input gives 1 ch 48 kHz
+  # float and captures fine. Cost of leaving it off is no echo cancellation, so
+  # call audio can bleed into the "me" channel on speaker calls — live/echo.py
+  # flags that, and headphones avoid it. Do not flip this back without checking
+  # samples_me > 0 in the callcap log.
+  voice_processing: false
+  silence_alert_seconds: 60
+
+live:
+  engine: chunked                # chunked (VAD-segmented mlx-whisper) | whisperlivekit
+  models:
+    en: mlx-community/whisper-large-v3-turbo
+    hinglish: mlx-community/whisper-large-v3-turbo
+    auto: mlx-community/whisper-large-v3-turbo
+  language: {en: en, hinglish: hi, auto: null}
+  min_segment_s: 1.2
+  max_segment_s: 12.0
+  silence_s: 0.6                 # pause that closes a segment
+
+final:
+  models:
+    en: mlx-community/whisper-large-v3-turbo
+    hinglish: mlx-community/whisper-large-v3-mlx
+    auto: mlx-community/whisper-large-v3-mlx
+  language: {en: en, hinglish: hi, auto: null}
+  word_timestamps: true
+
+quality:
+  logprob_partial: -0.8          # avg_logprob below this marks a turn partial before the LLM looks
+  logprob_garbled: -1.2
+  no_speech_garbled: 0.6

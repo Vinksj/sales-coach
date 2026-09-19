@@ -1,0 +1,33 @@
+{# One table of calendar meetings with the record controls. Used by the Today page and /calendar. #}
+{% macro meeting_rows(meetings, live, next_url) %}
+{% for mt in meetings %}
+<tr class="{% if mt.in_progress %}row-now{% endif %}">
+  <td class="nowrap">{{ mt.start_at|dt }}<div class="meta">{% if mt.in_progress %}now{% elif mt.ended %}ended{% else %}{{ ((mt.end_at|dt).split(', ')[-1]) }} end{% endif %}</div></td>
+  <td>{{ mt.title or 'Untitled' }}
+    <div class="meta">{{ mt.attendee_list|join(', ') or 'no other attendees' }}{% if mt.meeting_url %} · <a href="{{ mt.meeting_url }}" target="_blank" rel="noopener">Join</a>{% endif %}</div></td>
+  <td>{% if mt.deal_id %}<a href="/deals/{{ mt.deal_id }}">{{ mt.deal_name or mt.deal_id }}</a>
+      {% if mt.link %}<div class="meta"><a href="{{ mt.link }}">Prep brief</a></div>{% elif mt.prep_status == 'pending' %}<div class="meta">prep: preparing</div>{% elif mt.prep_status == 'failed' %}<div class="meta accent">prep failed</div>{% endif %}
+      {% else %}<span class="muted">not a deal</span>{% endif %}</td>
+  <td class="nowrap">
+    {% if mt.call_id %}
+      <a class="btn btn-sm" href="{% if live.active and live.call_id == mt.call_id %}/live/{{ mt.call_id }}{% else %}/calls/{{ mt.call_id }}{% endif %}">{% if live.active and live.call_id == mt.call_id %}Recording · open{% else %}Recorded · {{ mt.call_state|step_label }}{% endif %}</a>
+    {% elif mt.ended %}
+      <span class="muted">not recorded</span>
+    {% else %}
+      <form method="post" action="/calendar/{{ mt.event_id }}/record" class="inline-form">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        {% if mt.armed %}
+          <button class="btn btn-sm btn-primary" name="action" value="disarm" title="Armed: the capture starts by itself when the meeting starts. Click to cancel.">Will record ✓</button>
+        {% else %}
+          <button class="btn btn-sm" name="action" value="arm" title="Start the capture by itself when the meeting starts">Record</button>
+        {% endif %}
+        {% if mt.in_progress or mt.starts_in_s < 900 %}
+          <button class="btn btn-sm btn-secondary" name="action" value="now"{% if live.active or not live.available %} disabled{% endif %} title="Start capturing this meeting now">Record now</button>
+        {% endif %}
+      </form>
+      {% if mt.record_error %}<div class="meta accent">{{ mt.record_error }}</div>{% endif %}
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+{% endmacro %}

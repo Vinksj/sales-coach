@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Prep · {{ deal.name }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/intel.css">
+<div class="page-head">
+  <div class="eyebrow">Prep · <a href="/deals/{{ deal.node_id }}">{{ deal.name }}</a>{% if deal.account_name %} · {{ deal.account_name }}{% endif %}</div>
+  <h1>{% if brief %}{{ brief.meeting.title or 'Next call' }}{% else %}Prepare for the next call{% endif %}</h1>
+  {% if brief %}<div class="meta">Prepared {{ brief.created_at|dt }}{% if brief.meeting.when %} · meeting {{ brief.meeting.when|dt }}{% endif %}{% if brief.writing_source == 'fallback' %} · opening and close from a template{% if brief.writing_error %} (the writer failed: {{ brief.writing_error }}){% endif %}{% endif %}{% if brief.run_id %} · <a href="/runs/{{ brief.run_id }}">Why?</a>{% endif %}</div>{% endif %}
+</div>
+
+{% if pending %}<div class="callout"><p>A brief is being prepared. This page refreshes when it is ready.{% if not worker_on %} The worker is not running in this server: run <span class="mono">salescoach prep --deal {{ deal.node_id }}</span>.{% endif %}</p></div>{% endif %}
+
+{% if brief %}
+{% set w = brief.writing %}
+<section class="callout priority-hero">
+  <div class="eyebrow">Objective for this call</div>
+  <div class="h2like">{{ w.objective }}</div>
+  {% if w.objective_why %}<p class="lead">{{ w.objective_why }}</p>{% endif %}
+  {% for n in brief.writing_notes or [] %}<p class="meta accent">Check before you say it: {{ n }}</p>{% endfor %}
+</section>
+
+<section class="grid-2 section">
+  <div class="card"><div class="label">Open with</div><p class="suggested">"{{ w.opening }}"</p></div>
+  <div class="card"><div class="label">Close with</div><p class="suggested">"{{ w.close }}"</p></div>
+</section>
+{% if w.watch_for %}<section class="section"><div class="label">Listen for</div><ul class="plain dash">{% for x in w.watch_for %}<li>{{ x }}</li>{% endfor %}</ul></section>{% endif %}
+
+<section class="grid-2 section">
+  <div class="card">
+    <div class="eyebrow">Open loops · who owes what</div>
+    <ul class="plain">
+      {% for l in brief.loops %}<li class="{% if l.overdue %}due-over{% endif %}"><span class="strong">{{ l.who }}</span>: {{ l.description }} <span class="meta">{% if l.due_date %}due {{ l.due_date|day }}{% if l.overdue %} · overdue{% endif %}{% else %}no date{% endif %}{% if l.review_state == 'proposed' %} · unconfirmed{% endif %}</span></li>
+      {% else %}<li class="muted">None open.</li>{% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <div class="eyebrow">{{ methodology_name }} gaps · ask this</div>
+    <ul class="plain">
+      {% for g in brief.gaps %}<li><span class="label">{{ g.label }}{% if g.status != 'gap' %} · {{ g.status }}{% endif %}</span>{% if g.gap %}<div class="meta">{{ g.gap }}</div>{% endif %}{% if g.question %}<div class="suggested">"{{ g.question }}"</div>{% endif %}</li>
+      {% else %}<li class="muted">No gaps recorded.</li>{% endfor %}
+    </ul>
+  </div>
+</section>
+
+<section class="grid-2 section">
+  <div class="card">
+    <div class="eyebrow">Next best action</div>
+    {% if brief.next_best_action %}<p class="strong">{{ brief.next_best_action.action }}</p><p class="meta">{{ brief.next_best_action.why_highest_leverage }}</p>{% else %}<p class="muted">No strategist run yet.</p>{% endif %}
+    {% if brief.health %}<p class="meta">Deal health {{ brief.health.score }}/100 · {{ brief.health.label }}</p>{% endif %}
+  </div>
+  <div class="card">
+    <div class="eyebrow">What changed since the last call</div>
+    {% if brief.last_call %}<p class="meta">Last call: <a href="/calls/{{ brief.last_call.call_id }}">{{ brief.last_call.title }}</a>, {{ brief.last_call.date|day }}{% if brief.last_call.verdict %} · <span class="vtag v-{{ brief.last_call.verdict.label }}">{{ brief.last_call.verdict.label }}</span>{% endif %}</p>
+    {% if brief.last_call.next_step %}<p>Agreed next step: {{ brief.last_call.next_step }}</p>{% endif %}{% endif %}
+    <ul class="plain dash">{% for x in (brief.last_call.what_changed if brief.last_call else []) + brief.changes %}<li>{{ x }}</li>{% else %}<li class="muted">Nothing recorded.</li>{% endfor %}</ul>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Who you will talk to</h2>{% if brief.meeting.unknown_attendees %}<span class="purpose accent">Not on the map: {{ brief.meeting.unknown_attendees|join(', ') }}</span>{% endif %}</div>
+  <div class="smap">
+    {% for s in brief.stakeholders %}
+    <article class="card stake pos-{{ s.position or 'unmapped' }}">
+      <div class="loop-top"><div><div class="h3">{{ s.name }}{% if s.attending %} <span class="pill pill-good"><i></i>attending</span>{% endif %}</div><div class="meta">{{ s.role or s.title or 'role unknown' }}</div></div><span class="pos pos-{{ s.position or 'unmapped' }}">{{ s.position or 'not mapped' }}</span></div>
+      {% if s.concerns %}<div class="label">Worries</div><ul class="plain dash">{% for x in s.concerns %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+      {% if s.incentives %}<div class="label">Wants</div><ul class="plain dash">{% for x in s.incentives %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+      {% if s.contact %}<details><summary class="meta">Contact file</summary><pre class="pre">{{ s.contact }}</pre></details>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% if brief.unmapped_speaker_calls %}<p class="meta">{{ brief.unmapped_speaker_calls }} call{{ '' if brief.unmapped_speaker_calls == 1 else 's' }} on this deal still have unmapped speakers; voiceprints are not enabled (speaker models not approved for download).</p>{% endif %}
+</section>
+
+<section class="grid-2 section">
+  <div class="card">
+    <div class="eyebrow">Top risks</div>
+    <ul class="plain">{% for r in brief.risks %}<li><span class="strong">{{ r.type|human }}</span> <span class="sev sev-{{ r.severity }}">{{ r.severity }}</span><div>{{ r.description }}</div>{% if r.mitigation %}<div class="meta">Do: {{ r.mitigation }}</div>{% endif %}</li>{% else %}<li class="muted">None recorded.</li>{% endfor %}</ul>
+  </div>
+  <div class="card">
+    <div class="eyebrow">Reminder for you</div>
+    {% set c = brief.coaching %}
+    {% if c %}{% if c.name %}<p class="strong">{{ c.name }}</p><p class="meta">{{ c.frequency|pct }}% of the last {{ c.calls_window }} calls</p>{% endif %}
+    {% if c.intervention %}<p>{{ c.intervention }}</p>{% endif %}
+    {% if c.practice %}<p><span class="label">Practise</span> {{ c.practice }}</p>{% endif %}
+    {% if c.say %}<p class="suggested">"{{ c.say.say }}"</p>{% endif %}
+    {% else %}<p class="muted">No active coaching priority yet.</p>{% endif %}
+    {% if brief.learned %}
+    <div class="label">Learned across your calls</div>
+    <ul class="plain">{% for p in brief.learned %}<li><span class="strong">{{ p.summary }}</span> <span class="meta">{{ p.polarity }}{% if p.label %}, {{ p.label }}{% endif %}{% if p.seen %}, {{ p.seen }}{% endif %}</span>{% if p.intervention and p.polarity == 'weakness' %}<div class="meta">Do: {{ p.intervention }}</div>{% endif %}</li>{% endfor %}</ul>
+    <p class="meta"><a href="/learning">What the coach believes</a></p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>What worked before</h2><span class="purpose">Similar past moments, found with local embeddings.</span></div>
+  {% set wb = brief.worked_before %}
+  {% set moments = wb.get('moments') or wb.get('items') or [] %}{# 'items': briefs stored before the rename #}
+  {% if moments %}
+  <ul class="plain">{% for x in moments %}<li class="card"><div class="meta">{{ x.why }} · <a href="/calls/{{ x.call_id }}{% if x.entity_type == 'window' %}#t{{ x.entity_id.split(':')[-1] }}{% endif %}">{{ x.call_title or x.call_id }}</a>{% if x.same_deal %} · this deal{% endif %} · similarity {{ '%.2f'|format(x.score) }}</div><pre class="pre">{{ x.text }}</pre></li>{% endfor %}</ul>
+  {% elif wb.status == 'unavailable' %}<p class="empty">The local embedding model is not reachable (Ollama on this Mac), so similar moments are not shown.</p>
+  {% else %}<p class="empty">Nothing similar yet. This fills in as more calls are analysed.</p>{% endif %}
+</section>
+{% else %}
+<p class="empty">No brief yet for this deal.</p>
+{% endif %}
+
+<section class="section">
+  <form method="post" action="/deals/{{ deal.node_id }}/prep" class="card edit-form">
+    <div class="eyebrow">{% if brief %}Prepare again{% else %}Prepare a brief{% endif %}</div>
+    <div class="form-grid">
+      <label>Meeting<input name="title" placeholder="CFO and CEO intro" value="{{ brief.meeting.title if brief and brief.meeting.title else '' }}"></label>
+      <label>When<input name="when" type="datetime-local"></label>
+    </div>
+    <label>Attendees<input name="attendees" placeholder="emails or names, comma separated"><span class="hint">Attendees are shown first; anyone not on the stakeholder map is flagged.</span></label>
+    <button class="btn btn-primary btn-sm">Prepare brief</button>
+  </form>
+  {% if earlier|length > 1 %}
+  <details><summary class="meta">Earlier briefs</summary><ul class="plain">{% for e in earlier %}<li><a href="/deals/{{ deal.node_id }}/prep?id={{ e.id }}">{{ e.meeting_title or 'Next call' }}</a> <span class="meta">{{ e.created_at|dt }}</span></li>{% endfor %}</ul></details>
+  {% endif %}
+</section>
+{% endblock %}

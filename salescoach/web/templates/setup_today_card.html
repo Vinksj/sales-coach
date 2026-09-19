@@ -1,0 +1,12 @@
+{# The small "Finish setting up" card on Today. Expects `setup_card` from setup_today(request). #}
+<link rel="stylesheet" href="/static/setup.css">
+<div class="callout setup-card" id="finish-setup">
+  <div>
+    <div class="eyebrow">Finish setting up</div>
+    <p>{{ setup_card.text }}</p>
+  </div>
+  <div class="actions">
+    <a class="btn btn-sm btn-primary" href="/setup/model">{% if setup_card.usable %}Test the connection{% else %}Choose a model{% endif %}</a>
+    <form method="post" action="/setup/dismiss-card"><button class="btn btn-sm btn-quiet" aria-label="Dismiss this reminder">Dismiss</button></form>
+  </div>
+</div>

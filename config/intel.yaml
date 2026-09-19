@@ -1,0 +1,42 @@
+# Phase 3: sales intelligence. Read by salescoach/intel/*.
+#
+# Which model runs the four intel agents is set in config/models.yaml
+# (agents: <name>: {tier, effort}), with every other agent.
+
+strategist:
+  max_transcript_turns: 400      # latest call's transcript is given in full up to this many turns
+  max_prior_calls: 12            # older calls are given as summary + validated claims
+  closed_loops_shown: 10
+
+# Deal health is capped by facts, not vibes. The model's score is lowered to the
+# smallest cap whose condition holds; each applied cap is shown with its reason.
+health:
+  caps:
+    single_threaded: 50          # at most one buyer-side person has been on any call
+    economic_buyer_not_confirmed: 60
+    no_dated_buyer_commitment: 55   # no open buyer-owned loop with a due date
+    meddpicc_known_below_3: 50
+  bands:                         # label by final score (lower bound inclusive)
+    - [85, strong]
+    - [70, healthy]
+    - [50, fair]
+    - [25, weak]
+    - [0, at risk]
+
+coach:
+  min_calls: 3                   # the longitudinal report needs this many analysed calls
+  observations_shown: 40
+  insights_shown: 8
+
+# Optional: a folder of per-person notes (<name-slug>.md). When a file matches a person on the deal, up
+# to contact_chars of it is used as context (the prep brief). A folder that does not exist is ignored;
+# point this at your own notes in <data>/settings/intel.yaml.
+contacts_dir: ~/.claude/contacts
+contact_chars: 1500
+
+embeddings:
+  endpoint: http://localhost:11434
+  model: nomic-embed-text
+  batch: 32
+  timeout_s: 60
+  window_turns: 3

@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ call.title or cid }}{% endblock %}
+{% block content %}
+{% set here = '/calls/' ~ cid %}
+<div class="page-head">
+  <div class="eyebrow">Call review · {{ call.started_at|dt }}{% if deal %} · <a href="/deals/{{ deal.node_id }}">{{ deal.name }}</a>{% endif %}</div>
+  <h1>{{ call.title or 'Untitled call' }}</h1>
+  <div class="meta">
+    {{ call.source|human }} · {{ call.lang_mode }} · {{ call.wf_state|step_label }}
+    {% if participants %} · {% for p in participants %}{{ p.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+    · <a href="{{ here }}/runs">Agent runs</a>
+  </div>
+</div>
+
+{# ---- pipeline state ---------------------------------------------------- #}
+{% if call.wf_state == 'live' %}
+<div class="callout"><p>This call is still being recorded.</p><a class="btn btn-primary" href="/live/{{ cid }}">Open live view</a></div>
+{% endif %}
+
+{% if speaker_question %}
+<section class="card stack" id="speaker">
+  <div class="eyebrow">Needs you</div>
+  <h2>Which speaker are you?</h2>
+  <p class="meta">This transcript names its speakers, and none of the names is one the coach knows as yours. It will not guess: whose words a promise is in decides whether it counts as your commitment. Nothing is processed until you answer; the answer is remembered for the next import.</p>
+  <form method="post" action="{{ here }}/speaker" class="stack">
+    {% for s in speaker_question %}
+    <label class="row"><input type="radio" name="label" value="{{ s.label }}" required> <strong>{{ s.label }}</strong> <span class="meta">· {{ s.count }} turns · "{{ s.sample }}"</span></label>
+    {% endfor %}
+    <label class="row"><input type="radio" name="label" value="__none__"> <span>None of them: I do not speak in this transcript</span></label>
+    <button class="btn btn-primary">That is me. Process the call</button>
+  </form>
+</section>
+{% endif %}
+
+{% if call.wf_error %}
+<div class="callout callout-err">
+  <div class="eyebrow">{% if call.wf_state == 'capture_failed' %}Capture failed{% else %}Pipeline failed{% endif %}</div>
+  <p class="err-text">{{ call.wf_error }}</p>
+  {% if failed_step %}
+  <form method="post" action="{{ here }}/retry"><input type="hidden" name="from_step" value="{{ failed_step }}"><button class="btn btn-primary">Retry from {{ failed_step|step_label }}</button></form>
+  {% endif %}
+</div>
+{% elif processing or rerun %}
+<section class="card progress">
+  <div class="eyebrow">{% if rerun %}Re-running{% else %}Processing{% endif %}</div>
+  <h2>{% if current_step %}Now: {{ current_step.label }}{% elif rerun and job %}Queued: from {{ (job.payload|fromjson({})).get('from')|step_label }}{% else %}Queued{% endif %}</h2>
+  <ol class="steps">{% for s in steps %}<li class="step step-{{ s.status }}">{{ s.label }}</li>{% endfor %}</ol>
+  <p class="meta">This page refreshes by itself.{% if job %} Job {{ job.status }}, attempt {{ job.attempts }}.{% endif %}
+    {% if not nav_worker_on %} The worker is not running in this server, so nothing will move until <span class="mono">salescoach serve</span> or <span class="mono">salescoach work</span> runs.{% endif %}</p>
+</section>
+{% endif %}
+
+{# ---- a. verdict + transcript quality ------------------------------------- #}
+{% if quality and quality.overall_score < 0.7 %}
+<section class="callout callout-err quality-banner">
+  <div class="eyebrow">Transcript quality is low</div>
+  <div class="quality-row">
+    <div class="stat">{{ (quality.overall_score * 100)|round|int }}<span class="stat-unit">/100</span></div>
+    <div>
+      <p>{{ quality.summary }} Quotes and extracted actions may be wrong. Play the audio before you confirm anything.</p>
+      <p class="meta">{{ quality.lang_mix|human }} · {{ garbled_count }} garbled · {{ partial_count }} partial{% if bleed_count %} · {{ bleed_count }} with audio bleed{% endif %}</p>
+      {% if quality.cannot_judge %}<div class="label">Cannot be judged from this transcript</div><ul class="plain dash">{% for x in quality.cannot_judge %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if analysis or quality %}
+<section class="grid-2 verdict-row">
+  {% if analysis %}
+  <div class="card verdict">
+    <div class="eyebrow">Verdict {% if run_ids.analysis %}<a class="why" href="/runs/{{ run_ids.analysis }}">Why?</a>{% endif %}</div>
+    <div class="verdict-label v-{{ analysis.verdict.label }}">{{ analysis.verdict.label }}</div>
+    <p class="lead">{{ analysis.verdict.one_line }}</p>
+    <p class="meta">{{ analysis.verdict.rationale }}</p>
+  </div>
+  {% endif %}
+  {% if quality and quality.overall_score >= 0.7 %}
+  <div class="card">
+    <div class="eyebrow">Transcript quality {% if run_ids.quality %}<a class="why" href="/runs/{{ run_ids.quality }}">Why?</a>{% endif %}</div>
+    <div class="stat stat-sm">{{ (quality.overall_score * 100)|round|int }}<span class="stat-unit">/100</span></div>
+    <p>{{ quality.summary }}</p>
+    <p class="meta">{{ quality.lang_mix|human }} · {{ garbled_count }} garbled · {{ partial_count }} partial{% if bleed_count %} · {{ bleed_count }} with audio bleed{% endif %}</p>
+    {% if quality.cannot_judge %}<div class="label">Cannot be judged</div><ul class="plain dash">{% for x in quality.cannot_judge %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ---- b. follow-up email -------------------------------------------------- #}
+<section class="section" id="email">
+  <div class="section-head"><h2>Follow-up email</h2><span class="purpose">Nothing leaves until you press Send.</span>
+    {% if run_ids.email %}<a class="why" href="/runs/{{ run_ids.email }}">Why?</a>{% endif %}</div>
+
+  {% if email_skipped %}
+  <div class="callout">
+    <div class="eyebrow">No draft this time</div>
+    <p>{{ email_skipped }}</p>
+    <div class="actions">
+      <form method="post" action="{{ here }}/redraft"><button class="btn btn-secondary">Draft one anyway</button></form>
+      {% if call.wf_state not in ('done', 'email_sent', 'email_skipped') %}
+      <form method="post" action="{{ here }}/no-email"><button class="btn btn-quiet">Close without email</button></form>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if email %}
+  {% set e = email.row %}
+  {% if e.status == 'sent' %}
+  <div class="callout callout-good">
+    <div class="eyebrow good">Sent {{ e.sent_at|dt }}</div>
+    <p>To {{ email.to|join(', ') }}{% if email.cc %} · Cc {{ email.cc|join(', ') }}{% endif %}</p>
+    <div class="h3">{{ e.subject }}</div>
+    <pre class="email-body">{{ e.body }}</pre>
+  </div>
+  {% elif e.status == 'saved_to_gmail' %}
+  <div class="callout">
+    <div class="eyebrow">Saved to Gmail Drafts</div>
+    <p>It is waiting in Gmail. Send it from there, then mark it sent so the call closes.</p>
+    <p>To {{ email.to|join(', ') }}{% if email.cc %} · Cc {{ email.cc|join(', ') }}{% endif %}</p>
+    <div class="h3">{{ e.subject }}</div>
+    <pre class="email-body">{{ e.body }}</pre>
+    <div class="actions">
+      <form method="post" action="/emails/{{ e.id }}/mark-sent"><button class="btn btn-primary">I sent it from Gmail</button></form>
+    </div>
+  </div>
+  {% elif e.status == 'sending' %}
+  <div class="callout callout-err">
+    <div class="eyebrow">Send did not finish</div>
+    <p>A send started but never confirmed. Check Gmail Sent before doing anything else; this email will not be resent automatically.</p>
+    <pre class="email-body">{{ e.body }}</pre>
+    {% if (e.error or '').startswith('delivery unknown') %}
+    <p class="meta">{{ e.error }}</p>
+    <div class="actions">
+      <form method="post" action="/emails/{{ e.id }}/not-sent"><button class="btn btn-secondary" data-confirm="Only press this after checking Gmail Sent: is this email NOT there? It can then be sent again.">It was not sent</button></form>
+    </div>
+    {% endif %}
+  </div>
+  {% elif e.status == 'rejected' %}
+  <div class="card">
+    <p class="muted">The last draft was {{ e.error or 'skipped' }}.</p>
+    <form method="post" action="{{ here }}/redraft"><button class="btn btn-secondary">Redraft</button></form>
+  </div>
+  {% else %}
+  {% if e.status == 'failed' %}<div class="flash flash-err">The last attempt failed: {{ e.error }}</div>{% endif %}
+  <div class="decision{% if email.blocks %} decision-block{% endif %}">
+    <span class="label">Policy</span> {{ email.decision.reason if email.decision else '' }}
+  </div>
+  {% set slot_fill = automation_slot_fill(request, e.id) if automation_slot_fill is defined else none %}
+  {% if email.blocks or email.warns %}
+  <ul class="plain issues">
+    {% for i in email.blocks %}<li><span class="tag tag-block">blocks send</span> {{ i.detail }}
+      {% if i.kind == 'slots' and automation_slot_fill is defined %}<button class="btn btn-sm btn-secondary" type="submit" form="email-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots" title="Saves your edits, reads your calendar (read-only) and puts two or three free times in place of [SLOTS]">Fill times from calendar</button>
+        {% if slot_fill and slot_fill.status not in ('filled', 'not_needed') %}<div class="meta">Last try {{ slot_fill.created_at|dt }}: {{ slot_fill.reason }}</div>{% endif %}{% endif %}</li>{% endfor %}
+    {% for i in email.warns %}<li><span class="tag">check</span> {{ i.detail }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if slot_fill and slot_fill.status == 'filled' %}<p class="meta">Meeting times calendar-verified {{ slot_fill.verified_at|dt }}.</p>{% endif %}
+  {% if email.user_added %}<p class="warn-line">Added by you, not on this call or deal: {{ email.user_added|join(', ') }}</p>{% endif %}
+
+  <form method="post" action="/emails/{{ e.id }}/save" class="email-form card" id="email-form-{{ e.id }}">
+    <div class="form-grid-2">
+      <label>To<input name="to" value="{{ email.to|join(', ') }}" autocomplete="off"></label>
+      <label>Cc<input name="cc" value="{{ email.cc|join(', ') }}" autocomplete="off"></label>
+    </div>
+    <label>Subject<input name="subject" value="{{ e.subject or '' }}" autocomplete="off"></label>
+    <label>Body<textarea name="body" rows="14">{{ e.body or '' }}</textarea></label>
+    <p class="meta">Allowed recipients:
+      {% for addr, name in email.allowed.items() %}{{ name }} &lt;{{ addr }}&gt;{% if not loop.last %}, {% endif %}{% else %}none yet (add participants below){% endfor %}.
+      Draft v{{ e.version }}{% if e.rationale %} · {{ e.rationale }}{% endif %}</p>
+    <div class="actions email-actions">
+      {# Save is first in the markup so Enter in a field saves; it never sends. #}
+      <button class="btn" type="submit">Save edits</button>
+      {% if rerun %}
+      <span class="meta">A new draft is on its way; this version cannot be sent until it arrives.</span>
+      {% else %}
+      <button class="btn btn-primary send-btn" type="submit" formaction="/emails/{{ e.id }}/send" data-confirm-send
+              {% if e.status == 'failed' %}data-warn="The last attempt failed and may have reached Gmail. Check Gmail Sent first."{% endif %}>Send ↗</button>
+      <button class="btn btn-secondary" type="submit" formaction="/emails/{{ e.id }}/draft">Save to Gmail Drafts ↗</button>
+      <button class="btn" type="submit" formaction="{{ here }}/redraft" data-confirm="Throw this draft away and write a new one?">Redraft</button>
+      {% endif %}
+      <button class="btn btn-quiet" type="submit" formaction="/emails/{{ e.id }}/skip" data-confirm="Skip the follow-up email for this call?">Skip</button>
+    </div>
+  </form>
+  {% endif %}
+  {% elif not email_skipped %}
+  <p class="empty">{% if ready %}No email was drafted.{% else %}The email is drafted after the analysis finishes.{% endif %}</p>
+  {% endif %}
+</section>
+
+{# ---- c. action review ---------------------------------------------------- #}
+<section class="section" id="actions">
+  <div class="section-head"><h2>Action review</h2>
+    <span class="purpose">{% if proposed_count %}{{ proposed_count }} waiting for your decision. {% endif %}Only confirmed items count as certain.</span>
+    {% if run_ids.actions %}<a class="why" href="/runs/{{ run_ids.actions }}">Why?</a>{% endif %}</div>
+
+  {% if conflicts %}
+  <div class="card needs-decision">
+    <div class="eyebrow">Needs your decision</div>
+    <p class="meta">The call suggests changing something already on record, but not strongly enough to apply by itself.</p>
+    <ul class="plain proposals">
+      {% for c in conflicts %}
+      <li>
+        <div><span class="strong">{{ c.label }}</span>
+          <div>{{ c.field_label }}: <span class="mono">{{ c.existing_value or 'empty' }}</span> → <span class="mono accent">{{ c.proposed_value or 'empty' }}</span>
+            <span class="meta">({{ c.proposed_confidence }} vs {{ c.existing_confidence or 'unset' }})</span></div>
+          {% if c.reason %}<div class="meta">{{ c.reason }}</div>{% endif %}
+          {% if c.evidence %}<div class="meta">evidence {{ m.trefs(c.evidence, c.source_call if c.source_call != cid else None) }}</div>{% endif %}
+        </div>
+        <div class="quick">
+          <form method="post" action="/conflicts/{{ c.id }}/resolve">{{ m.next_field(here ~ '#actions') }}<input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept</button></form>
+          <form method="post" action="/conflicts/{{ c.id }}/resolve">{{ m.next_field(here ~ '#actions') }}<input type="hidden" name="accept" value="0"><button class="btn btn-sm btn-quiet">Keep current</button></form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% for l in loops %}
+  <article class="card loop loop-{{ l.review_state }}" id="loop-{{ l.node_id }}">
+    <div class="loop-top">
+      <div class="loop-desc">{{ l.description }}</div>
+      <div class="loop-badges">{{ m.review_pill(l.review_state) }} {{ m.prio(l.priority) }}</div>
+    </div>
+    <dl class="facts">
+      <div><dt>Type</dt><dd>{{ l.type|human }}</dd></div>
+      <div><dt>Owner</dt><dd>{{ l.owner }}{% if l.owner_name %} · {{ l.owner_name }}{% elif l.owner_person %} · {{ l.owner_person }}{% endif %}</dd></div>
+      <div><dt>Source</dt><dd>{{ l.source|human }}</dd></div>
+      <div><dt>Confidence</dt><dd>{{ m.conf(l.confidence) }}{% if l.model_confidence and l.model_confidence != l.confidence %} <span class="meta">model said {{ l.model_confidence }}</span>{% endif %}</dd></div>
+      <div><dt>Due</dt><dd>{% if l.due_date %}{{ l.due_date|day }}{% else %}not set{% endif %} <span class="meta">{{ l.due_date_confidence }}</span></dd></div>
+      <div><dt>Status</dt><dd>{{ l.status }}</dd></div>
+    </dl>
+    {% if l.evidence_quote %}
+    <blockquote class="evidence">"{{ l.evidence_quote }}" {{ m.trefs(l.evidence) }} {{ m.play(cid, l.evidence, l.play) }}</blockquote>
+    {% elif l.evidence %}
+    <p class="meta">Evidence {{ m.trefs(l.evidence) }} {{ m.play(cid, l.evidence, l.play) }}</p>
+    {% else %}
+    <p class="meta">No quote: {% if l.source == 'recommended' %}recommended by the agent, nobody committed to it on the call.{% else %}no evidence recorded.{% endif %}</p>
+    {% endif %}
+    {% if l.notes %}<ul class="plain vnotes">{% for n in l.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+    <div class="actions">
+      {% if l.review_state == 'proposed' %}
+      <form method="post" action="/loops/{{ l.node_id }}/confirm">{{ m.next_field(here) }}<button class="btn btn-primary btn-sm">Confirm</button></form>
+      {% endif %}
+      {% if l.review_state == 'rejected' %}
+      <form method="post" action="/loops/{{ l.node_id }}/status">{{ m.next_field(here) }}<input type="hidden" name="status" value="open"><button class="btn btn-sm">Restore</button></form>
+      {% else %}
+      <form method="post" action="/loops/{{ l.node_id }}/reject">{{ m.next_field(here) }}<button class="btn btn-quiet btn-sm">✕ Reject</button></form>
+      {% endif %}
+      <details class="edit">
+        <summary class="btn btn-sm">Edit</summary>
+        <form method="post" action="/loops/{{ l.node_id }}/edit" class="edit-form">
+          {{ m.next_field(here) }}
+          <label>Description<textarea name="description" rows="2" required>{{ l.description }}</textarea></label>
+          <div class="form-grid">
+            <label>Owner<select name="owner">{% for o in owners %}<option value="{{ o }}"{% if o == l.owner %} selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
+            <label>Owner name<input name="owner_name" value="{{ l.owner_name or '' }}"></label>
+            <label>Due date<input type="date" name="due_date" value="{{ l.due_date or '' }}"></label>
+            <label>Priority<select name="priority">{% for p in priorities %}<option value="{{ p }}"{% if p == l.priority %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+            <label>Status<select name="status">{% for s in loop_statuses %}<option value="{{ s }}"{% if s == l.status %} selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+          </div>
+          <button class="btn btn-primary btn-sm">Save and confirm</button>
+        </form>
+      </details>
+      {% if run_ids.actions %}<a class="why" href="/runs/{{ run_ids.actions }}">Why?</a>{% endif %}
+    </div>
+  </article>
+  {% else %}
+  <p class="empty">{% if ready %}No actions were extracted from this call.{% else %}Actions appear once extraction runs.{% endif %}</p>
+  {% endfor %}
+
+  {% if reaffirmed %}
+  <div class="card">
+    <div class="label">Already open, raised again on this call</div>
+    <ul class="plain">{% for l in reaffirmed %}<li id="loop-{{ l.node_id }}">{{ l.description }} <span class="meta">{{ l.owner }} · {{ l.status }}{% if l.due_date %} · due {{ l.due_date|day }}{% endif %}{% if l.call_id %} · from <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">{{ l.call_title or 'an earlier call' }}</a>{% endif %}</span></li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <details class="add-loop">
+    <summary class="btn btn-sm">Add a loop</summary>
+    <form method="post" action="{{ here }}/loops" class="card edit-form">
+      <label>Description<input name="description" required placeholder="Send the revised deck to Anita"></label>
+      <div class="form-grid">
+        <label>Owner<select name="owner">{% for o in owners %}<option value="{{ o }}">{{ o }}</option>{% endfor %}</select></label>
+        <label>Type<select name="type">{% for t in loop_types %}<option value="{{ t }}">{{ t|human }}</option>{% endfor %}</select></label>
+        <label>Due date<input type="date" name="due_date"></label>
+        <label>Priority<select name="priority">{% for p in priorities %}<option value="{{ p }}"{% if p == 'medium' %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+      </div>
+      <button class="btn btn-primary btn-sm">Add</button>
+    </form>
+  </details>
+</section>
+
+{# ---- d. what changed, summary, missed opportunity, coaching -------------- #}
+{% if analysis or summary %}
+<section class="section" id="summary">
+  <div class="section-head"><h2>What happened</h2>
+    {% if run_ids.summary %}<a class="why" href="/runs/{{ run_ids.summary }}">Why?</a>{% endif %}</div>
+  <div class="grid-2">
+    {% if analysis and analysis.what_changed %}
+    <div class="card">
+      <div class="label">What changed in the deal</div>
+      <ul class="plain dash">{% for x in analysis.what_changed %}<li>{{ x }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% if summary %}
+    <div class="card">
+      <div class="label">Next step</div>
+      {% if summary.next_step %}<p class="lead">{{ summary.next_step.text }} {{ m.trefs(summary.next_step.evidence_turns) }}</p>
+      {% else %}<p class="accent">No next step was agreed on this call.</p>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if summary %}
+  <div class="card summary">
+    <p>{{ summary.what_happened }}</p>
+    {% for key, label in [('decisions', 'Decisions'), ('open_questions', 'Open questions'), ('risks', 'Risks'), ('key_discussions', 'Discussed')] %}
+      {% if summary[key] %}
+      <div class="label">{{ label }}</div>
+      <ul class="plain dash">
+        {% for it in summary[key] %}<li>{{ it.text }} {{ m.trefs(it.evidence_turns) }}{% if it.unsupported %} <span class="tag">cites no valid turn</span>{% endif %}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    {% endfor %}
+    {% if summary.commitments %}
+    <div class="label">Commitments</div>
+    <ul class="plain dash">{% for c in summary.commitments %}<li><span class="meta">{{ c.owner }}{% if c.owner_name %} · {{ c.owner_name }}{% endif %}</span> {{ c.text }} {{ m.trefs(c.evidence_turns) }}{% if c.unsupported %} <span class="tag">cites no valid turn</span>{% endif %}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if analysis %}
+  <div class="grid-2">
+    {% set mo = analysis.biggest_missed_opportunity %}
+    {% if mo %}
+    <div class="card callout-card">
+      <div class="eyebrow">Biggest missed opportunity</div>
+      <p>{{ mo.what_happened }} {{ m.trefs(mo.evidence_turns) }} {{ m.play(cid, mo.evidence_turns, can_play(mo.evidence_turns)) }}</p>
+      <div class="label">Instead</div>
+      <p>{{ mo.what_to_do_instead }}</p>
+      {% if mo.suggested_words %}<div class="label">Words to use</div><p class="suggested">"{{ mo.suggested_words }}"</p>{% endif %}
+    </div>
+    {% endif %}
+    {% set ci = analysis.coaching_insight %}
+    {% if ci %}
+    <div class="card">
+      <div class="eyebrow">Coaching insight</div>
+      <p class="lead">{{ ci.insight }} {{ m.trefs(ci.evidence_turns) }}</p>
+      <div class="label">Practise on the next call</div>
+      <p>{{ ci.practice_next_call }}</p>
+      <p><a href="/coach">Your patterns</a></p>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ---- e. deal link + participants ----------------------------------------- #}
+<section class="section" id="link">
+  {% set needs_link = not deal or not buyers %}
+  <details{% if needs_link %} open{% endif %}>
+    <summary class="section-head"><h2>Deal and participants</h2>
+      <span class="purpose">{% if not deal %}Not linked to a deal. {% endif %}{% if not buyers %}No buyer-side participant, so there is nobody to email. {% endif %}{% if not needs_link %}{{ deal.name }} · {{ buyers|length }} buyer-side participant{{ '' if buyers|length == 1 else 's' }}.{% endif %}</span></summary>
+    <div class="grid-2">
+      <form method="post" action="{{ here }}/deal" class="card edit-form">
+        <div class="label">{% if deal %}Move to another deal{% else %}Link a deal{% endif %}</div>
+        <label>Existing deal<select name="deal_id"><option value="">Choose</option>{% for d in deals %}<option value="{{ d.node_id }}"{% if deal and d.node_id == deal.node_id %} selected{% endif %}>{{ d.name }}{% if d.account_name and d.account_name != d.name %} ({{ d.account_name }}){% endif %}</option>{% endfor %}</select></label>
+        <label>or a new deal named<input name="new_deal" placeholder="Acme pilot"></label>
+        <button class="btn btn-primary btn-sm">Link deal</button>
+      </form>
+      <form method="post" action="{{ here }}/participants" class="card edit-form">
+        <div class="label">Add a participant</div>
+        <label>Existing person<select name="person_id"><option value="">Choose, or create below</option>{% for p in people %}<option value="{{ p.node_id }}">{{ p.name }}{% if p.email %} · {{ p.email }}{% endif %}</option>{% endfor %}</select></label>
+        <div class="form-grid">
+          <label>Name<input name="name"></label>
+          <label>Email<input name="email" type="email"></label>
+          <label>Title<input name="title"></label>
+        </div>
+        <button class="btn btn-primary btn-sm">Add participant</button>
+      </form>
+    </div>
+  </details>
+</section>
+
+{# ---- f. speaker mapping --------------------------------------------------- #}
+{% if clusters|length > 1 %}
+<section class="section" id="speakers">
+  <div class="section-head"><h2>Who was speaking</h2><span class="purpose">The other side has {{ clusters|length }} voices. Map each to a person so quotes and owners are right.</span></div>
+  <form method="post" action="{{ here }}/speakers" class="card">
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Voice</th><th>Sample</th><th>Person</th></tr></thead>
+      <tbody>
+      {% for c in clusters %}
+      <tr><td class="nowrap mono">{{ c.cluster }}<div class="meta">{{ c.count }} turns</div></td>
+          <td>"{{ c.sample }}" {{ m.trefs([c.first_idx]) }} {{ m.play(cid, [c.first_idx], can_play([c.first_idx])) }}</td>
+          <td><input type="hidden" name="cluster" value="{{ c.cluster }}">
+            <select name="person"><option value="">Unknown</option>{% for p in people %}<option value="{{ p.node_id }}"{% if p.node_id == c.person_id %} selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <button class="btn btn-primary btn-sm">Save speakers</button>
+  </form>
+</section>
+{% endif %}
+
+{# ---- g. transcript -------------------------------------------------------- #}
+<details class="section transcript" id="transcript">
+  <summary class="section-head"><h2>Transcript</h2>
+    <span class="purpose">{{ turns|length }} turns{% if garbled_count %} · {{ garbled_count }} garbled{% endif %}{% if partial_count %} · {{ partial_count }} partial{% endif %}{% if bleed_count %} · {{ bleed_count }} bleed{% endif %}{% if not has_audio %} · no audio{% endif %}</span></summary>
+  <ol class="turns">
+    {% for t in turns %}
+    <li id="t{{ t.idx }}" class="turn turn-{{ t.channel }}{% if t.quality in ('garbled', 'partial') %} q-{{ t.quality }}{% endif %}">
+      <span class="turn-meta"><a class="tref" href="#t{{ t.idx }}">#{{ t.idx }}</a> <span class="who">{{ t.speaker }}</span> <span class="num">{{ t.t_start|mmss }}</span></span>
+      <span class="turn-text">{{ t.text }}
+        {% if t.quality in ('garbled', 'partial') %}<span class="tag tag-{{ t.quality }}">{{ t.quality }}{% if t.quality_note %}: {{ t.quality_note }}{% endif %}</span>{% endif %}
+        {% if t.bleed_flag %}<span class="tag">possible bleed</span>{% endif %}
+        {{ m.play(cid, [t.idx], can_play([t.idx])) }}</span>
+    </li>
+    {% else %}
+    <li class="empty">No final transcript yet.</li>
+    {% endfor %}
+  </ol>
+</details>
+
+{# ---- h. complete review --------------------------------------------------- #}
+{% if ready %}
+<section class="section complete">
+  <form method="post" action="{{ here }}/complete" class="complete-row">
+    <button class="btn btn-primary">{% if review_completed %}Complete review again{% else %}Complete review{% endif %}</button>
+    <p class="meta">{% if review_completed %}Review completed. {% endif %}Confirmed loops are mirrored to Jarvis. Anything still proposed stays in Open Loops.{% if proposed_count %} {{ proposed_count }} still proposed.{% endif %}</p>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

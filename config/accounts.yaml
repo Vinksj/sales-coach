@@ -1,0 +1,12 @@
+# Your accounts, their deals and the people on them, for `salescoach onboard`. Ships empty.
+# Put your own accounts.yaml in your settings folder (<data>/settings/accounts.yaml); it is read
+# instead of this file. `salescoach onboard` is idempotent: accounts match by domain, people by
+# email; nothing is duplicated on re-run. Leave out people without a verified email.
+#
+# accounts:
+#   - name: Example Manufacturing
+#     domains: [example-manufacturing.com]
+#     deal: {name: Example pilot, stage: pilot proposal}
+#     people:
+#       - {name: Anita Rao, email: anita.rao@example-manufacturing.com, title: CFO, role: economic_buyer}
+accounts: []

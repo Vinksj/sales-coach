@@ -1,0 +1,820 @@
+# Sales methodologies, as data. Read by salescoach/intel/methodology.py.
+#
+# The deal strategist scores every deal against the ACTIVE methodology's elements, the deal page and
+# the prep brief show them, deal health is capped by them, and the call analyst and the live coach are
+# told how this team sells. Which one is active, and any methodology an org writes for itself, lives in
+# the user's settings (methodology.yaml: {active, custom}); this file is only the built-in library.
+#
+# A framework:
+#   name          what people call it
+#   lens          the short tag the call analyst puts on a gap it finds through this framework
+#   kind          qualification (facts about the deal) | conversation (how the selling conversation
+#                 should go). Conversation frameworks are still scored on what the BUYER confirmed: the
+#                 code only accepts "known" with a verified buyer quote, so "the seller asked an
+#                 implication question" can never be an element, "the buyer stated a consequence" can.
+#   description   one paragraph for the setup page: what it is and when it fits
+#   elements      2 to 12, in the order they are shown
+#   gap_order     optional: the order gaps are listed in a prep brief. Default: critical elements
+#                 first, then element order.
+#   health        min_known {count, cap, rule}: fewer than `count` known elements caps deal health at `cap`
+#                 rubric: how the strategist scores 0 to 100, in this framework's terms
+#                 bottleneck_hint: where deals run under this framework usually get stuck
+#   coaching      analyst: added to the call analyst's prompt; secondary_lenses: other lenses it may use;
+#                 live: added to the live coach's prompt; live_weights: nudge trigger weights that
+#                 replace the ones in live_coach.yaml (the user's own overrides still win)
+#
+# An element:
+#   key                 [a-z0-9_]+; never "health", never starting with "risk", no colon. The SAME key is
+#                       used wherever two frameworks mean the same thing (champion, economic_buyer,
+#                       decision_process, identify_pain, metrics, budget, situation), so what is known
+#                       about a deal carries over when an org changes methodology.
+#   label               what the seller reads
+#   known_when          the fact the buyer must have confirmed on a call
+#   partial_when        what counts as half way
+#   questions           how to ask for it
+#   critical            true: not knowing it caps deal health at cap_when_not_known
+#   cap_rule / cap_why  the rule's name in the health record, and the reason shown to the seller
+#   risk_when_unknown   a risk type the code raises by itself while the element is unknown
+#
+# MEDDPICC is what this coach was built and tuned on. Its keys, labels, caps and rule names are the
+# ones the code used before methodologies became data, and its coaching texts are empty on purpose:
+# the analyst and live-coach prompts already speak it.
+
+default: meddpicc
+
+methodologies:
+
+  # ------------------------------------------------------------------------------ MEDDPICC
+  meddpicc:
+    name: MEDDPICC
+    lens: MEDDPICC
+    kind: qualification
+    description: >-
+      Eight facts that decide a complex B2B deal: Metrics, Economic Buyer, Decision Criteria, Decision
+      Process, Paper Process, Identify Pain, Champion and Competition. It fits long, multi-stakeholder
+      enterprise sales where deals die from what nobody asked: who really signs, how the decision gets
+      made, what procurement and legal will need. It is heavier than a small or transactional sale needs.
+    elements:
+      - key: metrics
+        label: Metrics
+        known_when: >-
+          The buyer stated, in numbers, the business result they expect or what the problem costs them
+          today (money, time, volume, error rate).
+        partial_when: >-
+          A benefit was discussed without a number, or the number is the seller's estimate and the buyer
+          has not agreed to it.
+        questions:
+          - "What does this problem cost you in a typical month?"
+          - "Which number has to move for this to count as a success, and by how much?"
+      - key: economic_buyer
+        label: Economic Buyer
+        known_when: >-
+          The buyer named the person who can release the money and say yes when others say no, and that
+          person has spoken with the seller or sent a clear position.
+        partial_when: >-
+          A name or a title was mentioned, but that person has not engaged, or their authority over this
+          budget is not confirmed.
+        questions:
+          - "Who signs off on the spend for something like this?"
+          - "When can the three of us spend twenty minutes together?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: economic_buyer_not_confirmed
+        cap_why: the economic buyer is not confirmed and engaged
+      - key: decision_criteria
+        label: Decision Criteria
+        known_when: >-
+          The buyer said what they will judge the options on (technical, commercial, risk) and which
+          criteria weigh most.
+        partial_when: Some criteria came up in passing, with no ranking, or they are one person's view.
+        questions:
+          - "When you compare options, what will you judge them on?"
+          - "Which of those matters most to the person who signs?"
+      - key: decision_process
+        label: Decision Process
+        known_when: >-
+          The buyer described the steps from here to a decision: who reviews, who approves, in what
+          order, and by roughly when.
+        partial_when: Some steps or names are known, but the order, the approvers or the timing are missing.
+        questions:
+          - "Once you are convinced, what happens next on your side, step by step?"
+          - "Who else has to say yes before this goes ahead?"
+      - key: paper_process
+        label: Paper Process
+        known_when: >-
+          The buyer described what happens after the yes: legal, procurement, security review or vendor
+          onboarding, who signs, and how long it usually takes.
+        partial_when: Procurement or legal was mentioned, but not the steps, the signer or the lead time.
+        questions:
+          - "After the decision, what does it take to get an order or a contract out?"
+          - "How long did the last vendor take from yes to signature?"
+      - key: identify_pain
+        label: Identify Pain
+        known_when: >-
+          The buyer described a specific problem, who feels it and what it costs or blocks, in their
+          own words.
+        partial_when: A problem was named, but not its consequence or who owns it.
+        questions:
+          - "What happens today when this goes wrong?"
+          - "Who feels it most when it does?"
+      - key: champion
+        label: Champion
+        known_when: >-
+          A person with influence has acted for the deal (brought a senior person, shared internal data,
+          pushed a date) and has a personal reason to want it to happen.
+        partial_when: >-
+          Someone is friendly and helpful, but has not yet acted when the seller is not in the room, or
+          their influence is untested.
+        questions:
+          - "If this works, what does it change for you personally?"
+          - "Who would you need on your side to get this through, and how can I help you with them?"
+      - key: competition
+        label: Competition
+        known_when: >-
+          The buyer said what else they are weighing (a named vendor, building it in-house, or doing
+          nothing) and how they see each option.
+        partial_when: Alternatives were hinted at, but not named or not compared.
+        questions:
+          - "What else are you looking at to solve this, including doing it yourselves?"
+          - "What happens if you decide to leave things as they are this year?"
+    gap_order: [economic_buyer, decision_process, champion, paper_process, metrics, identify_pain,
+                decision_criteria, competition]
+    health:
+      min_known: {count: 3, cap: 50, rule: meddpicc_known_below_3}
+      rubric: |-
+        - 0 to 24: no real deal yet.
+        - 25 to 49: interest without access to the economic buyer or a known process.
+        - 50 to 69: economic buyer engaged, pain quantified, a next step with an owner and a date.
+        - 70 to 84: decision process and paper process known, champion proven by action.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually access to the economic buyer, an undefined decision process, or no urgency
+    coaching:
+      analyst: ""
+      secondary_lenses: [SPIN, Challenger, Gap]
+      live: ""
+      live_weights: {}
+
+  # -------------------------------------------------------------------------------- MEDDIC
+  meddic:
+    name: MEDDIC
+    lens: MEDDIC
+    kind: qualification
+    description: >-
+      The original six: Metrics, Economic Buyer, Decision Criteria, Decision Process, Identify Pain and
+      Champion. The same discipline as MEDDPICC with less to track. It fits mid-market and enterprise
+      deals where procurement is light and competitors are rarely the reason a deal is lost; if
+      paperwork or a rival vendor regularly surprises you late, use MEDDPICC instead.
+    elements:
+      - key: metrics
+        label: Metrics
+        known_when: >-
+          The buyer stated, in numbers, the business result they expect or what the problem costs them
+          today (money, time, volume, error rate).
+        partial_when: >-
+          A benefit was discussed without a number, or the number is the seller's estimate and the buyer
+          has not agreed to it.
+        questions:
+          - "What does this problem cost you in a typical month?"
+          - "Which number has to move for this to count as a success, and by how much?"
+      - key: economic_buyer
+        label: Economic Buyer
+        known_when: >-
+          The buyer named the person who can release the money and say yes when others say no, and that
+          person has spoken with the seller or sent a clear position.
+        partial_when: >-
+          A name or a title was mentioned, but that person has not engaged, or their authority over this
+          budget is not confirmed.
+        questions:
+          - "Who signs off on the spend for something like this?"
+          - "When can the three of us spend twenty minutes together?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: economic_buyer_not_confirmed
+        cap_why: the economic buyer is not confirmed and engaged
+        risk_when_unknown: no_economic_buyer_access
+      - key: decision_criteria
+        label: Decision Criteria
+        known_when: >-
+          The buyer said what they will judge the options on (technical, commercial, risk) and which
+          criteria weigh most.
+        partial_when: Some criteria came up in passing, with no ranking, or they are one person's view.
+        questions:
+          - "When you compare options, what will you judge them on?"
+          - "Which of those matters most to the person who signs?"
+      - key: decision_process
+        label: Decision Process
+        known_when: >-
+          The buyer described the steps from here to a signed order: who reviews, who approves, in what
+          order, what legal or procurement will need, and by roughly when.
+        partial_when: >-
+          Some steps or names are known, but the order, the approvers, the paperwork or the timing
+          are missing.
+        questions:
+          - "Once you are convinced, what happens next on your side, step by step, until it is signed?"
+          - "Who else has to say yes before this goes ahead?"
+        risk_when_unknown: undefined_decision_process
+      - key: identify_pain
+        label: Identify Pain
+        known_when: >-
+          The buyer described a specific problem, who feels it and what it costs or blocks, in their
+          own words.
+        partial_when: A problem was named, but not its consequence or who owns it.
+        questions:
+          - "What happens today when this goes wrong?"
+          - "Who feels it most when it does?"
+      - key: champion
+        label: Champion
+        known_when: >-
+          A person with influence has acted for the deal (brought a senior person, shared internal data,
+          pushed a date) and has a personal reason to want it to happen.
+        partial_when: >-
+          Someone is friendly and helpful, but has not yet acted when the seller is not in the room, or
+          their influence is untested.
+        questions:
+          - "If this works, what does it change for you personally?"
+          - "Who would you need on your side to get this through, and how can I help you with them?"
+        risk_when_unknown: weak_champion
+    gap_order: [economic_buyer, decision_process, champion, metrics, identify_pain, decision_criteria]
+    health:
+      min_known: {count: 3, cap: 50, rule: meddic_known_below_3}
+      rubric: |-
+        - 0 to 24: no real deal yet.
+        - 25 to 49: interest and a named pain, without access to the economic buyer or a known process.
+        - 50 to 69: economic buyer engaged, pain quantified, a next step with an owner and a date.
+        - 70 to 84: decision criteria and decision process known, champion proven by action.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually access to the economic buyer, an undefined decision process, or a champion who has not been tested
+    coaching:
+      analyst: >-
+        This team qualifies with MEDDIC. When you look for gaps, check the six elements first: a number
+        the buyer owns (Metrics), the person who can release the money (Economic Buyer), what options are
+        judged on (Decision Criteria), the steps to a signed order (Decision Process), a pain with a
+        consequence (Identify Pain), and someone inside who acts for the deal (Champion). A gap is worth
+        raising when the call gave an opening to learn it and the seller did not take it.
+      secondary_lenses: [SPIN, Challenger, Gap]
+      live: >-
+        This team qualifies with MEDDIC. Between two possible nudges, prefer the one that gets a MEDDIC
+        fact from the buyer's mouth: a number, the name of the person who signs, the next approval step.
+      live_weights: {}
+
+  # ---------------------------------------------------------------------------------- BANT
+  bant:
+    name: BANT
+    lens: BANT
+    kind: qualification
+    description: >-
+      Budget, Authority, Need, Timeline: four questions that tell you quickly whether an opportunity is
+      worth pursuing now. It fits high-volume and inbound selling, SDR qualification and shorter cycles
+      with one or two decision makers. It is thin for enterprise deals, where budget is often created
+      for a strong case rather than found, and where many people share the authority.
+    elements:
+      - key: budget
+        label: Budget
+        known_when: >-
+          The buyer said money is allocated or can be found for this, and gave a figure, a range or the
+          budget it would come from.
+        partial_when: >-
+          The buyer said budget should not be a problem, or that it depends on the business case, with
+          no figure and no source.
+        questions:
+          - "Is there a budget set aside for this, or would it need to be found?"
+          - "What range did you have in mind when you started looking?"
+      - key: authority
+        label: Authority
+        known_when: >-
+          The buyer named who makes the final decision and who else must agree, and the decision maker
+          has engaged directly or sent a clear position.
+        partial_when: >-
+          A decision maker was named but has not engaged, or the contact says the decision is theirs and
+          nothing confirms it.
+        questions:
+          - "Besides you, who is involved in deciding this?"
+          - "Who has the final say when it is time to sign?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: authority_not_confirmed
+        cap_why: the person with authority to buy is not confirmed and engaged
+        risk_when_unknown: no_economic_buyer_access
+      - key: need
+        label: Need
+        known_when: >-
+          The buyer described a specific problem or goal the offering addresses and said it is a
+          priority for them now.
+        partial_when: There is general interest, but no specific problem, or no sign that it is a priority.
+        questions:
+          - "What made you look at this now?"
+          - "Where does this sit among the things you have to get done this quarter?"
+        critical: true
+        cap_when_not_known: 45
+        cap_rule: need_not_confirmed
+        cap_why: the buyer has not confirmed a specific need that is a priority
+        risk_when_unknown: status_quo
+      - key: timeline
+        label: Timeline
+        known_when: The buyer gave a date by which they need this in place, and the reason behind that date.
+        partial_when: A rough timeframe was mentioned with no reason behind it, or it keeps moving.
+        questions:
+          - "When do you need this working by?"
+          - "What happens if it slips past that date?"
+        risk_when_unknown: weak_urgency
+    health:
+      min_known: {count: 2, cap: 50, rule: bant_known_below_2}
+      rubric: |-
+        - 0 to 24: none of the four is confirmed; a conversation, not an opportunity.
+        - 25 to 49: a need is stated, but there is no access to the person with authority and no timeline.
+        - 50 to 69: need and authority confirmed, a next step with an owner and a date.
+        - 70 to 84: all four confirmed by the buyer, and the timeline has a reason behind it.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually no access to the person with authority, a need that is not a priority, or a timeline with nothing behind it
+    coaching:
+      analyst: >-
+        This team qualifies with BANT. When you look for gaps, check the four first: is there money
+        (Budget), who decides and have they engaged (Authority), is there a specific problem that is a
+        priority now (Need), and is there a date with a reason behind it (Timeline). "Budget won't be a
+        problem" and "sometime next quarter" are not answers; say so when the seller accepts them.
+      secondary_lenses: [SPIN, Challenger, Gap]
+      live: >-
+        This team qualifies with BANT. Prefer nudges that get one of the four from the buyer's mouth: a
+        figure or a budget source, the name of the person who signs, why this is a priority now, the
+        date and the reason for it. A vague answer on any of them is worth one follow-up.
+      live_weights: {buying_process: 0.9, stakeholder_gap: 0.85, weak_commitment: 0.95}
+
+  # -------------------------------------------------------------------------------- SPICED
+  spiced:
+    name: SPICED
+    lens: SPICED
+    kind: qualification
+    description: >-
+      Situation, Pain, Impact, Critical Event, Decision: the Winning by Design framework. It is built
+      around the customer's impact rather than the seller's checklist, and it is shared by sales and
+      customer success, so the same facts carry from first call to renewal. It fits SaaS and recurring
+      revenue businesses where the deal is won on a quantified impact and a date that matters.
+    elements:
+      - key: situation
+        label: Situation
+        known_when: >-
+          The buyer described the facts that frame the deal: what their business does, how the relevant
+          process works today, the tools, the volumes and the people involved.
+        partial_when: Only general background is known, or it came from research rather than from the buyer.
+        questions:
+          - "Walk me through how this works today, from start to finish?"
+          - "What volumes are we talking about in a typical month?"
+      - key: identify_pain
+        label: Pain
+        known_when: >-
+          The buyer described a specific problem, who feels it and what it costs or blocks, in their
+          own words.
+        partial_when: A problem was named, but not its consequence or who owns it.
+        questions:
+          - "What happens today when this goes wrong?"
+          - "Why is that a problem worth solving, compared with everything else on your plate?"
+        critical: true
+        cap_when_not_known: 45
+        cap_rule: pain_not_confirmed
+        cap_why: the buyer has not described a specific pain in their own words
+        risk_when_unknown: status_quo
+      - key: impact
+        label: Impact
+        known_when: >-
+          The buyer stated the result they want from solving the pain as a business number (revenue,
+          cost, time, risk) and said what it would mean for them or their team.
+        partial_when: The impact is described in general terms, or only the seller has put a number on it.
+        questions:
+          - "If this were solved, what would it be worth to the business in a year?"
+          - "What would it change for you and your team?"
+      - key: critical_event
+        label: Critical Event
+        known_when: >-
+          The buyer named a date by which the result must be achieved and what happens to them if it
+          is missed.
+        partial_when: There is a target date with no consequence for missing it. That is a wish, not a deadline.
+        questions:
+          - "Is there a date this has to be working by?"
+          - "What happens on your side if that date passes and nothing has changed?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: critical_event_not_confirmed
+        cap_why: there is no critical event, so nothing forces a decision by a date
+        risk_when_unknown: weak_urgency
+      - key: decision_process
+        label: Decision
+        known_when: >-
+          The buyer described how the decision gets made: who is on the buying committee, what they will
+          judge options on, and the steps and approvals from here to a signature.
+        partial_when: Some people, criteria or steps are known, but not all three, or not the timing.
+        questions:
+          - "Who will be involved in deciding this, and what will each of them look for?"
+          - "What are the steps between today and a signed agreement?"
+        risk_when_unknown: undefined_decision_process
+    health:
+      min_known: {count: 2, cap: 50, rule: spiced_known_below_2}
+      rubric: |-
+        - 0 to 24: situation only; no pain the buyer owns.
+        - 25 to 49: a pain is stated, but its impact is not quantified and nothing forces a date.
+        - 50 to 69: pain and impact confirmed by the buyer, a next step with an owner and a date.
+        - 70 to 84: a critical event with a consequence, and the decision process, committee and criteria known.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually an impact nobody has put a number on, no critical event, or an unknown decision committee
+    coaching:
+      analyst: >-
+        This team sells with SPICED. When you look for gaps, check: the facts of their situation, a pain
+        in the buyer's words, the impact of solving it as a number and as something personal, a critical
+        event (a date with a consequence, not a target), and how the decision gets made. Diagnose before
+        prescribing: note where the seller pitched before pain and impact were on the table.
+      secondary_lenses: [SPIN, Challenger, Gap]
+      live: >-
+        This team sells with SPICED. Prefer nudges that turn a pain into an impact with a number, and a
+        target date into a critical event: ask what happens if the date is missed.
+      live_weights: {quantify_impact: 0.9, status_quo: 0.8}
+
+  # ---------------------------------------------------------------------------------- SPIN
+  spin:
+    name: SPIN Selling
+    lens: SPIN
+    kind: conversation
+    description: >-
+      Neil Rackham's research-based questioning sequence for large sales: Situation, Problem,
+      Implication, Need-payoff. The seller's questions lead the buyer to state the problem, its
+      consequences and the value of solving it themselves. It fits consultative sales where the buyer
+      does not yet see the full cost of the problem. It says little about who decides or how, so pair
+      it with a qualification habit of your own. The coach scores what the buyer said, not which
+      questions were asked.
+    elements:
+      - key: situation
+        label: Situation
+        known_when: >-
+          The buyer described how the relevant part of their operation works today: the process, the
+          tools, the volumes and the people involved.
+        partial_when: Only general background is known, or it came from research rather than from the buyer.
+        questions:
+          - "Walk me through how this works today, from start to finish?"
+          - "What volumes are we talking about in a typical month?"
+      - key: identify_pain
+        label: Problem
+        known_when: >-
+          The buyer named a specific difficulty or dissatisfaction with how things work today, in their
+          own words.
+        partial_when: >-
+          The seller suggested a problem and the buyer went along with it without describing it
+          themselves.
+        questions:
+          - "Where does this process let you down most often?"
+          - "How satisfied are you with how that works today?"
+        critical: true
+        cap_when_not_known: 45
+        cap_rule: problem_not_stated
+        cap_why: the buyer has not stated a problem in their own words
+        risk_when_unknown: status_quo
+      - key: implication
+        label: Implication
+        known_when: >-
+          The buyer stated a consequence of the problem (cost, delay, lost revenue, a knock-on effect on
+          another team) and agreed it is serious enough to act on.
+        partial_when: >-
+          The seller raised the consequences, or the buyer mentioned one without its size or how
+          serious it is.
+        questions:
+          - "When that happens, what does it do to the rest of the operation?"
+          - "What does that end up costing you in a month?"
+        risk_when_unknown: weak_urgency
+      - key: need_payoff
+        label: Need-payoff
+        known_when: >-
+          The buyer said, in their own words, what solving the problem would be worth or make possible:
+          an explicit need, not agreement with the seller's pitch.
+        partial_when: >-
+          The buyer agreed a solution would help, but did not say what it would be worth or why it
+          matters to them.
+        questions:
+          - "If this were fixed, what would that let you do?"
+          - "Why is solving this important to you now?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: explicit_need_not_stated
+        cap_why: the buyer has not stated an explicit need, only agreed with the pitch
+    health:
+      min_known: {count: 2, cap: 50, rule: spin_known_below_2}
+      rubric: |-
+        - 0 to 24: situation facts only; the buyer has stated no problem.
+        - 25 to 49: a problem is stated, but the buyer has not said what it leads to or costs.
+        - 50 to 69: the buyer stated implications they take seriously, a next step with an owner and a date.
+        - 70 to 84: the buyer stated the payoff of solving it in their own words, and an advance was agreed that costs them something.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually a problem the buyer does not yet see as serious, or a need only the seller has put into words
+    coaching:
+      analyst: >-
+        This team sells with SPIN. Judge the call by what the buyer ended up saying, not by the questions
+        asked: did the buyer state a problem, a consequence they take seriously, and the value of solving
+        it, in their own words? Note too many Situation questions, a pitch made before the buyer stated
+        an explicit need, and implied needs the seller answered with features instead of an Implication
+        question. Count a call as an advance only if the buyer agreed to an action that moves the sale
+        forward; a pleasant call that ends in "send me something" is a continuation.
+      secondary_lenses: [Challenger, Gap]
+      live: >-
+        This team sells with SPIN. When the buyer states a problem, the next move is an Implication
+        question, not a feature. When the buyer has felt the consequence, ask a Need-payoff question so
+        that they say the value themselves. Hold the pitch until they have.
+      live_weights: {dig_deeper: 0.85, quantify_impact: 0.9, root_cause: 0.75}
+
+  # ---------------------------------------------------------------------------- Challenger
+  challenger:
+    name: Challenger Sale
+    lens: Challenger
+    kind: conversation
+    description: >-
+      Teach, Tailor, Take Control. The seller leads with an insight that reframes how the buyer sees
+      their own business, makes it land differently for each stakeholder, and is comfortable with
+      tension about money and next steps. It fits markets where buyers arrive with their minds made up
+      or do not know they have the problem, and sellers who have a real point of view backed by data.
+      The coach scores the buyer's reaction (did the reframe land, did they own the cost, did anyone
+      mobilise), not how the pitch was delivered.
+    elements:
+      - key: reframe
+        label: Reframe
+        known_when: >-
+          After the seller shared an insight, the buyer acknowledged a problem, a cost or an assumption
+          they had not raised themselves, for example by saying they had not looked at it that way.
+        partial_when: >-
+          The buyer listened to the insight and found it interesting, but did not connect it to their
+          own business.
+        questions:
+          - "Most teams we meet assume this is a cost of doing business. How do you see it?"
+          - "How does that compare with what you see in your own numbers?"
+        critical: true
+        cap_when_not_known: 55
+        cap_rule: reframe_not_landed
+        cap_why: the buyer has not accepted a new way of seeing the problem
+      - key: cost_of_inaction
+        label: Cost of Inaction
+        known_when: >-
+          The buyer put their own number or their own story on what the reframed problem costs them, and
+          agreed it cannot be left alone.
+        partial_when: >-
+          The seller presented the numbers; the buyer did not dispute them, but did not make them
+          their own.
+        questions:
+          - "If we ran these numbers with your volumes, what would they come to?"
+          - "What happens if this stays as it is for another year?"
+        risk_when_unknown: status_quo
+      - key: tailor
+        label: Tailored to Stakeholders
+        known_when: >-
+          Each stakeholder who matters has said what outcome they personally need from this, in terms of
+          their own role and targets.
+        partial_when: One person's priorities are known; the others are assumed from their titles.
+        questions:
+          - "What are you measured on this year, and where does this touch it?"
+          - "What would your finance head need to see in this that you do not?"
+      - key: take_control
+        label: Take Control
+        known_when: >-
+          The buyer accepted a next step the seller proposed, with an owner and a date, or engaged
+          openly on price and terms without the seller conceding first.
+        partial_when: The buyer agreed to continue, but the next step is vague or was left for the buyer to set.
+        questions:
+          - "Here is what I suggest we do next, and by when. Does that work?"
+          - "Before we talk about price, can we agree on what this is worth to you?"
+      - key: champion
+        label: Mobilizer
+        known_when: >-
+          A person who can build consensus has acted: tested the idea with colleagues, brought others
+          in, or asked how to make the case internally.
+        partial_when: A contact is friendly and talkative, but has not moved anyone else.
+        questions:
+          - "Who else needs to see this the way you now do?"
+          - "What would you need from me to make the case to them?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: mobilizer_not_proven
+        cap_why: nobody on their side has yet acted to build consensus for this
+        risk_when_unknown: weak_champion
+    health:
+      min_known: {count: 2, cap: 50, rule: challenger_known_below_2}
+      rubric: |-
+        - 0 to 24: the buyer still sees their problem the way they did before the first call.
+        - 25 to 49: the insight interested them, but they have not tied it to their own business or its cost.
+        - 50 to 69: the reframe landed and the buyer owns the cost of inaction, a next step with an owner and a date.
+        - 70 to 84: a mobilizer is building consensus, and each key stakeholder's own stake is known.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually an insight that has not landed, a friendly contact who is not a mobilizer, or a next step left for the buyer to set
+    coaching:
+      analyst: >-
+        This team sells with the Challenger approach. Judge the call by the buyer's reaction: did an
+        insight change how they see their problem, did they own the cost of leaving it, did the message
+        fit the person in the room, and did the seller keep control of the next step and of any talk
+        about money. Note where the seller led with the product instead of an insight, agreed with the
+        buyer's framing to stay comfortable, discounted or conceded to relieve tension, or relied on a
+        friendly contact who has moved nobody.
+      secondary_lenses: [SPIN, Gap]
+      live: >-
+        This team sells with the Challenger approach. Prefer nudges that keep constructive tension: tie
+        the insight to the buyer's own numbers, ask what doing nothing costs, propose the next step and
+        its date rather than asking for one, and do not concede on price to ease a silence.
+      live_weights: {status_quo: 0.8, quantify_impact: 0.85, weak_commitment: 0.95}
+
+  # ------------------------------------------------------------------------------- Sandler
+  sandler:
+    name: Sandler Selling System
+    lens: Sandler
+    kind: conversation
+    description: >-
+      The Sandler "submarine": an up-front contract for every conversation, then Pain, Budget and
+      Decision before anything is presented, then Fulfillment and Post-Sell. The buyer qualifies
+      themselves; the seller does not present until pain, money and the decision are clear, and either
+      side may say no at any step. It fits sellers who lose time to free consulting, unpaid proposals
+      and "let me think about it". The coach scores what the buyer agreed to and disclosed.
+    elements:
+      - key: up_front_contract
+        label: Up-Front Contract
+        known_when: >-
+          The buyer agreed at the start to the purpose of the conversation, the time, what each side
+          will cover, and that it ends in a clear yes, a no, or a defined next step.
+        partial_when: An agenda was set, but the buyer did not agree to a clear outcome at the end.
+        questions:
+          - "Can we agree what we each want out of today, and that at the end we decide whether there is a next step?"
+          - "If it is not a fit, are you comfortable telling me so?"
+      - key: identify_pain
+        label: Pain
+        known_when: >-
+          The buyer described the problem, what it costs the business, and how it affects them
+          personally: all three levels, in their own words.
+        partial_when: A surface problem is known, but not its business cost or why this person cares.
+        questions:
+          - "Can you give me a recent example of that?"
+          - "What has it cost the business, and how does that land on you?"
+        critical: true
+        cap_when_not_known: 45
+        cap_rule: pain_not_confirmed
+        cap_why: the buyer has not described a pain with a business cost and a personal stake
+        risk_when_unknown: status_quo
+      - key: budget
+        label: Budget
+        known_when: >-
+          The buyer said what money, time and people they are willing and able to commit to fix this, or
+          gave a range.
+        partial_when: >-
+          Budget was discussed but no figure or range was given, or it depends on someone who is not
+          yet involved.
+        questions:
+          - "What have you set aside to fix this, in money and in your team's time?"
+          - "In round numbers, is this a five-figure or a six-figure problem for you?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: budget_not_confirmed
+        cap_why: the buyer has not said what they are willing and able to invest
+      - key: decision_process
+        label: Decision
+        known_when: >-
+          The buyer explained who decides, how, by when, and what they need to see, and agreed what
+          happens after the presentation.
+        partial_when: >-
+          Some of who, how and when is known, or the buyer has not agreed what a presentation will
+          lead to.
+        questions:
+          - "When you have decided things like this before, how did it go: who was involved, and how long did it take?"
+          - "If what I show you solves the problem within your budget, what happens next?"
+        critical: true
+        cap_when_not_known: 60
+        cap_rule: decision_not_confirmed
+        cap_why: the buyer has not explained who decides, how and by when
+        risk_when_unknown: undefined_decision_process
+      - key: fulfillment
+        label: Fulfillment
+        known_when: >-
+          After seeing the proposal, the buyer confirmed it addresses each pain they named, or said
+          exactly what is missing.
+        partial_when: A proposal was presented, but the buyer's reaction was polite rather than specific.
+        questions:
+          - "On a scale of one to ten, how well does this solve what you told me about?"
+          - "What would you need to see to get to a ten?"
+      - key: post_sell
+        label: Post-Sell
+        known_when: >-
+          After the yes, the buyer said what could still undo the decision (an incumbent's
+          counter-offer, an internal objector, second thoughts) and how it will be handled.
+        partial_when: There is a verbal yes, but nothing has been said about what could reverse it.
+        questions:
+          - "What could come up between now and the start that would make you change your mind?"
+          - "When your current supplier hears about this, what will they do, and what will you say?"
+    health:
+      min_known: {count: 2, cap: 50, rule: sandler_known_below_2}
+      rubric: |-
+        - 0 to 24: no pain the buyer owns; a conversation without an up-front contract.
+        - 25 to 49: pain at the surface only; budget and decision not discussed.
+        - 50 to 69: pain with a business cost and a personal stake, budget discussed, a next step with an owner and a date.
+        - 70 to 84: pain, budget and decision all confirmed by the buyer before presenting, and the buyer agreed what the presentation leads to.
+        - 85 and above: verbal commitment or paper in motion, and the buyer has dealt with what could undo it.
+      bottleneck_hint: usually pain that stays at the surface, a budget nobody has named, or a presentation given before the decision was understood
+    coaching:
+      analyst: >-
+        This team sells with the Sandler system. Check whether the call opened with an up-front contract
+        and ended with a clear outcome, whether pain went past the surface to business cost and personal
+        stake, and whether budget and the decision were covered before anything was presented. Note free
+        consulting, a presentation given too early, "think it over" accepted as an outcome, and moments
+        where the seller chased instead of letting the buyer say no.
+      secondary_lenses: [SPIN, Gap]
+      live: >-
+        This team sells with the Sandler system. Prefer nudges that take pain one level deeper, get a
+        budget range said out loud, or pin down how the decision gets made, before any presenting.
+        "Let me think about it" is not an outcome: ask for a yes, a no, or a dated next step.
+      live_weights: {dig_deeper: 0.85, buying_process: 0.9, weak_commitment: 1.0}
+
+  # ---------------------------------------------------------------- Command of the Message
+  command_of_the_message:
+    name: Command of the Message
+    lens: CotM
+    kind: conversation
+    description: >-
+      Force Management's value-messaging framework. The buyer's current state and its negative
+      consequences, the Positive Business Outcomes they want, the Required Capabilities to get there,
+      the Metrics that prove it, and why you: Differentiators and Proof Points. It fits teams that lose
+      to "no decision" or on price because buyers cannot say why the offering is worth more, and it is
+      often run next to MEDDPICC, which covers who decides and how. The coach scores what the buyer
+      said back, not what was presented.
+    elements:
+      - key: before_scenario
+        label: Before Scenario
+        known_when: >-
+          The buyer described how things work today and the negative consequences they are living with,
+          in their own words.
+        partial_when: The current state is known, but the buyer has not said what it costs them.
+        questions:
+          - "How do you handle this today?"
+          - "What does that lead to when it goes wrong, and who hears about it?"
+        critical: true
+        cap_when_not_known: 45
+        cap_rule: before_scenario_not_confirmed
+        cap_why: the buyer has not described the current state and what it costs them
+        risk_when_unknown: status_quo
+      - key: positive_business_outcomes
+        label: Positive Business Outcomes
+        known_when: >-
+          The buyer named the business outcomes they want in terms an executive cares about (revenue,
+          cost, risk) and tied them to a company priority.
+        partial_when: The outcomes wanted are stated at team or feature level, not as a business result.
+        questions:
+          - "If this goes well, what is different for the business a year from now?"
+          - "Which company priority does that support?"
+        critical: true
+        cap_when_not_known: 55
+        cap_rule: outcomes_not_confirmed
+        cap_why: the buyer has not named the business outcomes they are buying
+      - key: required_capabilities
+        label: Required Capabilities
+        known_when: >-
+          The buyer agreed what a solution must be able to do to get from the before to the after: their
+          list, not the seller's feature list.
+        partial_when: Requirements exist, but they were not shaped with the seller or are a generic checklist.
+        questions:
+          - "To get that outcome, what would a solution have to be able to do?"
+          - "Which of those could you not live without?"
+      - key: metrics
+        label: Metrics
+        known_when: >-
+          The buyer said how they will measure that the outcomes were achieved, with a number and
+          a timeframe.
+        partial_when: Success is described in words, or the number is the seller's and the buyer has not agreed to it.
+        questions:
+          - "How will you know, six months in, that this worked?"
+          - "Which number will you show your leadership?"
+      - key: differentiators
+        label: Differentiators
+        known_when: >-
+          The buyer said, in their own words, what this offering does that the alternatives do not, and
+          why that matters for their required capabilities.
+        partial_when: The seller explained the differences; the buyer has not repeated or used them.
+        questions:
+          - "From what you have seen so far, where do you see us as different?"
+          - "How important is that difference for what you need to get done?"
+        risk_when_unknown: competition
+      - key: proof_points
+        label: Proof Points
+        known_when: >-
+          The buyer saw evidence from a comparable customer (a reference, a case, a measured result) and
+          said it is relevant to them.
+        partial_when: Proof was shared, but the buyer did not react, or the example is from a different kind of company.
+        questions:
+          - "Would it help to speak with a customer who had the same problem?"
+          - "What would you need to see to believe these results would hold for you?"
+    health:
+      min_known: {count: 2, cap: 50, rule: command_of_the_message_known_below_2}
+      rubric: |-
+        - 0 to 24: the buyer has not described a current state worth changing.
+        - 25 to 49: the before scenario is known, but no business outcome or required capability has been agreed.
+        - 50 to 69: negative consequences and positive business outcomes in the buyer's words, a next step with an owner and a date.
+        - 70 to 84: required capabilities and metrics agreed, and the buyer can say why this offering is different.
+        - 85 and above: verbal commitment or paper in motion.
+      bottleneck_hint: usually a before scenario without consequences, outcomes stated as features, or a buyer who cannot say why this offering is different
+    coaching:
+      analyst: >-
+        This team sells with Command of the Message. Check whether the buyer, not the seller, put into
+        words: the current state and its negative consequences, the positive business outcomes wanted,
+        the capabilities required, how success will be measured, and why this offering is different. Note
+        feature talk that was not tied to a required capability, differentiators claimed without a proof
+        point, and outcomes left at the level of a team's convenience instead of a business result.
+      secondary_lenses: [SPIN, Challenger, Gap]
+      live: >-
+        This team sells with Command of the Message. Prefer nudges that get the buyer to say the
+        negative consequence of today, the business outcome they want and how they will measure it.
+        When the seller is listing features, bring them back to a required capability.
+      live_weights: {quantify_impact: 0.85, status_quo: 0.75}

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ deal.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Deal · {{ deal.account_name or 'no account' }}{% if domains %} · {{ domains|join(', ') }}{% endif %}</div>
+  <h1>{{ deal.name }}</h1>
+  <div class="meta">{{ deal.status }}{% if deal.stage %} · {{ deal.stage }}{% endif %}{% if deal.close_target %} · close target {{ deal.close_target|day }}{% endif %} · <a href="/deals/{{ deal.node_id }}/prep">Prep for the next call</a></div>
+</div>
+
+<link rel="stylesheet" href="/static/intel.css">
+<section class="section" id="intel" data-intel-src="/deals/{{ deal.node_id }}/intel">
+  <p class="meta">Loading deal intelligence...</p>
+  <noscript><p><a href="/deals/{{ deal.node_id }}/intel">Open the deal intelligence</a></p></noscript>
+</section>
+
+{% if ('/learning', 'Learning') in (nav_ext or []) %}
+<section class="section" id="outcome" data-intel-src="/deals/{{ deal.node_id }}/outcome">
+  <p class="meta">Loading stage and outcome...</p>
+  <noscript><p><a href="/deals/{{ deal.node_id }}/outcome">Open the stage and outcome editor</a></p></noscript>
+</section>
+{% endif %}
+
+<section class="grid-2">
+  <div class="card">
+    <div class="label">Recorded next step</div>
+    <p class="lead">{{ deal.next_step or 'None recorded.' }}</p>
+    {% if calls and calls[0].next_step %}<div class="label">Last call agreed</div><p>{{ calls[0].next_step }}</p>{% endif %}
+  </div>
+  <div class="card">
+    <div class="label">Open loops</div>
+    <div class="stat stat-sm">{{ loops|length }}</div>
+    <p class="meta"><a href="/loops?deal={{ deal.node_id }}">Filter Open Loops to this deal</a></p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Open loops</h2></div>
+  {% if loops %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Due</th><th>Loop</th><th>Owner</th><th>Priority</th><th></th></tr></thead>
+    <tbody>
+    {% for l in loops %}
+    <tr id="loop-{{ l.node_id }}">
+      <td class="nowrap">{% if l.due_date %}<span class="{% if l.due_date < today %}due-over{% endif %}">{{ l.due_date|day }}</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+      <td>{{ l.description }}<div class="meta">{{ l.status }} · {{ m.conf(l.confidence) }}{% if l.review_state == 'proposed' %} · <span class="accent">unconfirmed</span>{% endif %}{% if l.call_id %} · <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">{{ l.call_title or 'call' }}</a>{% endif %}</div></td>
+      <td>{{ l.owner }}{% if l.owner_name %}<div class="meta">{{ l.owner_name }}</div>{% endif %}</td>
+      <td>{{ m.prio(l.priority) }}</td>
+      <td>{{ m.loop_quick(l, here) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="empty">No open loops.</p>{% endif %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Stakeholders</h2><span class="purpose">Only these people (plus call participants) can receive a follow-up.</span></div>
+  <div class="grid-2">
+    <div class="card">
+      <ul class="plain people">
+        {% for p in stakeholders %}
+        <li><span class="strong">{{ p.name }}</span>{% if p.is_me %} <span class="meta">(you)</span>{% endif %}
+          <div class="meta">{{ p.title or '' }}{% if p.role_in_deal %}{% if p.title %} · {% endif %}{{ p.role_in_deal }}{% endif %}{% if p.email %} · {{ p.email }}{% endif %}</div></li>
+        {% else %}<li class="muted">Nobody yet.</li>{% endfor %}
+      </ul>
+    </div>
+    <form method="post" action="/deals/{{ deal.node_id }}/people" class="card edit-form">
+      <div class="label">Add a stakeholder</div>
+      <label>Existing person<select name="person_id"><option value="">Choose, or create below</option>{% for p in people %}<option value="{{ p.node_id }}">{{ p.name }}{% if p.email %} · {{ p.email }}{% endif %}</option>{% endfor %}</select></label>
+      <div class="form-grid">
+        <label>Name<input name="name"></label>
+        <label>Email<input name="email" type="email"></label>
+        <label>Title<input name="title" placeholder="CFO"></label>
+        <label>Role in deal<input name="role" placeholder="economic buyer"></label>
+      </div>
+      <button class="btn btn-primary btn-sm">Add</button>
+    </form>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Assessments</h2><span class="purpose">Every agent's stance, side by side. Disagreement is kept, never merged.</span></div>
+  {% for subject, agents in subjects.items() %}
+  <div class="assess">
+    <div class="label">{{ subject|human }}{% if agents|length > 1 %} <span class="meta">· {{ agents|length }} readings</span>{% endif %}</div>
+    {% if reconciliations.get(subject) %}<div class="reconciled"><span class="label">Reconciled verdict</span> <span class="strong">{{ reconciliations[subject].verdict }}</span>{% if reconciliations[subject].rationale %}<p class="meta">{{ reconciliations[subject].rationale }}</p>{% endif %}</div>{% endif %}
+    <div class="assess-grid">
+      {% for agent, rows in agents.items() %}
+      {% set a = rows[0] %}
+      <div class="card">
+        <div class="eyebrow">{{ agent|human }}</div>
+        <p class="lead">{{ a.stance }}</p>
+        <p class="meta">{{ a.confidence or '' }} · {{ a.created_at|dt }}{% if a.call_id %} · <a href="/calls/{{ a.call_id }}">{{ a.call_title or 'call' }}</a>{% endif %}</p>
+        {% if a.rationale %}<p>{{ a.rationale }}</p>{% endif %}
+        {% if rows|length > 1 %}
+        <details><summary class="meta">{{ rows|length - 1 }} earlier</summary>
+          <ul class="plain dash">{% for b in rows[1:] %}<li>{{ b.stance }} <span class="meta">{{ b.confidence or '' }} · {{ b.created_at|dt }}</span></li>{% endfor %}</ul>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}<p class="empty">No assessments yet.</p>{% endfor %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>What we know</h2><span class="purpose">Facts were said; inferences are supported; assumptions are unconfirmed.</span></div>
+  <div class="claims-grid">
+    {% for kind, label in [('fact', 'Facts'), ('inference', 'Inferences'), ('assumption', 'Assumptions')] %}
+    <div class="card">
+      <div class="eyebrow">{{ label }} · {{ claims[kind]|length }}</div>
+      <ul class="plain claims">
+        {% for c in claims[kind] %}
+        <li><div>{{ c.statement }}</div>
+          <div class="meta">{{ c.subject|human }} · {{ m.conf(c.confidence) }}{% if c.call_id %} · <a href="/calls/{{ c.call_id }}{% if c.evidence %}#t{{ c.evidence[0] }}{% endif %}">{{ c.call_title or 'call' }}</a>{% endif %}</div>
+          {% if c.evidence_quote %}<div class="quote">"{{ c.evidence_quote }}"</div>{% endif %}</li>
+        {% else %}<li class="muted">None.</li>{% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Gaps</h2><span class="purpose">{% if gaps_call %}From the latest analysis: <a href="/calls/{{ gaps_call.node_id }}">{{ gaps_call.title or gaps_call.node_id }}</a>{% endif %}</span></div>
+  {% if gaps %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Lens</th><th>Missing</th><th>Why it matters</th><th>Ask</th></tr></thead>
+    <tbody>{% for g in gaps %}<tr><td class="nowrap">{{ g.lens }}<div class="meta">{{ g.element }}</div></td><td>{{ g.missing }}</td><td>{{ g.why_it_matters }}</td><td class="suggested">"{{ g.question_to_ask }}"</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="empty">No gaps recorded.</p>{% endif %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Calls</h2></div>
+  <ol class="plain timeline">
+    {% for c in calls %}
+    <li><a href="/calls/{{ c.call.node_id }}" class="strong">{{ c.call.title or c.call.node_id }}</a>
+      <span class="meta">{{ c.call.started_at|dt }} · {{ c.call.wf_state|step_label }}</span>
+      {% if c.verdict %}<div><span class="vtag v-{{ c.verdict.label }}">{{ c.verdict.label }}</span> {{ c.verdict.one_line }}</div>{% endif %}
+      {% if c.next_step %}<div class="meta">Next step: {{ c.next_step }}</div>{% endif %}</li>
+    {% else %}<li class="muted">No calls yet.</li>{% endfor %}
+  </ol>
+</section>
+<script src="/static/intel.js" defer></script>
+{% endblock %}

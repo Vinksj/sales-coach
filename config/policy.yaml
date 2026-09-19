@@ -1,0 +1,20 @@
+# Outbound email policy. One of:
+#   ALL_EMAILS_REQUIRE_APPROVAL   every email waits for an explicit Send click (default)
+#   LOW_RISK_FOLLOWUPS_AUTO_SEND  low-risk nudges/follow-ups may be sent by the auto-send executor
+#   APPROVED_CONTACTS_AUTO_SEND   emails to approved_contacts only may be sent by the executor
+#   NEVER_AUTO_SEND               same as the default, stated as a hard rule
+# The executor (salescoach/automation/autosend.py) ALSO needs config/automation.yaml
+# auto_send.enabled: true and dry_run: false. It ships disabled and in dry-run: as shipped, nothing
+# is sent without your click on Send. Both files must be changed by hand to alter that; the setup
+# pages do not offer it.
+email_policy: ALL_EMAILS_REQUIRE_APPROVAL
+approved_contacts: []
+
+email:
+  account: work                 # alias of the mailbox that sends: the token file name under
+                                # ~/.gmail-mcp/tokens/<alias>.json (see README, Status and known gaps)
+  # from_name: Your Name        # default: the name in your seller profile
+  max_call_age_hours: 48        # older calls (imports, backfill) never get a drafted follow-up
+
+external_actions:
+  min_confidence: medium        # items below this can never feed an email or any external action

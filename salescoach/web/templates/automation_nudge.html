@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Nudge{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/automation.css">
+{% set e = email.row %}
+<div class="page-head">
+  <div class="eyebrow">Nudge · <a href="/followups">Follow-ups</a>{% if deal %} · <a href="/deals/{{ deal.node_id }}">{{ deal.name }}</a>{% endif %}</div>
+  <h1>{{ e.subject or 'Nudge' }}</h1>
+  <div class="meta">{{ e.status|human }} · drafted {{ e.created_at|dt }}{% if e.run_id %} · <a class="why" href="/runs/{{ e.run_id }}">Why this wording?</a>{% endif %}</div>
+</div>
+
+{# `loop` is Jinja's own loop variable, so the commitment is `lp` here. #}
+{% for lp in info.loops %}
+<section class="card">
+  <div class="label">About this commitment</div>
+  <p class="lead">{{ lp.description }}</p>
+  <p class="meta">{{ lp.owner }}{% if lp.owner_name %} · {{ lp.owner_name }}{% endif %} · {{ m.prio(lp.priority) }} · {% if lp.due_date %}due {{ lp.due_date|day }}{% else %}no due date{% endif %} · {{ lp.follow_up_count }} nudge{{ '' if lp.follow_up_count == 1 else 's' }} sent so far{% if lp.call_id %} · <a href="/calls/{{ lp.call_id }}#loop-{{ lp.node_id }}">from the call</a>{% endif %}</p>
+  {% if lp.evidence_quote %}<blockquote class="evidence">"{{ lp.evidence_quote }}"</blockquote>{% endif %}
+</section>
+{% endfor %}
+
+<section class="section" id="email">
+  <div class="section-head"><h2>The nudge</h2><span class="purpose">Nothing leaves until you press Send.</span></div>
+  {% if e.status == 'sent' %}
+  <div class="callout callout-good">
+    <div class="eyebrow good">Sent {{ e.sent_at|dt }}{% if e.approved_by %} · approved by {{ e.approved_by|who }}{% endif %}</div>
+    <p>To {{ email.to|join(', ') }}{% if email.cc %} · Cc {{ email.cc|join(', ') }}{% endif %}</p>
+    <pre class="email-body">{{ e.body }}</pre>
+  </div>
+  {% elif e.status == 'saved_to_gmail' %}
+  <div class="callout"><div class="eyebrow">Saved to Gmail Drafts</div><p>Send it from Gmail, then tell the coach so the loop's follow-up count moves.</p><pre class="email-body">{{ e.body }}</pre>
+    <div class="actions"><form method="post" action="/nudges/{{ e.id }}/mark-sent"><button class="btn btn-secondary" data-confirm="Mark this nudge as sent? Only do this once you have actually sent it from Gmail.">I sent it from Gmail</button></form></div>
+  </div>
+  {% elif e.status == 'sending' %}
+  <div class="callout callout-err"><div class="eyebrow">Send did not finish</div><p>Check Gmail Sent before doing anything else; it is never resent automatically.</p><pre class="email-body">{{ e.body }}</pre>
+    {% if (e.error or '').startswith('delivery unknown') %}
+    <p class="meta">{{ e.error }}</p>
+    <div class="actions"><form method="post" action="/nudges/{{ e.id }}/not-sent"><button class="btn btn-secondary" data-confirm="Only press this after checking Gmail Sent: is this nudge NOT there? It can then be sent again.">It was not sent</button></form></div>
+    {% endif %}
+  </div>
+  {% elif e.status == 'rejected' %}
+  <div class="card"><p class="muted">Discarded: {{ e.error or 'no reason recorded' }}.</p></div>
+  {% else %}
+  {% if e.status == 'failed' %}<div class="flash flash-err">The last attempt failed: {{ e.error }}</div>{% endif %}
+  <div class="decision{% if email.blocks %} decision-block{% endif %}"><span class="label">Policy</span> {{ email.decision.reason if email.decision else '' }}</div>
+  {% set tone = (e.lint|fromjson([])) | selectattr('kind', 'equalto', 'tone') | list %}
+  {% if email.blocks or email.warns or tone %}
+  <ul class="plain issues">
+    {% for i in email.blocks %}<li><span class="tag tag-block">blocks send</span> {{ i.detail }}
+      {% if i.kind == 'slots' %}<button class="btn btn-sm btn-secondary" type="submit" form="nudge-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots">Fill times from calendar</button>{% endif %}</li>{% endfor %}
+    {% for i in email.warns %}<li><span class="tag">check</span> {{ i.detail }}</li>{% endfor %}
+    {% for i in tone %}<li><span class="tag">tone</span> {{ i.detail }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if fill and fill.status != 'filled' and fill.status != 'not_needed' %}<p class="meta auto-warn auto-slot-note">Last calendar fill, {{ fill.created_at|dt }}: {{ fill.reason }}</p>
+  {% elif fill and fill.status == 'filled' %}<p class="meta auto-slot-note">Times calendar-verified {{ fill.verified_at|dt }} ({{ fill.calendar_source }}).</p>{% endif %}
+  {% if email.user_added %}<p class="warn-line">Added by you, not on this deal: {{ email.user_added|join(', ') }}</p>{% endif %}
+
+  <form method="post" action="/nudges/{{ e.id }}/save" class="email-form card" id="nudge-form-{{ e.id }}">
+    <div class="form-grid-2">
+      <label>To<input name="to" value="{{ email.to|join(', ') }}" autocomplete="off"></label>
+      <label>Cc<input name="cc" value="{{ email.cc|join(', ') }}" autocomplete="off"></label>
+    </div>
+    <label>Subject<input name="subject" value="{{ e.subject or '' }}" autocomplete="off"></label>
+    <label>Body<textarea name="body" rows="12">{{ e.body or '' }}</textarea></label>
+    <p class="meta">Allowed recipients: {% for addr, name in email.allowed.items() %}{{ name }} &lt;{{ addr }}&gt;{% if not loop.last %}, {% endif %}{% else %}none on this deal{% endfor %}.{% if e.rationale %} {{ e.rationale }}{% endif %}</p>
+    <div class="actions email-actions">
+      <button class="btn" type="submit">Save edits</button>
+      <button class="btn btn-primary send-btn" type="submit" formaction="/nudges/{{ e.id }}/send" data-confirm-send>Send ↗</button>
+      <button class="btn btn-secondary" type="submit" formaction="/nudges/{{ e.id }}/draft">Save to Gmail Drafts ↗</button>
+      <button class="btn btn-quiet" type="submit" formaction="/nudges/{{ e.id }}/discard" data-confirm="Discard this nudge?">Discard</button>
+    </div>
+  </form>
+  {% if verdict %}
+  <p class="meta">Auto-send would {% if verdict.ok %}{% if verdict.dry_run %}only log this (dry run){% else %}send this{% endif %}{% else %}not send this: {{ verdict.fails|join('; ') }}{% endif %}.</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="section" id="why">
+  <div class="section-head"><h2>Why this nudge</h2><span class="purpose">Every decision on this loop, oldest first.</span></div>
+  <ul class="plain auto-history">
+    {% for d in info.history %}
+    <li><span class="meta">{{ d.eval_date|day }} · {{ d.stage|who }} · {{ d.check_name|human }}</span> <span class="tag">{{ d.decision|human }}</span>
+      {{ d.rationale }}{% if d.relationship_risk %} <span class="meta">(relationship risk {{ d.relationship_risk }})</span>{% endif %}
+      {% if d.email_id == e.id %}<span class="pill pill-muted"><i></i>drafted this</span>{% endif %}
+      {% if d.run_id %}<a class="why" href="/runs/{{ d.run_id }}">Why?</a>{% endif %}</li>
+    {% else %}
+    <li class="empty">No decision recorded for this email.</li>
+    {% endfor %}
+  </ul>
+  {% if info.autosend %}
+  <div class="label">Auto-send checks</div>
+  <ul class="plain dash">{% for a in info.autosend %}<li>{{ a.created_at|dt }} · {{ a.outcome|human }}{% if a.dry_run %} (dry run){% endif %}: {{ a.reasons_list|join('; ') }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,16 @@
+Sales Coach
+Copyright 2026 The Sales Coach authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Third-party software included in this repository
+------------------------------------------------------------------------------
+
+AudioTeeCore (callcap/vendor/AudioTeeCore)
+  Copied unmodified from AudioTee, https://github.com/makeusabrew/audiotee
+  (Sources/AudioTeeCore). Used by the callcap capture helper to read system audio.
+
+  Copyright (C) 2025 Nick Payne.
+  Licensed under the MIT License. The full licence text is in
+  callcap/vendor/LICENSE-audiotee.md.

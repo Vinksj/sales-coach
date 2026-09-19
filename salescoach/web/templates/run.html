@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Why? · run {{ run.id }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Why? · run {{ run.id }}</div>
+  <h1>{{ run.agent|human }}</h1>
+  <div class="meta">{% if call %}<a href="/calls/{{ call.node_id }}">{{ call.title or call.node_id }}</a> · <a href="/calls/{{ call.node_id }}/runs">All runs for this call</a>{% else %}No call attached.{% endif %}</div>
+</div>
+{{ m.run_card(run, open=True) }}
+{% endblock %}

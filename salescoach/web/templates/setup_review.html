@@ -1,0 +1,69 @@
+{% extends "setup_layout.html" %}
+{% block step_heading %}{% if finished %}Your settings{% else %}Review and finish{% endif %}{% endblock %}
+{% block step_intro %}Everything the coach will work from. Each part can be changed at any time; a change takes effect on the next call, no restart.{% endblock %}
+{% block step %}
+{% set blocking = missing|selectattr('blocking')|list %}
+{% if missing %}
+<section class="card callout-card" id="still-missing">
+  <div class="eyebrow">Still missing</div>
+  <ul class="plain dash">
+    {% for m in missing %}<li>{{ m.text }} <a href="/setup/{{ m.step }}">Fix it</a>{% if not m.blocking %} <span class="opt">the coach works without it</span>{% endif %}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<div class="review-list">
+  <section class="card review-row" id="review-you">
+    <div class="review-head"><h2>You and your org</h2><a class="btn btn-sm" href="/setup/you">Edit</a></div>
+    {% if p.name and p.company %}
+    <dl class="facts">
+      <div><dt>Seller</dt><dd>{{ p.name }}{% if p.role %}, {{ p.role }}{% endif %}</dd></div>
+      <div><dt>Company</dt><dd>{{ p.company }}</dd></div>
+      <div><dt>Email</dt><dd>{{ p.emails|join(', ') or 'none' }}</dd></div>
+      <div><dt>Languages</dt><dd>{{ languages()|join(', ') }}</dd></div>
+      <div><dt>Timezone</dt><dd>{{ p.timezone or 'default' }} ({{ tz_label() }})</dd></div>
+      <div><dt>Writing style</dt><dd>{% if style_is_own %}your own guide{% else %}<span class="default-note">using the default</span> guide{% endif %}</dd></div>
+    </dl>
+    <p><span class="label-inline">Sells</span> {{ p.offering }}{% if p.icp %} <span class="label-inline">to</span> {{ p.icp }}{% endif %}</p>
+    {% else %}<p class="warn-line">Not filled in yet. The coach cannot start without it.</p>{% endif %}
+  </section>
+
+  <section class="card review-row" id="review-method">
+    <div class="review-head"><h2>How you sell</h2><a class="btn btn-sm" href="/setup/method">Edit</a></div>
+    <p><span class="strong">{{ method.name }}</span> {% if not method_chosen %}<span class="default-note">using the default</span>{% endif %}</p>
+    <p class="meta">{{ method.elements|length }} elements: {{ method.elements|map(attribute='label')|join(', ') }}.</p>
+  </section>
+
+  <section class="card review-row" id="review-model">
+    <div class="review-head"><h2>Model</h2><a class="btn btn-sm" href="/setup/model">Edit</a></div>
+    <p><span class="strong">{{ provider.label }}</span> {% if not provider.chosen %}<span class="default-note">using the default</span>{% endif %}</p>
+    <dl class="facts">
+      <div><dt>Heavy tier</dt><dd class="mono">{{ provider.tiers.heavy or 'not chosen' }}</dd></div>
+      <div><dt>Light tier</dt><dd class="mono">{{ provider.tiers.light or 'not chosen' }}</dd></div>
+      {% if provider.descriptor and provider.descriptor.api_key_env %}<div><dt>API key</dt><dd>{% if provider.descriptor.key_set %}set{% else %}not set{% endif %}</dd></div>{% endif %}
+      <div><dt>Connection test</dt><dd>{% if provider.tested_ok %}<span class="good">passed</span> {{ provider.test.at|dt }}{% elif provider.test %}<span class="accent">failed</span> {{ provider.test.at|dt }}{% else %}not run yet{% endif %}</dd></div>
+    </dl>
+    {% if not provider.usable %}<p class="warn-line">{{ provider.why }}</p>{% endif %}
+  </section>
+
+  <section class="card review-row" id="review-sources">
+    <div class="review-head"><h2>Where calls come from</h2><a class="btn btn-sm" href="/setup/sources">Edit</a></div>
+    <p>Recording on this Mac, file upload{% if sources_state.folder_on %}, the watched folder{% endif %}{% for d in sources_state.extra %}, <span class="strong">{{ d.label }}</span>{% endfor %}.{% if not sources_state.chosen and not sources_state.extra %} <span class="default-note">using the default</span>{% endif %}</p>
+  </section>
+
+  <section class="card review-row" id="review-connections">
+    <div class="review-head"><h2>Email, calendar and recording</h2><a class="btn btn-sm" href="/setup/connections">Details</a></div>
+    <ul class="plain status-summary">
+      {% for r in rows %}<li><span class="pill {% if r.ok %}pill-good{% elif r.optional %}pill-muted{% else %}pill-alert{% endif %}"><i></i>{{ r.status }}</span> {{ r.title }}</li>{% endfor %}
+    </ul>
+  </section>
+</div>
+
+<div class="setup-foot">
+  <a class="btn btn-quiet" href="{{ back_href }}">Back</a>
+  <form method="post" action="/setup/finish">
+    {% if blocking %}<a class="btn btn-primary" href="/setup/you">Fill in your profile</a>
+    {% else %}<button class="btn btn-primary">{% if finished %}Done, go to Today{% else %}Finish{% endif %}</button>{% endif %}
+  </form>
+</div>
+{% endblock %}

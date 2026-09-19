@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# This install's own data: the database, recordings, settings and secrets never belong in git
+data/
+runtime/
+secrets.env
+.env
+*.flac
+*.wav
+*.pcm
+
+# Swift build output
+callcap/build/
+callcap/.build/
+overlay/.build/
+
+.DS_Store

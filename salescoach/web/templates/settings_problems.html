@@ -1,0 +1,12 @@
+{# A user settings file that cannot be read (review 3). The app runs on the tracked defaults for that
+   file; the banner names the file and the line so the seller can fix it. Included by the setup frame
+   and by Today; silent when every file reads. #}
+{% if settings_problems is defined %}{% set problems = settings_problems() %}{% if problems %}
+<div class="flash flash-err" role="alert" id="settings-problems">
+  <strong>A settings file could not be read, so its defaults are in use.</strong>
+  <ul class="plain">
+    {% for p in problems %}<li><code>{{ p.file }}</code>{% if p.line %}, line {{ p.line }}{% endif %}: {{ p.message }}</li>{% endfor %}
+  </ul>
+  Fix the file (or save the page it belongs to again; the unreadable copy is kept beside it as <code>.broken-…</code>).
+</div>
+{% endif %}{% endif %}

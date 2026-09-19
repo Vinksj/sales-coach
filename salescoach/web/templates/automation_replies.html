@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Replies{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/automation.css">
+<div class="page-head">
+  <div class="eyebrow">Replies · <a href="/followups">Follow-ups</a></div>
+  <h1>{% set open = replies|selectattr('open_items')|list %}{% if open %}{{ open|length }} repl{{ 'y' if open|length == 1 else 'ies' }} with proposals to decide{% else %}Nothing to decide{% endif %}</h1>
+  <div class="meta">Buyer replies in the threads of emails you sent. Each is mapped to the deal's open loops; a change applies only with a quote found in the reply, and anything short of explicit waits for you.
+    {% if last_poll %}Last checked {{ last_poll.at|dt }}.{% else %}Gmail has not been checked yet.{% endif %}</div>
+  <div class="auto-head-actions">
+    <form method="post" action="/replies/poll" class="inline"><button class="btn btn-primary btn-sm">Check Gmail now</button></form>
+    {% if show_all %}<a class="btn btn-sm" href="/replies">Hide reviewed</a>{% else %}<a class="btn btn-sm" href="/replies?all=1">Show reviewed</a>{% endif %}
+  </div>
+</div>
+
+{% for r in replies %}
+<article class="card" id="reply-{{ r.id }}">
+  <div class="loop-top">
+    <div><span class="strong">{{ r.from_name or r.from_addr }}</span> <span class="meta">&lt;{{ r.from_addr }}&gt; · {{ r.received_at|dt }}{% if r.deal_name %} · <a href="/deals/{{ r.deal_id }}">{{ r.deal_name }}</a>{% endif %}</span>
+      <div class="meta">Re: {{ r.subject or r.our_subject or '' }}{% if r.our_kind %} (reply to your {{ r.our_kind }}){% endif %}</div></div>
+    <div class="loop-badges">
+      {% if r.needs_user %}<span class="pill pill-alert"><i></i>needs your answer</span>{% endif %}
+      <span class="pill {% if r.status == 'failed' %}pill-alert{% elif r.status == 'reviewed' %}pill-good{% else %}pill-muted{% endif %}"><i></i>{{ r.status }}</span>
+    </div>
+  </div>
+  {% if r.summary %}<p class="lead">{{ r.summary }}</p>{% endif %}
+  {% if r.error %}<p class="err-text">{{ r.error }}</p>{% endif %}
+  {% if r.ignored %}<p class="warn-line">This reply contained text aimed at an assistant. It was not acted on: {% for t in r.ignored %}"{{ t }}"{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  <details><summary class="meta">The reply</summary><pre class="pre auto-reply-body">{{ r.body }}</pre></details>
+
+  {% if r.proposals %}
+  <ul class="plain auto-proposals">
+    {% for p in r.proposals %}
+    <li>
+      <div><span class="tag">{{ p.verdict|human }}</span>
+        {% if p.verdict == 'new_commitment' %}{{ p.new_description or p.statement }}{% else %}{{ p.loop_description or p.loop_id or 'unknown loop' }}{% endif %}
+        <span class="meta">· {{ p.confidence }}{% if p.model_confidence and p.model_confidence != p.confidence %} (model said {{ p.model_confidence }}){% endif %}</span></div>
+      {% if p.quote %}<blockquote class="evidence">"{{ p.quote }}" <span class="meta">paragraph {{ (p.paragraphs|fromjson([]))|join(', ') }}</span></blockquote>{% endif %}
+      {% if p.notes_list %}<ul class="plain vnotes">{% for n in p.notes_list %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+      <div class="quick">
+        {% if p.outcome == 'applied' %}<span class="pill pill-good"><i></i>applied</span>
+        {% elif p.outcome == 'unchanged' %}<span class="pill pill-muted"><i></i>already so</span>
+        {% elif p.outcome == 'rejected' %}<span class="pill pill-muted"><i></i>not applied</span>
+        {% elif p.conflict_id and p.conflict_status == 'open' %}
+          <form method="post" action="/conflicts/{{ p.conflict_id }}/resolve">{{ m.next_field('/replies#reply-' ~ r.id) }}<input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept: mark {{ p.verdict }}</button></form>
+          <form method="post" action="/conflicts/{{ p.conflict_id }}/resolve">{{ m.next_field('/replies#reply-' ~ r.id) }}<input type="hidden" name="accept" value="0"><button class="btn btn-sm btn-quiet">Keep current</button></form>
+        {% elif p.conflict_id %}<span class="pill pill-muted"><i></i>{{ p.conflict_status }}</span>
+        {% elif p.new_loop_id and p.new_review == 'proposed' %}
+          <form method="post" action="/loops/{{ p.new_loop_id }}/confirm">{{ m.next_field('/replies#reply-' ~ r.id) }}<button class="btn btn-sm btn-primary">Track it</button></form>
+          <form method="post" action="/loops/{{ p.new_loop_id }}/reject">{{ m.next_field('/replies#reply-' ~ r.id) }}<button class="btn btn-sm btn-quiet">Ignore</button></form>
+        {% elif p.new_loop_id %}<span class="pill pill-muted"><i></i>{{ p.new_review }}</span>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% elif r.status == 'analyzed' %}
+  <p class="meta">It does not settle or change any open loop.</p>
+  {% endif %}
+
+  <div class="actions">
+    {% if r.status != 'reviewed' %}<form method="post" action="/replies/{{ r.id }}/reviewed"><button class="btn btn-sm">Mark reviewed</button></form>{% endif %}
+    <form method="post" action="/replies/{{ r.id }}/reanalyze"><button class="btn btn-sm btn-quiet">Analyse again</button></form>
+    {% if r.run_id %}<a class="why" href="/runs/{{ r.run_id }}">Why?</a>{% endif %}
+  </div>
+</article>
+{% else %}
+<p class="empty">No replies{% if not show_all %} waiting for review{% endif %}.</p>
+{% endfor %}
+{% endblock %}

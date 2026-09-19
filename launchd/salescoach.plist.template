@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the launch agent that keeps `salescoach serve` running.
+  Do not load this file: launchd/install.sh fills the @@PLACEHOLDERS@@ from this install's
+  own location and writes the result to ~/Library/LaunchAgents/@@LABEL@@.plist.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>@@LABEL@@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@SALESCOACH_BIN@@</string>
+    <string>serve</string>
+    <string>--port</string><string>@@PORT@@</string>
+  </array>
+  <key>WorkingDirectory</key><string>@@ROOT@@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd gives a bare PATH. install.sh adds the folders where claude, ffmpeg and ollama
+         were found on this machine (each is optional). -->
+    <key>PATH</key><string>@@PATH@@</string>
+    <key>HOME</key><string>@@HOME@@</string>
+    <key>LANG</key><string>en_US.UTF-8</string>
+@@EXTRA_ENV@@
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>@@LOG@@</string>
+  <key>StandardErrorPath</key><string>@@LOG@@</string>
+</dict>
+</plist>

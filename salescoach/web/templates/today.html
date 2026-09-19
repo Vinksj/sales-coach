@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Today{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Today · {{ today_label }}</div>
+  <h1>What needs you</h1>
+</div>
+
+<div class="today-grid">
+<div class="today-main">
+  {% include "settings_problems.html" %}
+
+  {# Setup (salescoach/setupui): shown while no model provider is usable or none has passed a test. #}
+  {% if setup_today is defined %}{% set setup_card = setup_today(request) %}{% if setup_card %}{% include "setup_today_card.html" %}{% endif %}{% endif %}
+
+  {% for c in live_calls %}
+  <div class="callout">
+    <div class="eyebrow">Live now</div>
+    <p class="lead">{{ c.title or 'Untitled call' }}{% if c.deal_name %} · {{ c.deal_name }}{% endif %}</p>
+    <a class="btn btn-primary" href="/live/{{ c.node_id }}">Open live view</a>
+  </div>
+  {% endfor %}
+
+  {% for c in held %}
+  <div class="callout">
+    <div class="eyebrow">Imported · one question</div>
+    <p class="lead">{{ c.title or 'Untitled call' }}{% if c.deal_name %} · {{ c.deal_name }}{% endif %}</p>
+    <p class="meta">The transcript names its speakers and none is recognisably you. It waits until you say which one you are.</p>
+    <a class="btn btn-primary" href="/calls/{{ c.node_id }}#speaker">Which speaker are you?</a>
+  </div>
+  {% endfor %}
+
+  <section class="section first">
+    <div class="section-head"><h2>Calls to review</h2><span class="purpose">{{ awaiting|length }} waiting. Confirm the actions, fix the email, send.</span></div>
+    {% for a in awaiting %}
+    <a class="card call-row" href="/calls/{{ a.call.node_id }}">
+      <div class="call-row-main">
+        <div class="call-title">{{ a.call.title or 'Untitled call' }}</div>
+        <div class="meta">{{ a.call.deal_name or 'No deal linked' }} · {{ a.call.started_at|dt }}{% if a.call.wf_state == 'reviewed' %} · reviewed{% endif %}</div>
+        {% if a.verdict %}<div class="call-verdict"><span class="vtag v-{{ a.verdict.label }}">{{ a.verdict.label }}</span> {{ a.verdict.one_line }}</div>{% endif %}
+      </div>
+      <div class="call-row-side">
+        {% if a.proposed %}<span class="pill pill-alert"><i></i>{{ a.proposed }} to confirm</span>{% endif %}
+        {% if a.conflicts %}<span class="pill pill-alert"><i></i>{{ a.conflicts }} to decide</span>{% endif %}
+        {% if a.email %}<span class="pill {% if a.email.status in ('drafted', 'failed', 'sending') %}pill-alert{% else %}pill-muted{% endif %}"><i></i>email {{ a.email.status|human }}</span>{% else %}<span class="pill pill-muted"><i></i>no email</span>{% endif %}
+        <span class="btn btn-primary btn-sm">Review</span>
+      </div>
+    </a>
+    {% else %}
+    <p class="empty">Nothing waiting for review.</p>
+    {% endfor %}
+  </section>
+
+  {% if failed %}
+  <section class="section">
+    <div class="section-head"><h2>Failed</h2><span class="purpose">The pipeline stopped. Retry runs it again from the step that failed.</span></div>
+    {% for f in failed %}
+    <div class="card fail-row">
+      <div class="fail-main">
+        <a class="call-title" href="/calls/{{ f.call.node_id }}">{{ f.call.title or f.call.node_id }}</a>
+        <div class="meta">{{ f.call.deal_name or 'No deal linked' }} · {{ f.call.started_at|dt }} · {{ f.call.wf_state|step_label }}{% if f.job %} · job {{ f.job.status }}, attempt {{ f.job.attempts }} of 3{% endif %}</div>
+        <p class="err-text">{{ f.call.wf_error or 'Capture never started.' }}</p>
+      </div>
+      {% if f.retryable %}
+      <form method="post" action="/calls/{{ f.call.node_id }}/retry">
+        <input type="hidden" name="from_step" value="{{ f.step }}"><input type="hidden" name="next" value="/">
+        <button class="btn btn-primary btn-sm">Retry from {{ f.step|step_label }}</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="section">
+    <div class="section-head"><h2>Loops due</h2><span class="purpose">Overdue, due today, or due for a check. <a href="/loops?due=overdue">All overdue</a></span></div>
+    {% if due %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Due</th><th>Loop</th><th>Owner</th><th>Deal</th><th></th></tr></thead>
+      <tbody>
+      {% for l in due %}
+      <tr id="loop-{{ l.node_id }}">
+        <td class="nowrap">{% if l.due_date %}<span class="{% if l.due_date < today %}due-over{% endif %}">{{ l.due_date|day }}</span>{% if l.due_date < today %}<div class="meta accent">overdue</div>{% endif %}{% else %}<span class="muted">check {{ l.next_check_at|day }}</span>{% endif %}</td>
+        <td>{{ l.description }}
+          <div class="meta">{{ m.prio(l.priority) }} · {{ l.status }}{% if l.review_state == 'proposed' %} · <span class="accent">unconfirmed</span>{% endif %}{% if l.call_id %} · <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">{{ l.call_title or 'call' }}</a>{% endif %}</div></td>
+        <td>{{ l.owner }}{% if l.owner_name %}<div class="meta">{{ l.owner_name }}</div>{% endif %}</td>
+        <td>{{ l.deal_name or '' }}</td>
+        <td>{{ m.loop_quick(l, '/') }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="empty">Nothing due today.</p>
+    {% endif %}
+  </section>
+
+  {# Phase 4: follow-ups due, replies received, upcoming calls (plugins/execution). #}
+  {% if automation_today is defined %}
+  <link rel="stylesheet" href="/static/automation.css">
+  {% set auto = automation_today(request) %}
+  {% include "automation_today.html" %}
+  {% endif %}
+
+  {% if failed_jobs %}
+  <section class="section">
+    <details>
+      <summary class="section-head"><h2>Background jobs that gave up</h2><span class="purpose">{{ failed_jobs|length }} failed after 3 attempts.</span></summary>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Job</th><th>For</th><th>Error</th><th></th></tr></thead>
+        <tbody>
+        {% for e in failed_jobs %}
+        <tr><td class="mono small">{{ e.type }}</td>
+            <td>{% if e.entity_id and e.entity_id.startswith('call-') %}<a href="/calls/{{ e.entity_id }}">{{ e.entity_id }}</a>{% else %}{{ e.entity_id or '' }}{% endif %}</td>
+            <td class="err-text">{{ e.error }}</td>
+            <td><form method="post" action="/events/{{ e.id }}/retry"><button class="btn btn-sm">Retry</button></form></td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </details>
+  </section>
+  {% endif %}
+</div>
+
+<aside class="today-side">
+  <section class="card start">
+    <div class="eyebrow">Start a call</div>
+    {% if live.active %}
+    <p>A call is live: <a href="/live/{{ live.call_id }}">{{ live.title or live.call_id }}</a>. Stop it before starting another.</p>
+    {% elif not live.available %}
+    <p class="muted small">Live capture is not available in this server{% if live.error %}: {{ live.error }}{% endif %}.</p>
+    {% endif %}
+    <form method="post" action="/live/start" class="stack">
+      <label>Title<input name="title" required placeholder="Weekly review with Anita" autocomplete="off"></label>
+      <label>Deal
+        <select name="deal_id"><option value="">No deal yet</option>
+          {% for d in deals %}<option value="{{ d.node_id }}">{{ d.name }}{% if d.account_name and d.account_name != d.name %} ({{ d.account_name }}){% endif %}</option>{% endfor %}
+        </select></label>
+      <label>Language
+        <select name="lang_mode"><option value="auto">Auto</option><option value="en">English</option>{% if 'Hindi' in languages() %}<option value="hinglish">Hindi-English</option>{% endif %}</select></label>
+      <label>Participants
+        <select name="participants" multiple size="5">
+          {% for p in people %}<option value="{{ p.node_id }}">{{ p.name }}{% if p.account_name %} · {{ p.account_name }}{% endif %}</option>{% endfor %}
+        </select>
+        <span class="hint">Cmd-click to pick several. You are added automatically.</span></label>
+      <p class="consent">Tell everyone the call is being recorded, and get their OK, before you press Start.</p>
+      <button class="btn btn-primary"{% if not live.available or live.active %} disabled{% endif %}>Start recording</button>
+    </form>
+  </section>
+
+  <section class="card priority-card">
+    <div class="eyebrow">Coaching priority</div>
+    {% if priority %}
+    <div class="h3">{{ priority.name }}</div>
+    {% if priority.recommended_intervention %}<p>{{ priority.recommended_intervention }}</p>{% elif priority.description %}<p>{{ priority.description }}</p>{% endif %}
+    <div class="meta">Seen on {{ priority.calls_seen }} calls · {{ priority.frequency|pct }}% of the last {{ priority.calls_window }} · {{ priority.trend|human }}</div>
+    <p><a href="/coach">See the evidence</a></p>
+    {% else %}
+    <p class="muted">No active pattern yet. A weakness becomes the priority once it shows up on 2 calls.</p>
+    {% endif %}
+  </section>
+
+  {% if processing %}
+  <section class="card">
+    <div class="eyebrow">In progress</div>
+    <ul class="plain progress-list">
+      {% for p in processing %}
+      <li><a href="/calls/{{ p.call.node_id }}">{{ p.call.title or p.call.node_id }}</a>
+        <div class="meta">{% if p.next %}next: {{ p.next|step_label }}{% endif %}{% if p.job %} · {{ p.job.status }}{% else %} · not queued{% endif %}</div></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</aside>
+</div>
+{% endblock %}

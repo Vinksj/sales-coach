@@ -1,0 +1,162 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}Where do your calls come from?{% endblock %}
+{% block step_intro %}The coach can record calls itself, or read the transcript your recorder already makes. Uploading a file always works; everything else here is optional and saves on its own.{% endblock %}
+
+{% macro last_run(d) %}
+{% if d.last_error %}<p class="err-text">Last check failed{% if d.last_error.at %} {{ d.last_error.at|dt }}{% endif %}: {{ d.last_error.error }}</p>
+{% elif d.last_run %}<p class="meta">Last checked {{ d.last_run|dt }}.</p>
+{% elif d.enabled and d.configured %}<p class="meta">Not checked yet. The first check runs within a few minutes.</p>{% endif %}
+{% endmacro %}
+
+{% block step %}
+{% if new_secret %}
+<section class="card secret-once" id="webhook-secret" role="alert" tabindex="-1">
+  <div class="eyebrow">Webhook secret · shown once</div>
+  <p class="lead">Copy it now. When you leave or reload this page it cannot be shown again; you can only replace it.</p>
+  <div class="copy-row">
+    <code class="secret-value" id="secret-value">{{ new_secret }}</code>
+    <button type="button" class="btn btn-sm btn-secondary" data-copy="#secret-value">Copy</button>
+  </div>
+  <p class="meta">Paste it into your automation as the value of the {{ webhook_header }} header.</p>
+</section>
+{% endif %}
+
+<section class="section first">
+  <div class="section-head"><h2>Recording on this Mac</h2><span class="purpose">Built in. Nothing to connect.</span></div>
+  <div class="card source-row">
+    <div>
+      <div class="h3">Live capture</div>
+      <p class="meta">Press Start call on the Today page. Your microphone is you; the computer's audio is the buyer.</p>
+    </div>
+    <div class="source-side">
+      {% if capture_built and live.available %}<span class="pill pill-good"><i></i>ready</span>
+      {% elif capture_built %}<span class="pill pill-muted"><i></i>installed, not running</span>
+      {% else %}<span class="pill pill-muted"><i></i>not installed</span>{% endif %}
+      <a class="small" href="/setup/connections">Check permissions</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Send a transcript in</h2><span class="purpose">From any recorder that can export or post.</span></div>
+  {% for d in push %}
+  <div class="card" id="src-{{ d.kind }}">
+    {% if d.kind == 'upload' %}
+    <div class="source-row">
+      <div><div class="h3">Upload a file</div><p class="meta">Text, .vtt, .srt or JSON from any recorder. Always on.</p></div>
+      <div class="source-side"><span class="pill pill-good"><i></i>always on</span><a class="btn btn-sm" href="/import">Open Import</a></div>
+    </div>
+    {% elif d.kind == 'webhook' %}
+    <div class="source-row">
+      <div><div class="h3">Webhook</div><p class="meta">For Zapier, Make, n8n or a recorder's own "send to webhook": it posts each new transcript to the coach. Off until a secret exists.</p></div>
+      <div class="source-side">{% if d.configured and d.enabled %}<span class="pill pill-good"><i></i>on</span>{% elif d.configured %}<span class="pill pill-muted"><i></i>switched off</span>{% else %}<span class="pill pill-muted"><i></i>no secret yet</span>{% endif %}</div>
+    </div>
+    <dl class="facts source-facts">
+      <div><dt>Send to</dt><dd><code id="webhook-url">{{ webhook_url }}</code> <button type="button" class="btn btn-sm btn-quiet" data-copy="#webhook-url">Copy</button></dd></div>
+      <div><dt>With the header</dt><dd><code>{{ webhook_header }}: your secret</code></dd></div>
+      <div><dt>Secret</dt><dd>{% if d.configured %}Set. It cannot be shown again.{% else %}Not set.{% endif %}</dd></div>
+    </dl>
+    <div class="actions">
+      <form method="post" action="/setup/sources/webhook/secret">
+        <button class="btn btn-sm {% if d.configured %}btn-quiet{% else %}btn-primary{% endif %}"{% if d.configured %} data-confirm="Replace the webhook secret? Anything that posts with the old one stops working until you paste in the new one."{% endif %}>{% if d.configured %}Replace the secret{% else %}Create the secret{% endif %}</button>
+      </form>
+      {% if d.configured %}
+      <form method="post" action="/setup/sources/webhook">
+        {% if not d.enabled %}<input type="hidden" name="enabled" value="1">{% endif %}
+        <button class="btn btn-sm">{% if d.enabled %}Switch off{% else %}Switch on{% endif %}</button>
+      </form>
+      {% endif %}
+    </div>
+    <form method="post" action="/setup/sources/webhook" class="source-form" id="webhook-remote">
+      <input type="hidden" name="remote_form" value="1">
+      <div class="source-controls">
+        <label class="check" for="f-webhook-remote"><input type="checkbox" id="f-webhook-remote" name="allow_remote" value="1"{% if d.options.allow_remote %} checked{% endif %}> Allow requests through a tunnel</label>
+        <button class="btn btn-sm btn-secondary">Save</button>
+      </div>
+      <p class="meta">{% if d.options.allow_remote %}On: a request from anywhere is accepted if it carries the secret.{% else %}Off: the webhook answers this machine only, for example an automation that runs on this computer.{% endif %}</p>
+      {% if hosted() %}
+      <div class="callout"><div class="label">Hosted install</div>
+        Every request reaches this coach through the platform's proxy, so none counts as local: the webhook works only
+        with this switched on. The secret is still required on every call, and the secret opens no other route.</div>
+      {% else %}
+      <div class="callout callout-err"><div class="label">Before you switch this on</div>
+        A cloud automation (Zapier, Make) can only reach the coach through a tunnel you run. Set the tunnel up so that it
+        forwards <strong>only</strong> the path <code>/import/webhook</code>, and so that it does <strong>not rewrite the Host header</strong>.
+        A tunnel that forwards everything, or that rewrites the Host header to localhost, puts your calls, deals and the Send
+        button on the internet. The coach refuses every other request that arrives through a tunnel or proxy, but only the
+        tunnel can keep them from arriving.</div>
+      {% endif %}
+    </form>
+    <details class="raw">
+      <summary>What to send, with an example</summary>
+      <p class="meta">A JSON body. Only each turn's speaker and text are required. The coach listens on this machine only, so a cloud automation needs a tunnel to reach it: one that forwards only /import/webhook and does not rewrite the Host header, with "Allow requests through a tunnel" switched on above.</p>
+      <pre class="pre" id="sample-curl">{{ sample_curl }}</pre>
+      <button type="button" class="btn btn-sm btn-quiet" data-copy="#sample-curl">Copy the example</button>
+    </details>
+    {% else %}
+    <div class="source-row"><div><div class="h3">{{ d.label }}</div><p class="meta">{{ d.how }}</p></div></div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Let the coach fetch them</h2><span class="purpose">It checks on a schedule and brings in new calls by itself.</span></div>
+  {% for d in poll %}
+  <form method="post" action="/setup/sources/{{ d.kind }}" class="card source-form" id="src-{{ d.kind }}" autocomplete="off">
+    <div class="source-row">
+      <div>
+        <div class="h3">{{ d.label }}{% if not d.verified %} <span class="tag tag-block" title="Written from the service's public documentation and tested against sample data only">untested against the live API</span>{% endif %}</div>
+        <p class="meta">{% if d.kind == 'folder' %}Save or drag transcript files into one folder. Each transcript is read once, then moved to a "processed" folder beside it. A file that is not a transcript is left where it is.{% else %}{{ d.how }}{% endif %}</p>
+      </div>
+      <div class="source-side">
+        {% if d.enabled and d.configured %}<span class="pill pill-good"><i></i>on</span>
+        {% elif d.enabled %}<span class="pill pill-alert"><i></i>on, not ready</span>
+        {% else %}<span class="pill pill-muted"><i></i>off</span>{% endif %}
+      </div>
+    </div>
+
+    {% if d.kind == 'folder' %}
+    <dl class="facts source-facts"><div><dt>Drop files here</dt><dd><code id="drop-dir">{{ drop_dir }}</code> <button type="button" class="btn btn-sm btn-quiet" data-copy="#drop-dir">Copy</button></dd></div></dl>
+    <label for="f-folder-path">Use another folder <span class="opt">optional</span>
+      <input id="f-folder-path" name="path" value="{{ d.options.path or '' }}" placeholder="~/Documents/Call transcripts" spellcheck="false">
+      <span class="hint">The full path of a folder your recorder or automation saves into, used for call transcripts only. Not your home folder, and not Desktop, Documents or Downloads themselves: make a folder inside. Leave empty for the folder above.</span>
+    </label>
+    {% endif %}
+
+    {% if d.kind == 'granola' and not cli %}<div class="callout">Granola is read through the Claude CLI, which is not installed on this machine.</div>{% endif %}
+
+    {% if d.needs_key %}
+    <label for="f-{{ d.kind }}-key">API key
+      <span class="pill {% if d.configured %}pill-good{% else %}pill-muted{% endif %} key-status"><i></i>{% if d.configured %}key is set{% else %}not set{% endif %}</span>
+      <input id="f-{{ d.kind }}-key" name="api_key" type="password" value="" autocomplete="new-password" spellcheck="false" placeholder="{% if d.configured %}Leave empty to keep the stored key{% else %}Paste your {{ d.label }} key{% endif %}">
+      <span class="hint">Create one in your {{ d.label }} account settings, under API or integrations. Stored on this machine only, never shown again.</span>
+    </label>
+    {% endif %}
+
+    <div class="source-controls">
+      <label class="check" for="f-{{ d.kind }}-enabled"><input type="checkbox" id="f-{{ d.kind }}-enabled" name="enabled" value="1"{% if d.enabled %} checked{% endif %}> Switched on</label>
+      <label for="f-{{ d.kind }}-poll" class="inline-field">Check every
+        <input id="f-{{ d.kind }}-poll" name="poll_minutes" type="number" min="{{ min_poll }}" max="{{ max_poll }}" value="{{ d.poll_minutes or '' }}" inputmode="numeric"> minutes</label>
+      {% if d.kind != 'folder' %}
+      <label class="check" for="f-{{ d.kind }}-deals"><input type="checkbox" id="f-{{ d.kind }}-deals" name="only_deals" value="1"{% if d.options.only_deals %} checked{% endif %}> Only meetings with people from a deal</label>
+      {% endif %}
+      <button class="btn btn-sm btn-secondary">Save {{ d.label }}</button>
+    </div>
+    {{ last_run(d) }}
+  </form>
+  {% endfor %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Other recorders</h2><span class="purpose">No connection to set up: export the transcript, then upload it or drop it in the folder.</span></div>
+  <div class="card">
+    <dl class="export-list">
+      {% for d in export %}<div id="src-{{ d.kind }}"><dt>{{ d.label }}</dt><dd>{{ d.how }}</dd></div>{% endfor %}
+    </dl>
+  </div>
+</section>
+
+{{ f.link_footer(back_href, next_href) }}
+{% endblock %}
