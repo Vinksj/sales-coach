@@ -16,6 +16,7 @@ import logging
 
 from ..agents.base import AgentFailed
 from ..store.stores import now
+from ..store import db
 from ..validators import evidence as ev
 from . import tables
 from .agentkit import IntelAgent
@@ -131,5 +132,5 @@ def run(conn, deal_id, call_id, ids: dict, result: dict | None = None) -> list[i
             "INSERT INTO reconciliations(subject,verdict,rationale,assessment_ids,created_at) VALUES (?,?,?,?,?)",
             (f"deal:{deal_id}/{p['subject']}", decided["verdict"], decided["rationale"],
              json.dumps([p["first"]["id"], p["second"]["id"]]), now()))
-        written.append(cur.lastrowid)
+        written.append(db.insert_id(cur))
     return written

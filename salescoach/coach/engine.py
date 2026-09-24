@@ -33,6 +33,7 @@ from typing import Callable, Optional
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store import stores
+from ..store import db
 from . import settings
 from .detectors import FastDetectors, LocalClassifier, make_candidate
 from .ranker import Ranker
@@ -357,7 +358,7 @@ class LiveCoach:
              c.anchor_text[:300] or None, c.anchor_t, c.entity, c.rationale[:500] or None, c.urgency,
              c.shown_wall, stores.now()))
         conn.commit()
-        c.id = cur.lastrowid
+        c.id = db.insert_id(cur)
 
     # ---- slow path ------------------------------------------------------------
 
@@ -464,8 +465,9 @@ class LiveCoach:
         window = float(self.cfg["outcome"]["window_s"])
         for c in self.ranker.shown:
             c.outcome, c.outcome_evidence = self._outcome(c, now, window)
-            conn.execute("UPDATE nudges SET outcome=?, outcome_evidence=?, dismissed=MAX(dismissed, ?) WHERE id=?",
-                         (c.outcome, c.outcome_evidence[:300] or None, int(c.dismissed), c.id))
+            conn.execute("UPDATE nudges SET outcome=?, outcome_evidence=?, "
+                         "dismissed=CASE WHEN dismissed > ? THEN dismissed ELSE ? END WHERE id=?",
+                         (c.outcome, c.outcome_evidence[:300] or None, int(c.dismissed), int(c.dismissed), c.id))
             if self.emit_events:
                 bus.publish(conn, Event(
                     type="IMPORTANT_SIGNAL_DETECTED", entity_id=self.call_id,

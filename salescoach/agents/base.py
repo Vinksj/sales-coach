@@ -20,6 +20,7 @@ from pathlib import Path
 from .. import providers, seller
 from ..providers.base import ProviderError, RateLimited, SchemaViolation
 from ..store.stores import now
+from ..store import db
 
 PROMPTS = Path(__file__).with_name("prompts")
 
@@ -95,7 +96,7 @@ class Agent:
             (self.name, ctx.get("call_id"), prompt_version, getattr(provider, "name", "?"), model,
              json.dumps(self.input_refs(ctx)), input_sha, now()))
         conn.commit()
-        return cur.lastrowid
+        return db.insert_id(cur)
 
     def _finish_run(self, conn, run_id, status, output=None, error=None, duration_ms=None,
                     cost_usd=None, model=None, isolation=None):

@@ -30,6 +30,7 @@ from ..orchestrator import bus
 from ..schemas.common import CONFIDENCE_RANK
 from ..schemas.events import Event
 from ..store.stores import engine, now, set_state
+from ..store import db
 from ..validators import evidence
 from . import common
 from .schemas import ReplyAnalysis
@@ -113,7 +114,7 @@ def poll(conn, gmail, lookback_days: int | None = None) -> dict:
                  strip_quoted(body_full)[:20000], body_full[:60000], now()))
             if not cur.rowcount:
                 continue
-            reply_id = cur.lastrowid
+            reply_id = db.insert_id(cur)
             bus.publish(conn, Event(type="STAKEHOLDER_REPLY_RECEIVED", entity_id=latest["deal_id"],
                                     dedupe_key=f"REPLY:{m['message_id']}",
                                     payload={"reply_id": reply_id, "email_id": latest["id"], "thread_id": thread_id}))

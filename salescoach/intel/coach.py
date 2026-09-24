@@ -26,6 +26,7 @@ from .. import repo
 from ..agents.base import AgentFailed
 from ..memory import patterns
 from ..store import stores
+from ..store import db
 from ..validators import evidence as ev
 from ..validators import voice_lint
 from . import history
@@ -71,15 +72,15 @@ def _nudges(conn):
     """Phase 2's nudges, read defensively: the table may not exist (plugins off, or Phase 2 not built)
     and its columns are Phase 2's. Only nudges the seller actually saw on a live call count: Phase 2 also
     stores every suppressed candidate and every replay, which say nothing about his adherence."""
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nudges'").fetchone():
+    if not conn.table_exists("nudges"):
         return None
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(nudges)")]
+    cols = conn.columns("nudges")
     where = []
     if "shown" in cols:
         where.append("shown=1")
     if "mode" in cols:
         where.append("mode='live'")
-    sql = "SELECT * FROM nudges" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY rowid DESC LIMIT 50"
+    sql = "SELECT * FROM nudges" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT 50"
     rows = [dict(r) for r in conn.execute(sql)]
     outcome = next((c for c in ("outcome", "adherence", "followed", "acted_on", "result", "status") if c in cols), None)
     text = next((c for c in ("text", "message", "nudge", "prompt", "body", "suggestion") if c in cols), None)
@@ -295,4 +296,4 @@ def refresh(conn, trigger="manual", force=False) -> int | None:
                                                 json.dumps(report), stores.now()))
     stores.set_state(conn, "intel:coach_error", "")
     conn.commit()
-    return cur.lastrowid
+    return db.insert_id(cur)

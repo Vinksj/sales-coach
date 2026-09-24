@@ -468,6 +468,8 @@ class RecordingRefused(RuntimeError):
 
 
 def ensure_columns(conn) -> None:
+    if conn.dialect != "sqlite":                # the Postgres baseline already has every column
+        return
     have = {r[1] for r in conn.execute("PRAGMA table_info(calendar_meetings)")}
     for col, decl in MEETING_COLUMNS.items():
         if col not in have:

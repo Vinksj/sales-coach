@@ -82,7 +82,10 @@ PROPOSAL_COLUMNS = "id,kind,subject,pattern_id,target_id,summary,payload,status,
 def ensure_columns(conn) -> None:
     """Idempotent. deals gets value, currency, lost_reason (close_target already exists);
     learned_patterns gets no_prompt; a learning_proposals table made by phase F1 (one row per subject,
-    for ever) is rebuilt so a decided proposal stays as history and a later one can be opened."""
+    for ever) is rebuilt so a decided proposal stays as history and a later one can be opened.
+    SQLite only: the Postgres baseline is generated from the same files and already has every column."""
+    if conn.dialect != "sqlite":
+        return
     have = {r[1] for r in conn.execute("PRAGMA table_info(deals)")}
     for col, decl in DEAL_COLUMNS.items():
         if col not in have:

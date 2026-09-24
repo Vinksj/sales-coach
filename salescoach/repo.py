@@ -99,7 +99,7 @@ def sync_me(conn) -> Optional[str]:
 def link_deal_person(conn, deal_id, person_id, role=None, actor=ACTOR):
     conn.execute(
         "INSERT INTO deal_people(deal_id,person_id,role_in_deal) VALUES (?,?,?) "
-        "ON CONFLICT(deal_id,person_id) DO UPDATE SET role_in_deal=COALESCE(excluded.role_in_deal, role_in_deal)",
+        "ON CONFLICT(deal_id,person_id) DO UPDATE SET role_in_deal=COALESCE(excluded.role_in_deal, deal_people.role_in_deal)",
         (deal_id, person_id, role))
     engine._emit(conn, actor, "deal_person_linked", node_id=deal_id, after={"person_id": person_id, "role": role})
 

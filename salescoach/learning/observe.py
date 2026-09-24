@@ -30,7 +30,7 @@ COLUMNS = ("polarity", "call_id", "deal_id", "email_id", "nudge_id", "evidence",
 
 
 def _has(conn, table: str) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+    return conn.table_exists(table)
 
 
 def _row(family, key, subject, **kw) -> dict:

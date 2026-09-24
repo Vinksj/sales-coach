@@ -919,7 +919,8 @@ def _open_conflicts(conn, call_id, deal_id) -> list:
     rows = conn.execute(
         "SELECT mc.*, l.description AS loop_description, l.call_id AS loop_call FROM memory_conflicts mc "
         "LEFT JOIN loops l ON l.node_id=mc.entity_id WHERE mc.status='open' AND ("
-        "l.call_id=? OR (? IS NOT NULL AND l.deal_id=?) OR mc.entity_id=? OR mc.provenance LIKE ?) ORDER BY mc.id",
+        "l.call_id=? OR (CAST(? AS TEXT) IS NOT NULL AND l.deal_id=?) OR mc.entity_id=? OR mc.provenance LIKE ?) "
+        "ORDER BY mc.id",
         (call_id, deal_id, deal_id, deal_id or call_id, f'%"{call_id}"%')).fetchall()
     out = []
     for r in rows:
@@ -1508,7 +1509,7 @@ def deals_page(request: Request):
             "(SELECT COUNT(*) FROM calls c WHERE c.deal_id=d.node_id) AS n_calls, "
             "(SELECT MAX(started_at) FROM calls c WHERE c.deal_id=d.node_id) AS last_call "
             "FROM deals d LEFT JOIN accounts a ON a.node_id=d.account_id "
-            "ORDER BY d.status='active' DESC, last_call IS NULL, last_call DESC, d.name", (today_str(),)).fetchall()
+            "ORDER BY d.status='active' DESC, last_call DESC, d.name", (today_str(),)).fetchall()
         return render(request, conn, "deals.html", deals=rows)
 
 

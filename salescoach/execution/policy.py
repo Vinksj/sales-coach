@@ -21,7 +21,6 @@ A second copy to a customer is worse than a manual check.
 import hashlib
 import json
 import re
-import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from .. import config, seller
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store.stores import now
+from ..store import db
 from ..validators import recipients as recipients_v
 from ..validators import voice_lint
 
@@ -111,8 +111,9 @@ def _write(conn, sql, params, attempts=5):
         try:
             conn.execute(sql, params)
             return
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc) or i == attempts - 1:
+        except db.OperationalError as exc:
+            # Only SQLite has a "database is locked" to wait out; Postgres queues the writer itself.
+            if conn.dialect != db.SQLITE or "locked" not in str(exc) or i == attempts - 1:
                 raise
             time.sleep(1 + i)
 
@@ -173,9 +174,9 @@ def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by
         raise ValueError(mode)
     if conn.in_transaction:
         conn.commit()
-    conn.execute("BEGIN IMMEDIATE")
     try:
-        row = conn.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
+        # The row is ours until COMMIT: BEGIN IMMEDIATE on SQLite, SELECT ... FOR UPDATE on Postgres.
+        row = conn.lock_rows("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
         if row is None:
             raise SendRefused("no such email")
         if row["status"] in ("sent", "saved_to_gmail"):

@@ -31,6 +31,7 @@ from ..memory import gate, patterns
 from ..schemas.common import CONFIDENCE_RANK, conf_min
 from ..schemas.events import Event
 from ..store.stores import engine, now
+from ..store import db
 from ..validators import evidence, recipients, voice_lint
 from . import bus, context
 
@@ -386,9 +387,10 @@ def step_email(conn, call_id, force=False):
         "lint,run_id,created_at,updated_at) VALUES (?,?,'followup',?,?,?,?,?,?,?,'drafted',?,?,?,?)",
         (call_id, call["deal_id"], json.dumps(to), json.dumps(cc), subject, body, body, out.rationale, version,
          json.dumps(lint_rows), run_id, now(), now()))
-    context.save_artifact(conn, call_id, "email", {"email_id": cur.lastrowid, "version": version}, run_id)
+    email_id = db.insert_id(cur)
+    context.save_artifact(conn, call_id, "email", {"email_id": email_id, "version": version}, run_id)
     bus.publish(conn, Event(type="EMAIL_DRAFT_CREATED", entity_id=call_id,
-                            dedupe_key=f"EMAIL_DRAFT:{call_id}:{version}", payload={"email_id": cur.lastrowid}))
+                            dedupe_key=f"EMAIL_DRAFT:{call_id}:{version}", payload={"email_id": email_id}))
 
 
 PIPELINE = [

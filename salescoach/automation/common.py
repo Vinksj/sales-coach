@@ -14,6 +14,7 @@ from pathlib import Path
 from .. import config, seller
 from ..agents.base import Agent
 from ..store.stores import now
+from ..store import db
 
 PROMPTS = Path(__file__).with_name("prompts")
 RULES_VERSION = "rules-v1"
@@ -113,4 +114,4 @@ def record_rules_run(conn, agent: str, refs: dict, output: dict, call_id=None) -
         "status,duration_ms,started_at) VALUES (?,?,?,?,?,?,?,?,?,'ok',0,?)",
         (agent, call_id, RULES_VERSION, "rules", None, "n/a", refs_json,
          hashlib.sha256(refs_json.encode()).hexdigest(), json.dumps(output, default=str), now()))
-    return cur.lastrowid
+    return db.insert_id(cur)

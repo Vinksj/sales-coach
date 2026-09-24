@@ -16,7 +16,6 @@ active_priority() (the prep brief, the Today card, the coach report's default) s
 """
 import json
 import re
-import sqlite3
 from collections import Counter
 
 from .. import config
@@ -54,16 +53,17 @@ def _learned_verdicts(conn) -> dict:
     """{tag: user_state | 'no_prompt'} from the learning layer, for seller patterns the user judged.
     Empty when the learning tables are not there (plugins off) or predate the no_prompt column."""
     out = {}
-    for sql in ("SELECT key, user_state, no_prompt FROM learned_patterns WHERE family='seller' "
-                "AND (user_state IN ('wrong','retired') OR no_prompt=1)",
-                "SELECT key, user_state, 0 AS no_prompt FROM learned_patterns WHERE family='seller' "
-                "AND user_state IN ('wrong','retired')"):
-        try:
-            for r in conn.execute(sql):
-                out[r["key"]] = r["user_state"] if r["user_state"] in ("wrong", "retired") else "no_prompt"
-            return out
-        except sqlite3.OperationalError:
-            continue
+    # Asked, not tried: a failed statement would abort an open Postgres transaction.
+    if not conn.table_exists("learned_patterns"):
+        return out
+    if "no_prompt" in conn.columns("learned_patterns"):
+        sql = ("SELECT key, user_state, no_prompt FROM learned_patterns WHERE family='seller' "
+               "AND (user_state IN ('wrong','retired') OR no_prompt=1)")
+    else:
+        sql = ("SELECT key, user_state, 0 AS no_prompt FROM learned_patterns WHERE family='seller' "
+               "AND user_state IN ('wrong','retired')")
+    for r in conn.execute(sql):
+        out[r["key"]] = r["user_state"] if r["user_state"] in ("wrong", "retired") else "no_prompt"
     return out
 
 

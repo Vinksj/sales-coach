@@ -17,7 +17,6 @@ stops the others.
 import json
 import os
 import signal
-import sqlite3
 import subprocess
 import threading
 import time
@@ -27,6 +26,7 @@ from typing import Callable, Optional, Sequence, Union
 from .. import config
 from ..providers.base import Segment
 from ..store import stores
+from ..store import db
 from . import hub as hub_module
 from . import stream_asr
 from .archive import NAMES, Archive
@@ -265,7 +265,7 @@ class CaptureSession:
 
     # ---- sinks -------------------------------------------------------------
 
-    def _thread_db(self) -> sqlite3.Connection:
+    def _thread_db(self) -> db.Connection:
         conn = getattr(self._db, "conn", None)
         if conn is None:
             conn = self._db.conn = stores.sales(self.db_path)
@@ -289,7 +289,7 @@ class CaptureSession:
                  seg.avg_logprob, seg.no_speech_prob))
             conn.commit()
             self.turns += 1
-        except sqlite3.Error as exc:
+        except db.Error as exc:
             conn.rollback()
             self._alert("db_error", f"live turn not saved: {exc}")
         self._publish({"type": "segment", "idx": idx, "channel": seg.channel, "t_start": seg.t_start,

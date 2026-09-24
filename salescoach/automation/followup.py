@@ -38,6 +38,7 @@ from ..memory import gate
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store.stores import engine, now, set_state
+from ..store import db
 from ..validators import recipients, voice_lint
 from . import common
 from .schemas import FollowupDecision, NudgeDraft
@@ -395,7 +396,7 @@ def draft_nudge(conn, loop, f, today: date, reason: str) -> tuple[int, int]:
         "lint,run_id,created_at,updated_at) VALUES (NULL,?,'nudge',?,?,?,?,?,?,1,'drafted',?,?,?,?)",
         (loop.get("deal_id"), json.dumps(to), json.dumps(cc), subject, body, body, out.rationale,
          json.dumps(issues), run_id, now(), now()))
-    email_id = cur.lastrowid
+    email_id = db.insert_id(cur)
     record_items(conn, run_id, created=[f"nudge email {email_id} for {loop['node_id']}"],
                  rejected=[{"recipient": d} for d in dropped])
     bus.publish(conn, Event(type="EMAIL_DRAFT_CREATED", entity_id=loop.get("deal_id"),
@@ -456,7 +457,7 @@ def _apply(conn, loop, today: date, stage: str, o: Outcome, facts: dict, f, publ
         (lid, loop.get("deal_id"), today.isoformat(), stage, o.check, o.decision, o.rationale, o.risk, o.note,
          o.wait_until.isoformat() if o.wait_until else None, o.next_check.isoformat() if o.next_check else None,
          json.dumps(facts, default=str), run_id, now()))
-    did = cur.lastrowid
+    did = db.insert_id(cur)
     result = {"decision_id": did, "loop_id": lid, "stage": stage, "check": o.check, "decision": o.decision,
               "rationale": o.rationale}
     if o.decision == "send_nudge":

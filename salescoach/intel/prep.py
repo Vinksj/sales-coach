@@ -22,6 +22,7 @@ from ..agents.base import AgentFailed
 from ..memory import patterns
 from ..orchestrator import context
 from ..store.stores import now
+from ..store import db
 from ..validators import evidence as ev
 from ..validators import voice_lint
 from . import coach, embed, history, methodology, strategist, tables
@@ -342,7 +343,7 @@ def generate(conn, deal_id, meeting_title=None, attendees=(), when=None, use_llm
         "INSERT INTO prep_briefs(deal_id,meeting_title,meeting_at,attendees,run_id,json,created_at) VALUES (?,?,?,?,?,?,?)",
         (deal_id, meeting_title, when, json.dumps(list(attendees)), run_id, json.dumps(brief), now()))
     conn.commit()
-    return cur.lastrowid
+    return db.insert_id(cur)
 
 
 def get(conn, brief_id=None, deal_id=None) -> dict | None:

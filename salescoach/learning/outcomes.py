@@ -33,6 +33,7 @@ from ..automation import common
 from ..execution.cadence import add_business_days
 from ..memory import gate
 from ..store.stores import now
+from ..store import db
 from . import cfg, ensure_columns
 
 STATUSES = ("active", "paused", "won", "lost")
@@ -130,7 +131,7 @@ def set_deal_outcome(conn, deal_id: str, changes: dict, confirmed: bool = False,
             "VALUES (?,?,?,?,?,?,?,?)",
             (deal_id, deal["stage"], wanted.get("stage", deal["stage"]), deal["status"], status,
              wanted.get("lost_reason", deal["lost_reason"]) if status == "lost" else None, now(), by))
-        history_id = cur.lastrowid
+        history_id = db.insert_id(cur)
     if changed:
         conn.execute("UPDATE deals SET updated_at=? WHERE node_id=?", (now(), deal_id))
     return {"changed": changed, "history_id": history_id}
@@ -211,7 +212,7 @@ def _email_replied(conn, w: _Writer, today: date, emails) -> None:
 
 def _meeting_after_email(conn, w: _Writer, today: date, emails) -> None:
     days = int(cfg("followup").get("meeting_within_days", 10))
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendar_meetings'").fetchone():
+    if not conn.table_exists("calendar_meetings"):
         return
     meetings: dict[str, list] = {}
     for m in conn.execute("SELECT event_id, deal_id, start_at, first_seen_at FROM calendar_meetings "
@@ -312,7 +313,7 @@ def _call_advanced(conn, w: _Writer, loop_verdicts: dict) -> None:
     for c in conn.execute("SELECT node_id, deal_id, started_at FROM calls WHERE deal_id IS NOT NULL "
                           "AND started_at IS NOT NULL ORDER BY started_at, node_id"):
         by_deal.setdefault(c["deal_id"], []).append(c)
-    has_intel = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meddpicc'").fetchone())
+    has_intel = conn.table_exists("meddpicc")
 
     for deal_id, calls in by_deal.items():
         element_events, stakeholder_events = [], []
@@ -393,7 +394,8 @@ def counts(conn) -> list[dict]:
     """Per kind: how many happened, did not, or are still open. For the Outcomes panel."""
     out = []
     for kind in KINDS:
-        row = conn.execute("SELECT SUM(value=1) AS yes, SUM(value=0) AS no, SUM(value IS NULL) AS pending, COUNT(*) AS n "
+        row = conn.execute("SELECT SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS yes, SUM(CASE WHEN value=0 THEN 1 ELSE 0 END) AS no, "
+                           "SUM(CASE WHEN value IS NULL THEN 1 ELSE 0 END) AS pending, COUNT(*) AS n "
                            "FROM derived_outcomes WHERE kind=?", (kind,)).fetchone()
         out.append({"kind": kind, "yes": row["yes"] or 0, "no": row["no"] or 0, "pending": row["pending"] or 0,
                     "n": row["n"] or 0})

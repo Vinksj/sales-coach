@@ -14,7 +14,6 @@ from the payload; the deal is inferred from the participants' domains as for eve
 from urllib.parse import urlencode
 
 import logging
-import sqlite3
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -22,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import seller
 from ..store import stores
+from ..store import db
 from . import base, settings
 from .adapters import MAX_BYTES, SourceError, webhook
 from .adapters.upload import UploadAdapter
@@ -132,7 +132,7 @@ def _import_webhook_body(db_path, body: bytes):
     except (ValueError, SourceError) as exc:
         conn.rollback()
         return JSONResponse({"error": str(exc)[:500]}, status_code=422)
-    except sqlite3.OperationalError:
+    except db.OperationalError:
         conn.rollback()                                 # a locked store is OUR problem: say "try again", not "bad payload"
         return JSONResponse({"error": "the coach is busy; send it again in a moment"}, status_code=503)
     except Exception as exc:

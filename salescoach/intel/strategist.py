@@ -38,6 +38,7 @@ from ..memory import gate
 from ..orchestrator import context
 from ..schemas.common import CONFIDENCE_RANK, conf_min
 from ..store.stores import engine, now
+from ..store import db
 from ..validators import evidence as ev
 from ..validators import voice_lint
 from . import history, methodology, reconcile, tables
@@ -507,7 +508,7 @@ def apply_assessments(conn, result: dict) -> dict:
             "VALUES (?,?,?,?,?,?,?,?)",
             (f"deal:{deal_id}/{a['subject']}", call_id, ACTOR, a["stance"], a["validated_confidence"],
              a["rationale"], json.dumps(turns), now()))
-        ids[a["subject"]] = cur.lastrowid
+        ids[a["subject"]] = db.insert_id(cur)
     return ids
 
 
