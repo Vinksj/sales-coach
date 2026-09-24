@@ -200,8 +200,10 @@ templates.env.filters.update(dt=fmt_dt, day=fmt_day, mmss=mmss, fromjson=fromjso
                              who=seller.display)
 # Called from templates on every render, so a saved profile shows at once: {{ brand() }}, {{ tz_label() }}.
 templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, languages=seller.languages,
-                             settings_problems=config.user_problems, auth_on=hosted.auth_enabled, hosted=hosted.is_hosted,
-                             me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None))
+                             settings_problems=config.user_problems, auth_on=lambda: hosted.auth_enabled() or identity.cloud(),
+                             hosted=hosted.is_hosted, cloud=identity.cloud,
+                             me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None),
+                             me_role=lambda: getattr(identity.current_actor(required=False), "role", None))
 
 
 # ---- same-origin guard --------------------------------------------------------
@@ -325,7 +327,8 @@ class FirstRunGate:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"].upper() in ("GET", "HEAD"):
             path = scope.get("path") or "/"
-            exempt = (path in ("/setup", "/health", "/login", "/me/setup") or path.startswith(("/setup/", "/static/"))
+            exempt = (path in ("/setup", "/health", "/login", "/me/setup")
+                      or path.startswith(("/setup/", "/static/", "/auth/", "/admin"))
                       or _NOT_A_PAGE.search(path))
             if not exempt:
                 if not seller.org_configured():
@@ -340,9 +343,9 @@ class FirstRunGate:
 class ActorGate:
     """Binds the acting user for the request (identity.activate), so every route handler, Jinja
     filter and store connection opened inside runs as that user. Local mode: the local user, always.
-    Cloud mode: the user named by the login cookie (hosted.verify_session), looked up in `users`;
-    a request that resolves to no active user gets 401 (open paths pass with no actor). Phase 3
-    replaces the lookup with Google sign-in and server-side sessions; the binding stays."""
+    Cloud mode: the Actor the AuthGate resolved from the server-side session (web/auth.py) and left
+    in scope["state"]; the gate already refused every non-open request without one, so a request
+    that reaches here with no actor is an open path (login, the Google callback, static files)."""
 
     def __init__(self, app):
         self.app = app
@@ -351,7 +354,7 @@ class ActorGate:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        actor = identity.LOCAL_ACTOR if not identity.cloud() else self._cloud_actor(scope)
+        actor = identity.LOCAL_ACTOR if not identity.cloud() else scope.get("state", {}).get("actor")
         if actor is None and identity.cloud():
             from . import auth
             if not auth.is_open(scope["method"].upper(), scope.get("path") or "/"):
@@ -359,27 +362,6 @@ class ActorGate:
                 return
         with identity.activate(actor):
             await self.app(scope, receive, send)
-
-    @staticmethod
-    def _cloud_actor(scope):
-        from . import auth
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        session = hosted.verify_session(auth._cookie(headers))
-        if not session:
-            return None
-        from .. import users
-        try:
-            with identity.activate(None):
-                conn = stores.sales(scope["app"].state.db_path)
-            try:
-                row = users.get(conn, session["user"]) or users.by_email(conn, session["user"])
-            finally:
-                conn.close()
-        except Exception:
-            return None
-        if not row or row["status"] != "active":
-            return None
-        return identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row))
 
 
 # ---- plumbing -----------------------------------------------------------------

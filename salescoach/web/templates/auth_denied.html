@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{# Google said who this is and the coach said no: the domain, the verification, the invite list or a
+   disabled account (web/auth.py). The message names nothing secret. #}
+{% block title %}Sign-in refused{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Sign-in refused</div>
+  <h1>You are not on the list for this coach</h1>
+  <div class="meta">{{ message }}</div>
+</div>
+<div class="card" id="denied" style="max-width: 520px">
+  <p>An invite is your work address on the admin's list; the coach sends no email. Once you are on it, sign in again with the same Google account{% if domains %} ({{ domains|join(', ') }}){% endif %}.</p>
+  <div class="actions"><a class="btn btn-secondary" href="/login">Back to sign-in</a></div>
+</div>
+{% endblock %}

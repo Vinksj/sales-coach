@@ -216,7 +216,8 @@ class Pending:
         self._lock = threading.Lock()
 
     def begin(self, **data) -> tuple[str, str, str]:
-        """Remember a new attempt; returns (state, nonce, code_verifier)."""
+        """Remember a new attempt; returns (state, nonce, code_challenge). The verifier stays here
+        until the callback takes it."""
         state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         verifier, challenge = new_pkce()
         now = time.time()
@@ -225,8 +226,8 @@ class Pending:
             if len(self._items) >= self.max_items:
                 oldest = min(self._items, key=lambda k: self._items[k]["at"])
                 self._items.pop(oldest, None)
-            self._items[state] = {"nonce": nonce, "verifier": verifier, "challenge": challenge, "at": now, **data}
-        return state, nonce, verifier
+            self._items[state] = {"nonce": nonce, "verifier": verifier, "at": now, **data}
+        return state, nonce, challenge
 
     def take(self, state: Optional[str]) -> Optional[dict]:
         """The attempt `state` names, once; None for an unknown, expired or reused state."""
@@ -247,7 +248,7 @@ class Pending:
 def parse_id_token(id_token: str, nonce: str, keys: Optional[dict] = None, leeway: int = 60) -> dict:
     """Authlib: signature against Google's JWKS, iss, aud (this client), exp/iat, and the nonce we
     sent. Returns the claims. Raises GoogleError for anything that does not hold."""
-    from authlib.jose import JoseError, jwt
+    from authlib.jose import jwt
     from authlib.oidc.core import CodeIDToken
     try:
         claims = jwt.decode(id_token, keys if keys is not None else jwks(), claims_cls=CodeIDToken,
@@ -255,8 +256,10 @@ def parse_id_token(id_token: str, nonce: str, keys: Optional[dict] = None, leewa
                                             "aud": {"essential": True, "values": [client_id()]}},
                             claims_params={"nonce": nonce})
         claims.validate(leeway=leeway)
-    except JoseError as exc:
-        raise GoogleError(f"the ID token did not verify: {type(exc).__name__}") from exc
+    except GoogleError:
+        raise
+    except Exception as exc:                  # Authlib 1.8 raises joserfc errors, not only JoseError
+        raise GoogleError(f"the ID token did not verify: {type(exc).__name__}: {str(exc)[:120]}") from exc
     if not claims.get("nonce") or not hmac.compare_digest(str(claims["nonce"]), nonce):
         raise GoogleError("the ID token did not verify: nonce")
     return dict(claims)

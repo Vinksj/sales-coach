@@ -181,7 +181,8 @@ def first_name_upper() -> str:
 
 
 def company() -> str:
-    return profile()["company"]
+    """An org field: readable with nobody signed in (the login page's chrome asks for it)."""
+    return org_profile()["company"]
 
 
 def emails() -> list[str]:

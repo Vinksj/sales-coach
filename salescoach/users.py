@@ -160,6 +160,22 @@ def configured(row) -> bool:
     return bool(p.get("name") and p.get("emails"))
 
 
+# ---- audit ---------------------------------------------------------------------------------------
+
+def audit(conn, kind: str, after: dict, before: Optional[dict] = None, actor_user_id: Optional[str] = None) -> None:
+    """An admin or sign-in change, in `events` with actor_user_id set (engine._emit leaves it NULL).
+    The row is the acting user's (owner_id from the connection's actor), so bind one first."""
+    actor_user_id = actor_user_id or identity.actor_of(conn).user_id
+    conn.execute("INSERT INTO events(ts, actor, kind, node_id, before, after, actor_user_id) VALUES (?,?,?,NULL,?,?,?)",
+                 (now(), f"user:{actor_user_id}", kind, json.dumps(before) if before is not None else None,
+                  json.dumps(after), actor_user_id))
+
+
+def as_actor(row: dict, mode: str = identity.INTERACTIVE) -> identity.Actor:
+    """The Actor a users row acts as."""
+    return identity.Actor(row["id"], mode, row["role"], profile_of(row))
+
+
 # ---- the local user ------------------------------------------------------------------------------
 
 def ensure_local(conn) -> dict:
