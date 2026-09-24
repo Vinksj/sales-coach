@@ -57,6 +57,9 @@ TABLE_CLASS = {
     "learned_patterns": OWNED, "learning_proposals": OWNED,
     # -- live coach plugin
     "nudges": OWNED, "coach_state": OWNED,
+    # -- Phase 6 (appended here; the only edit this phase makes to this file): the org settings overlay is
+    #    machinery, a raw payload is what one user's source delivered (top-level: no parent, no trigger)
+    "org_settings": SYSTEM, "raw_payloads": OWNED,
 }
 
 # Tables that exist on one backend only, and why.

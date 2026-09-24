@@ -86,7 +86,7 @@ def _indexes(conn, table):
 def test_migrates_a_v4_database_with_the_old_words(v4):
     path, before = v4
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 9
 
     # followup_decisions: every row kept, only the two words translated, everything else byte-equal
     rows = [tuple(r) for r in conn.execute("SELECT * FROM followup_decisions ORDER BY id")]

@@ -449,15 +449,44 @@ CREATE TABLE IF NOT EXISTS wf_events (
   error        TEXT,
   created_at   TEXT NOT NULL,
   updated_at   TEXT,
-  not_before   TEXT                        -- NULL = claimable now; fail()/defer() set the earliest retry (UTC ISO)
+  not_before   TEXT,                       -- NULL = claimable now; fail()/defer() set the earliest retry (UTC ISO)
+  priority     INTEGER NOT NULL DEFAULT 0, -- claimed highest first: 10 interactive, 0 imports, -10 history backfills
+  owner        TEXT                        -- whose work (orchestrator/bus.owner_for): a routing key, not a rep's data
 );
 CREATE INDEX IF NOT EXISTS idx_wf_status ON wf_events(status, id);
+CREATE INDEX IF NOT EXISTS idx_wf_claim ON wf_events(status, priority, id);
 
 CREATE TABLE IF NOT EXISTS state (                -- org-wide facts; a user's own go in user_state
   key        TEXT PRIMARY KEY,
   value      TEXT,
   updated_at TEXT
 );
+
+-- Org settings in the database (salescoach/config.py, cloud mode): what user_dir()/<name>.yaml holds
+-- on a local install. One row per settings file name; version bumps on every save and is the cache key,
+-- so every process sees a change on its next read. Secrets never go here (env / secrets.env).
+CREATE TABLE IF NOT EXISTS org_settings (
+  name       TEXT PRIMARY KEY,
+  body       TEXT NOT NULL DEFAULT '{}',        -- json: the overlay, the same shape as the yaml file
+  version    INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT,
+  updated_by TEXT
+);
+
+-- Raw payloads (sources/base.save_raw, cloud mode): what a recorder, an upload or a paste delivered,
+-- before anything interpreted it. Write-only in the pipeline; `salescoach payloads export` for support.
+CREATE TABLE IF NOT EXISTS raw_payloads (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  source_kind TEXT NOT NULL,
+  source_ref  TEXT,
+  encoding    TEXT NOT NULL DEFAULT 'text' CHECK(encoding IN ('text','json','base64')),
+  body        TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  UNIQUE(owner_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_raw_payloads_owner_id ON raw_payloads(owner_id);
 
 -- ---- Users (salescoach/users.py) ------------------------------------------
 -- The USER half of the old seller.yaml. The local install has one row, 'local',

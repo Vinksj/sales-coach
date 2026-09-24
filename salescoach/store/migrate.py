@@ -554,7 +554,68 @@ def _identity(conn):
 MIGRATIONS[7] = _identity
 
 
+# ---- 8: reserved for Phase 3 (Google sign-in: sessions, oauth_tokens, invites), written in parallel ---
+# with this file. run() tolerates the gap: a database that applied 9 before 8 existed is a development
+# database; a shipped build has both.
+
+# ---- 9 (2026-09-25, Phase 6: processes, fairness, budgets, org settings, raw payloads) ------------------
+# wf_events gains priority (claimed highest first) and owner_id (one running event per owner; the fairness
+# rule in orchestrator/bus.claim_next; `owner`, not owner_id: the bus is SYSTEM, the column is a routing key); org_settings holds the settings overlay in cloud mode (config.py);
+# raw_payloads holds what a source delivered (sources/base.save_raw in cloud mode). Nothing is rebuilt.
+# The Postgres side is store/pg/0005_ops.sql.
+OPS_TABLES_V9 = """
+CREATE TABLE IF NOT EXISTS org_settings (
+  name       TEXT PRIMARY KEY,
+  body       TEXT NOT NULL DEFAULT '{}',
+  version    INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT,
+  updated_by TEXT
+);
+CREATE TABLE IF NOT EXISTS raw_payloads (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  source_kind TEXT NOT NULL,
+  source_ref  TEXT,
+  encoding    TEXT NOT NULL DEFAULT 'text' CHECK(encoding IN ('text','json','base64')),
+  body        TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  UNIQUE(owner_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_raw_payloads_owner_id ON raw_payloads(owner_id);
+CREATE INDEX IF NOT EXISTS idx_wf_claim ON wf_events(status, priority, id);
+"""
+
+
+def _ops(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 9:      # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        cols = _columns(conn, "wf_events")
+        if cols and "priority" not in cols:
+            conn.execute("ALTER TABLE wf_events ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+        if cols and "owner" not in cols:
+            conn.execute("ALTER TABLE wf_events ADD COLUMN owner TEXT")
+        for statement in OPS_TABLES_V9.split(";"):        # one by one: executescript would commit first
+            if statement.strip() and (cols or "idx_wf_claim" not in statement):   # a fixture without the bus table
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 9")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[9] = _ops
+
+
 def run(conn):
+    """Apply every step above the database's version, in order. A missing number (8 while Phase 3 is on
+    its own branch) is skipped; the version ends at the highest step applied."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for target in sorted(MIGRATIONS):
         if target > version:
