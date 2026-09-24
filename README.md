@@ -305,7 +305,8 @@ salescoach/
   providers/         model providers behind one interface
   setupui/           the setup wizard, which is also Settings
   plugins/           how the phases attach to the core
-  store/             SQLite schema, migrations, the event-emitting engine
+  store/             the schema (SQLite; Postgres baseline generated from it), migrations, the
+                     event-emitting engine, the one connection layer over both backends (db.py)
   web/               FastAPI app, templates, static files
 tests/        offline test suite
 ```

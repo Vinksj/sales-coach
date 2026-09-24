@@ -5,6 +5,15 @@ seller, reachable over the internet, running on its own without that Mac. It is 
 one persistent volume, behind one password, on a host that keeps a process running. Fly.io is the
 walkthrough; Railway and Render take the same container.
 
+## SQLite or Postgres
+
+A single-seller hosted install keeps the volume and SQLite exactly as described here. Anything
+multi-user (a team, managers reviewing reps' calls: coming) needs Postgres: set `DATABASE_URL` to a
+`postgresql://` URL, run `salescoach migrate` before the first start and after every upgrade
+(`salescoach migrate --check` says whether the database is behind the build), and the app serves
+from that database instead of `/data/sales.db`. The volume is still needed for settings, secrets
+and imported transcripts. See "Two backends" in [architecture.md](architecture.md).
+
 ## Why not Vercel
 
 Vercel runs functions that start per request and end after it, on a filesystem that does not

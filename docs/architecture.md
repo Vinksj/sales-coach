@@ -139,6 +139,70 @@ bare core. A plugin puts its own tables behind the memory gate with `gate.regist
   loops into a private task system's database when that system is present on the machine
   (`WORLD_DB`, `JARVIS_DIR`). Absent, it does nothing.
 
+## Two backends
+
+The store runs on SQLite (the local install: one seller, one file) or on Postgres (`DATABASE_URL`;
+what the multi-user, hosted version needs). One code base, one SQL dialect subset, both suites green
+in CI (`SALESCOACH_TEST_DATABASE_URL` runs the same tests on Postgres, each test in a schema of its own).
+
+**The layer.** `store/db.py` is the only place that knows there are two drivers. `stores.sales()`
+returns its `Connection`: the sqlite3 surface the code was written against (`execute(sql, params)`
+with `?`, rows by name and by index, `commit`/`rollback`, `in_transaction`, SQL strings for
+`BEGIN`/`SAVEPOINT`) plus the few things the backends must agree on: `dialect`, `serialize(key)`
+(the write lock / an advisory transaction lock), `lock_rows(sql, params, skip_locked=)`
+(`FOR UPDATE [SKIP LOCKED]` / `BEGIN IMMEDIATE`), `insert_id(cursor)` (`RETURNING id` /
+`lastrowid`), `table_exists(t)`, `columns(t)`, and the exception tuples `db.Error`,
+`db.IntegrityError`, `db.OperationalError`. On Postgres every statement is translated once (cached
+by its text) by a small tokenizer: `?` to `%s`, `:name` to `%(name)s`, `%` escaped, `INSERT OR
+IGNORE` to `ON CONFLICT DO NOTHING`, `x IS y` / `x IS NOT y` to `IS [NOT] DISTINCT FROM`, `BEGIN
+IMMEDIATE` to `BEGIN`, SQLite's NULL ordering made explicit (`NULLS FIRST` on ASC, `NULLS LAST` on
+DESC, except bare columns that are NOT NULL everywhere), and `RETURNING id` added to an INSERT into a
+table with an identity column. Transaction semantics are sqlite3's on both: a DML statement opens a
+transaction, reads outside one run in autocommit, a SAVEPOINT outside one opens it. Postgres
+connections come from a `psycopg_pool` pool; `close()` returns one.
+
+**The dialect subset** (what new SQL must keep to; `tests/test_db.py` pins the translator):
+
+- Types: timestamps are ISO-8601 TEXT (compare as strings, computed in Python; never `julianday`,
+  `datetime('now')`, `strftime`); booleans are INTEGER 0/1; JSON is TEXT decoded in Python;
+  ids are INTEGER (`RETURNING id` needs the column to be called `id`).
+- Placeholders `?` (or `:name` with a dict); never string-format a value into SQL. A parameter
+  compared with `IS NULL` needs a type: write `CAST(? AS TEXT) IS NOT NULL`.
+- Upserts are `ON CONFLICT(cols) DO UPDATE SET c=excluded.c` and every other reference to the
+  target table's columns in that SET is qualified (`deal_people.role_in_deal`). `INSERT OR IGNORE`
+  is fine (translated); `INSERT OR REPLACE` / `REPLACE INTO` are refused.
+- The new id of an INSERT is `db.insert_id(cursor)`, never `cursor.lastrowid`.
+- Scalar `MAX(a, b)` is a `CASE`; `SUM(bool_expr)` is `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`;
+  `ORDER BY rowid` is `ORDER BY id`; an ORDER BY may name a SELECT alias only on its own, not inside
+  an expression; every non-aggregated column of a GROUP BY query is in the GROUP BY (or the
+  table's primary key is).
+- Row locks: `conn.lock_rows(...)` and `conn.serialize(key)`, not `BEGIN IMMEDIATE`.
+- `LIKE` is case-sensitive on Postgres and case-insensitive (ASCII) on SQLite: use it on ids and
+  fixed prefixes, and `db.like(col, ci=True)` when case must not matter (the 17 existing uses are
+  all on ids, JSON fragments or already lower-cased text).
+- Schema questions go through `conn.table_exists()` / `conn.columns()`, not `sqlite_master` or
+  `PRAGMA`. Plugin DDL, `reconcile_columns` and the runtime `ensure_columns()` helpers are
+  SQLite-only paths; a new column goes into the tracked SQL and a numbered Postgres migration.
+- After a database error inside a transaction, roll back before doing anything else: a failed
+  statement aborts a Postgres transaction. Prefer `ON CONFLICT` to catching `IntegrityError`.
+- Catch `db.IntegrityError` / `db.OperationalError` / `db.Error`, never `sqlite3.*`.
+
+**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version`, run by every
+connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
+`store/pgmigrate.py` applies the numbered files in `store/pg/` once, under `pg_advisory_lock`,
+recorded in `schema_migrations`; `salescoach migrate` (`--check` in CI) is the only thing that runs
+DDL, and `stores.sales()` refuses to serve a schema at the wrong version. `store/pg/0001_baseline.sql`
+is generated from the SQLite files by `scripts/gen_pg_baseline.py` (`INTEGER PRIMARY KEY
+AUTOINCREMENT` becomes an identity column, `REAL`/`BLOB` become `DOUBLE PRECISION`/`BYTEA`, PRAGMAs
+are dropped, everything else verbatim); `tests/test_schema_parity.py` fails on any drift between the
+committed file, the generator and a live Postgres database (tables, columns and their order, NOT
+NULL, keys, indexes, defaults, CHECK counts). `store/tenancy.py` classifies every table OWNED / ORG /
+SYSTEM for the multi-user work, and `tests/isolation/test_catalog_lint.py` fails on an unclassified one.
+
+**SQLite-only, on purpose:** the file-based install, live capture and the local ASR, the Jarvis
+bridge (`world.db`), the `user_version` migrations and table rebuilds (marked
+`@pytest.mark.sqlite_only` in the suite).
+
 ## Prompts
 
 Every prompt is a Markdown file beside its agent, with `{{variables}}` filled by
