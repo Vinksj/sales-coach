@@ -3,11 +3,16 @@
 Heavy post-call work (final transcription, agents) waits while a live capture
 is running, so a new call never competes with the previous call's analysis
 for the M2's memory and GPU.
+
+The thread has no request context and so no acting user: its connection is opened with none (in
+cloud mode; the implicit local user in local mode), the bus tables are SYSTEM and need none, and
+workflow.handle() binds the event's owner (identity.as_user, service mode) around each event.
 """
 import logging
 import threading
 import time
 
+from .. import identity
 from ..store import stores
 from . import bus, workflow
 
@@ -31,7 +36,8 @@ class Worker(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 if conn is None:
-                    conn = stores.sales(self.db_path)
+                    with identity.activate(None):           # nobody: handle() binds the owner per event
+                        conn = stores.sales(self.db_path)
                     bus.recover_running(conn)
                 if self.live_busy():
                     time.sleep(self.poll_s)

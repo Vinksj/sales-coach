@@ -22,11 +22,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, seller
+from .. import config, identity, seller
 from ..execution import cadence
 from ..orchestrator import bus, review
 from ..schemas.events import Event
-from ..store.stores import engine, now, set_state
+from ..store.stores import engine, now, set_user_state
 from . import common, connector
 
 ACTOR = "calendar"
@@ -241,9 +241,9 @@ class ConnectorCalendar:
         if self.conn is None:
             return
         self.conn.execute(
-            "INSERT INTO calendar_cache(key,fetched_at,source,events,error) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at, events=excluded.events, "
-            "error=excluded.error", (key, now(), self.name, json.dumps(events), error))
+            "INSERT INTO calendar_cache(key,fetched_at,source,events,error,owner_id) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(owner_id,key) DO UPDATE SET fetched_at=excluded.fetched_at, events=excluded.events, "
+            "error=excluded.error", (key, now(), self.name, json.dumps(events), error, _owner(self.conn)))
         self.conn.commit()
 
 
@@ -460,7 +460,11 @@ MEETING_COLUMNS = {           # added after the table first shipped; ensure_colu
     "record": "TEXT NOT NULL DEFAULT 'no'", "call_id": "TEXT", "meeting_url": "TEXT",
     "last_seen_at": "TEXT", "record_error": "TEXT",
 }
-LAST_SYNC_KEY = "automation:calendar:last_sync"
+LAST_SYNC_KEY = "automation:calendar:last_sync"        # per user (user_state): a calendar is one rep's
+
+
+def _owner(conn) -> str:
+    return identity.actor_of(conn).user_id
 
 
 class RecordingRefused(RuntimeError):
@@ -485,6 +489,7 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
     prep brief is written. Meetings that vanished from the calendar are dropped unless they were recorded.
     """
     ensure_columns(conn)
+    owner = _owner(conn)
     days = days or int(common.cfg("calendar").get("upcoming_days", 7))
     current = (now_dt or common.now_ist()).astimezone(common.IST)
     calendar = calendar or ConnectorCalendar(conn)
@@ -509,19 +514,20 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
                 deal = deal or match
                 if dom not in domains:
                     domains.append(dom)
-        existing = conn.execute("SELECT event_id, deal_id FROM calendar_meetings WHERE event_id=?", (e.id,)).fetchone()
+        existing = conn.execute("SELECT event_id, deal_id FROM calendar_meetings WHERE owner_id=? AND event_id=?",
+                                (owner, e.id)).fetchone()
         conn.execute(
             "INSERT INTO calendar_meetings(event_id,deal_id,title,start_at,end_at,attendees,matched_domains,"
-            "meeting_url,first_seen_at,last_seen_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(event_id) DO UPDATE SET deal_id=COALESCE(excluded.deal_id, calendar_meetings.deal_id), "
+            "meeting_url,first_seen_at,last_seen_at,updated_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(owner_id,event_id) DO UPDATE SET deal_id=COALESCE(excluded.deal_id, calendar_meetings.deal_id), "
             "title=excluded.title, start_at=excluded.start_at, end_at=excluded.end_at, attendees=excluded.attendees, "
             "matched_domains=excluded.matched_domains, meeting_url=excluded.meeting_url, "
             "last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at",
             (e.id, deal, e.title, e.start.isoformat(), e.end.isoformat(), json.dumps(guests), json.dumps(domains),
-             e.meeting_url, stamp, seen, stamp))
+             e.meeting_url, stamp, seen, stamp, owner))
         newly_matched = deal and (existing is None or not existing["deal_id"])
         if newly_matched:
-            bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal, dedupe_key=f"NEXT_CALL:{e.id}",
+            bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal, dedupe_key=f"NEXT_CALL:{owner}:{e.id}",
                                     payload={"event_id": e.id, "deal_id": deal, "title": e.title,
                                              "start": e.start.isoformat(), "attendees": guests}))
             engine._emit(conn, ACTOR, "deal_meeting_seen", node_id=deal,
@@ -530,10 +536,10 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
                       "end": e.end.isoformat(), "attendees": guests, "meeting_url": e.meeting_url,
                       "new": existing is None})
     # Gone from the calendar (moved out of the window or deleted) and never recorded: drop it.
-    conn.execute("DELETE FROM calendar_meetings WHERE call_id IS NULL AND start_at>=? AND start_at<=? "
+    conn.execute("DELETE FROM calendar_meetings WHERE owner_id=? AND call_id IS NULL AND start_at>=? AND start_at<=? "
                  "AND (last_seen_at IS NULL OR last_seen_at!=?)",
-                 (window_start.isoformat(), window_end.isoformat(), seen))
-    set_state(conn, LAST_SYNC_KEY, json.dumps({"at": stamp, "events": len(found), "source": calendar.name}))
+                 (owner, window_start.isoformat(), window_end.isoformat(), seen))
+    set_user_state(conn, LAST_SYNC_KEY, json.dumps({"at": stamp, "events": len(found), "source": calendar.name}))
     conn.commit()
     return found
 
@@ -550,7 +556,7 @@ def upcoming_meetings(conn, limit: int | None = None, now_dt: datetime | None = 
     horizon = current - timedelta(hours=2)
     rows = conn.execute("SELECT m.*, d.name AS deal_name, c.wf_state AS call_state FROM calendar_meetings m "
                         "LEFT JOIN deals d ON d.node_id=m.deal_id LEFT JOIN calls c ON c.node_id=m.call_id "
-                        "ORDER BY m.start_at").fetchall()
+                        "WHERE m.owner_id=? ORDER BY m.start_at", (_owner(conn),)).fetchall()
     out = []
     for r in rows:
         start, end = common.ts(r["start_at"]), common.ts(r["end_at"])
@@ -570,8 +576,8 @@ def upcoming_meetings(conn, limit: int | None = None, now_dt: datetime | None = 
 def set_record(conn, event_id: str, on: bool) -> bool:
     """Arm (or disarm) automatic recording of one meeting. Returns False for an unknown meeting."""
     ensure_columns(conn)
-    cur = conn.execute("UPDATE calendar_meetings SET record=?, record_error=NULL, updated_at=? WHERE event_id=?",
-                       ("yes" if on else "no", now(), event_id))
+    cur = conn.execute("UPDATE calendar_meetings SET record=?, record_error=NULL, updated_at=? WHERE owner_id=? AND event_id=?",
+                       ("yes" if on else "no", now(), _owner(conn), event_id))
     conn.commit()
     return cur.rowcount > 0
 
@@ -601,7 +607,7 @@ def participants_for(conn, row) -> list[str]:
 def start_recording(conn, event_id: str, manager, lang_mode: str = "auto") -> str:
     """Start a live capture for one meeting (title, deal and attendees from the calendar entry)."""
     ensure_columns(conn)
-    row = conn.execute("SELECT * FROM calendar_meetings WHERE event_id=?", (event_id,)).fetchone()
+    row = conn.execute("SELECT * FROM calendar_meetings WHERE owner_id=? AND event_id=?", (_owner(conn), event_id)).fetchone()
     if row is None:
         raise KeyError(event_id)
     if row["call_id"]:
@@ -616,12 +622,12 @@ def start_recording(conn, event_id: str, manager, lang_mode: str = "auto") -> st
         call_id = manager.start_call(row["title"] or "Untitled call", deal_id=row["deal_id"], lang_mode=lang_mode,
                                      participants=people)
     except Exception as exc:
-        conn.execute("UPDATE calendar_meetings SET record_error=?, updated_at=? WHERE event_id=?",
-                     (f"{type(exc).__name__}: {exc}"[:500], now(), event_id))
+        conn.execute("UPDATE calendar_meetings SET record_error=?, updated_at=? WHERE owner_id=? AND event_id=?",
+                     (f"{type(exc).__name__}: {exc}"[:500], now(), _owner(conn), event_id))
         conn.commit()
         raise
-    conn.execute("UPDATE calendar_meetings SET call_id=?, record_error=NULL, updated_at=? WHERE event_id=?",
-                 (call_id, now(), event_id))
+    conn.execute("UPDATE calendar_meetings SET call_id=?, record_error=NULL, updated_at=? WHERE owner_id=? AND event_id=?",
+                 (call_id, now(), _owner(conn), event_id))
     engine._emit(conn, ACTOR, "meeting_recording_started", node_id=call_id,
                  after={"event_id": event_id, "title": row["title"], "deal_id": row["deal_id"]})
     conn.commit()
@@ -642,20 +648,20 @@ def recorder_tick(conn, manager, now_dt: datetime | None = None) -> dict:
     status = manager.status() or {}
     active = status.get("call_id") if status.get("active") else None
     if active:
-        row = conn.execute("SELECT * FROM calendar_meetings WHERE call_id=?", (active,)).fetchone()
+        row = conn.execute("SELECT * FROM calendar_meetings WHERE owner_id=? AND call_id=?", (_owner(conn), active)).fetchone()
         end = common.ts(row["end_at"]) if row else None
         if end and current >= end + grace:
             manager.stop_call(active)
             out["stopped"].append(active)
             active = None
-    for r in conn.execute("SELECT * FROM calendar_meetings WHERE record='yes' AND call_id IS NULL "
-                          "ORDER BY start_at").fetchall():
+    for r in conn.execute("SELECT * FROM calendar_meetings WHERE owner_id=? AND record='yes' AND call_id IS NULL "
+                          "ORDER BY start_at", (_owner(conn),)).fetchall():
         start, end = common.ts(r["start_at"]), common.ts(r["end_at"])
         if not start or not end or current < start - lead:
             continue
         if current >= end:
-            conn.execute("UPDATE calendar_meetings SET record='no', record_error=?, updated_at=? WHERE event_id=?",
-                         ("missed: the meeting ended before the recording could start", now(), r["event_id"]))
+            conn.execute("UPDATE calendar_meetings SET record='no', record_error=?, updated_at=? WHERE owner_id=? AND event_id=?",
+                         ("missed: the meeting ended before the recording could start", now(), _owner(conn), r["event_id"]))
             out["skipped"].append({"event_id": r["event_id"], "why": "meeting already over"})
             continue
         if active:
@@ -665,8 +671,8 @@ def recorder_tick(conn, manager, now_dt: datetime | None = None) -> dict:
             call_id = start_recording(conn, r["event_id"], manager)
         except Exception as exc:
             # Not retried every tick: the reason stays on the row until the seller arms it again.
-            conn.execute("UPDATE calendar_meetings SET record='no', record_error=?, updated_at=? WHERE event_id=?",
-                         (f"{type(exc).__name__}: {exc}"[:500], now(), r["event_id"]))
+            conn.execute("UPDATE calendar_meetings SET record='no', record_error=?, updated_at=? WHERE owner_id=? AND event_id=?",
+                         (f"{type(exc).__name__}: {exc}"[:500], now(), _owner(conn), r["event_id"]))
             out["skipped"].append({"event_id": r["event_id"], "why": str(exc)[:200]})
             continue
         out["started"].append(call_id)
@@ -678,15 +684,16 @@ def recorder_tick(conn, manager, now_dt: datetime | None = None) -> dict:
 def request_refresh(conn) -> bool:
     """Ask the worker to re-read the calendar now (a minute through the connector). Deduped per minute."""
     stamp = datetime.now(common.IST).strftime("%Y%m%d%H%M")
-    ok = bus.publish(conn, Event(type="CALENDAR_REFRESH_REQUESTED", entity_id="calendar",
-                                 dedupe_key=f"CAL_REFRESH:{stamp}", payload={"requested_at": now()}))
+    owner = _owner(conn)
+    ok = bus.publish(conn, Event(type="CALENDAR_REFRESH_REQUESTED", entity_id=f"user:{owner}",
+                                 dedupe_key=f"CAL_REFRESH:{owner}:{stamp}", payload={"requested_at": now()}))
     conn.commit()
     return ok
 
 
 def refresh_pending(conn) -> bool:
-    return conn.execute("SELECT 1 FROM wf_events WHERE type='CALENDAR_REFRESH_REQUESTED' AND "
-                        "status IN ('pending','running')").fetchone() is not None
+    return conn.execute("SELECT 1 FROM wf_events WHERE type='CALENDAR_REFRESH_REQUESTED' AND entity_id=? AND "
+                        "status IN ('pending','running')", (f"user:{_owner(conn)}",)).fetchone() is not None
 
 
 def on_refresh(conn, event):
@@ -695,7 +702,7 @@ def on_refresh(conn, event):
 
 def prep_meeting(conn, event_id: str) -> str:
     """Handler body for NEXT_CALL_SCHEDULED: ask Phase 3 for a prep brief, if it exists yet."""
-    row = conn.execute("SELECT * FROM calendar_meetings WHERE event_id=?", (event_id,)).fetchone()
+    row = conn.execute("SELECT * FROM calendar_meetings WHERE owner_id=? AND event_id=?", (_owner(conn), event_id)).fetchone()
     if row is None:
         return "unknown"
     try:
@@ -703,7 +710,7 @@ def prep_meeting(conn, event_id: str) -> str:
         generate = intel_prep.generate
     except (ImportError, AttributeError):
         conn.execute("UPDATE calendar_meetings SET prep_status='unavailable', prep_error=?, updated_at=? "
-                     "WHERE event_id=?", ("prep briefs (Phase 3) are not installed yet", now(), event_id))
+                     "WHERE owner_id=? AND event_id=?", ("prep briefs (Phase 3) are not installed yet", now(), _owner(conn), event_id))
         conn.commit()
         return "unavailable"
     try:
@@ -711,13 +718,13 @@ def prep_meeting(conn, event_id: str) -> str:
                           attendees=tuple(json.loads(row["attendees"] or "[]")), when=row["start_at"])
     except Exception as exc:
         conn.rollback()
-        conn.execute("UPDATE calendar_meetings SET prep_status='failed', prep_error=?, updated_at=? WHERE event_id=?",
-                     (f"{type(exc).__name__}: {exc}"[:1000], now(), event_id))
+        conn.execute("UPDATE calendar_meetings SET prep_status='failed', prep_error=?, updated_at=? WHERE owner_id=? AND event_id=?",
+                     (f"{type(exc).__name__}: {exc}"[:1000], now(), _owner(conn), event_id))
         conn.commit()
         raise
     ref = result if isinstance(result, str) else json.dumps(result, default=str)
     conn.execute("UPDATE calendar_meetings SET prep_status='ready', prep_ref=?, prep_error=NULL, updated_at=? "
-                 "WHERE event_id=?", ((ref or "")[:4000], now(), event_id))
+                 "WHERE owner_id=? AND event_id=?", ((ref or "")[:4000], now(), _owner(conn), event_id))
     conn.commit()
     return "ready"
 

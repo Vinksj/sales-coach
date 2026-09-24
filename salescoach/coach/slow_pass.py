@@ -28,7 +28,7 @@ from typing import Literal, Optional
 
 from pydantic import Field
 
-from .. import providers, seller
+from .. import identity, providers, seller
 from ..agents.base import Agent
 from ..providers.base import ProviderError, SchemaViolation
 from ..schemas.common import Strict
@@ -165,7 +165,7 @@ def load_deal_context(conn, call_id: str) -> dict:
     # transcript matches the " ([a-z]{3,}) ji" name pattern, is_known_person says no,
     # and the fast path fires a stakeholder_gap nudge telling the seller to go explore
     # himself. Seen at 51:22 on a real leadership call (2026-09-10).
-    for me in conn.execute("SELECT name FROM people WHERE is_me=1"):
+    for me in conn.execute("SELECT name FROM people WHERE user_id=?", (identity.actor_of(conn).user_id,)):
         if me["name"]:
             out["known_people"].append(me["name"])
             out["known_people"] += me["name"].split()[:1]

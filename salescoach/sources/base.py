@@ -9,7 +9,7 @@ WHO IS THE SELLER. Channels are not decoration: validators/evidence.py only acce
 explicit commitment when the quoted words are on channel `me`, and talk share is computed per
 channel. A recorder labels speakers with real names, so a label becomes `me` when it equals
 (ignoring case, spaces and punctuation) the seller's name, an alias, the local part of one of
-their addresses, "Me", a label the seller picked before (remembered in sources.yaml), the
+their addresses, "Me", a label the seller picked before (remembered per user in user_speaker_labels), the
 explicit me_label of this import, or the name of a participant whose address is the seller's.
 Everyone else is `them`, with the label kept as the speaker cluster.
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from .. import config, repo, seller
+from .. import config, identity, repo, seller
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store.stores import engine, now
@@ -88,10 +88,14 @@ def from_parsed(parsed, kind: str, raw: Any = None, source_ref: Optional[str] = 
                                 summary=parsed.summary, raw=raw)
 
 
-def content_ref(prefix: str, data) -> str:
+def content_ref(prefix: str, data, owned: bool = False) -> str:
+    """'<prefix>:<sha>' of the content. owned=True (a user's own upload) puts the acting user in the key
+    (repo.user_source_ref), so two users uploading one file get two calls; a watched folder's or a
+    webhook's file is org-level and stays as it was until Phase 4."""
     if isinstance(data, str):
         data = data.encode()
-    return f"{prefix}:{hashlib.sha256(data).hexdigest()[:32]}"
+    digest = hashlib.sha256(data).hexdigest()[:32]
+    return repo.user_source_ref(prefix, digest) if owned else f"{prefix}:{digest}"
 
 
 # ---------------------------------------------------------------------------------------- speakers
@@ -100,13 +104,18 @@ def norm_label(label) -> str:
     return re.sub(r"[\W_]+", "", str(label or "").casefold())
 
 
-def remembered_me_labels() -> list:
-    return [str(l) for l in (config.load("sources").get("me_labels") or []) if l]
+def remembered_me_labels(conn=None) -> list:
+    """The labels the ACTING user said were theirs (user_speaker_labels; was sources.yaml me_labels,
+    which named one seller for the whole install). Without a connection: none."""
+    if conn is None:
+        return []
+    from .. import users
+    return users.remembered_labels(conn)
 
 
-def me_keys(me_label: Optional[str] = None, participants=()) -> set:
+def me_keys(me_label: Optional[str] = None, participants=(), conn=None) -> set:
     """Every normalised label that means the seller."""
-    names = ["Me", *seller.aliases(), *remembered_me_labels()]
+    names = ["Me", *seller.aliases(), *remembered_me_labels(conn)]
     if me_label and me_label != NOT_PRESENT:
         names.append(me_label)
     own = {e.lower() for e in seller.emails()}
@@ -128,13 +137,13 @@ def cluster_for(label: str) -> str:
     return "them_1" if norm_label(label) in ("them", "") else label
 
 
-def map_speakers(nt: NormalizedTranscript, me_label: Optional[str] = None) -> tuple:
+def map_speakers(nt: NormalizedTranscript, me_label: Optional[str] = None, conn=None) -> tuple:
     """-> ([(channel, cluster, turn)], hold). A turn that already carries a channel (the recorder
     separated mic from speaker audio, as Granola does) keeps it."""
     labels = distinct_labels(nt.turns)
     if me_label and me_label != NOT_PRESENT and norm_label(me_label) not in {norm_label(l) for l in labels}:
         raise ValueError(f"no speaker is labelled {me_label!r}; the labels are: {', '.join(labels) or '(none)'}")
-    keys = me_keys(me_label, nt.participants)
+    keys = me_keys(me_label, nt.participants, conn)
     mapped, any_me = [], False
     for t in nt.turns:
         label = " ".join(str(t.get("speaker_label") or "").split())
@@ -156,11 +165,12 @@ def transcript_sha(rows) -> str:
 # ------------------------------------------------------------------------------------------ people
 
 def me_addresses(conn=None) -> set:
-    """The seller's own addresses (profile, plus the is_me row): that participant is ME, not a buyer."""
+    """The ACTING user's own addresses (their profile, plus their person row): that participant is ME,
+    not a buyer. A colleague's address is not here: on this user's call a colleague is a speaker."""
     found = {e.lower() for e in seller.emails()}
     if conn is not None:
         found |= {r["email"].lower() for r in conn.execute(
-            "SELECT email FROM people WHERE is_me=1 AND email IS NOT NULL")}
+            "SELECT email FROM people WHERE user_id=? AND email IS NOT NULL", (identity.actor_of(conn).user_id,))}
     return found
 
 
@@ -187,7 +197,7 @@ def resolve_people(conn, participants, source_ref, deal_id=None, link: str = "al
                  folder, the pollers): the attendee list is the payload's word, and one address at the
                  account's domain must not carry a stranger onto the deal. The others stay participants
                  of this call only."""
-    own, keys, out = me_addresses(conn), me_keys(), []
+    own, keys, out = me_addresses(conn), me_keys(conn=conn), []
     domains = deal_domains(conn, deal_id) if (deal_id and link == "account") else None
     for p in participants or ():
         email = (p.get("email") or "").strip().lower()
@@ -295,7 +305,7 @@ def import_normalized(conn, nt: NormalizedTranscript, deal_id=None, history=Fals
     if not any(norm_label(l) for l in labels) and not all(t.get("channel") in ("me", "them") for t in turns):
         raise ValueError("this transcript does not say who is speaking. Export it with speaker names: without "
                          "them the coach cannot tell your commitments from the buyer's.")
-    mapped, hold = map_speakers(nt, me_label)
+    mapped, hold = map_speakers(nt, me_label, conn)
     seller.require_configured()
     raw_path = save_raw(nt)
     try:
@@ -317,7 +327,7 @@ def _create(conn, nt, mapped, hold, labels, deal_id, history, lang_mode, partici
     by_name = _people_by_label(conn, people)
     for p in nt.participants:                          # a label the recorder itself tied to an address
         pid = repo.find_person_by_email(conn, p.get("email")) if p.get("email") else None
-        if pid and pid in people and norm_label(p.get("name")) and norm_label(p.get("name")) not in me_keys(None, nt.participants):
+        if pid and pid in people and norm_label(p.get("name")) and norm_label(p.get("name")) not in me_keys(None, nt.participants, conn):
             by_name.setdefault(norm_label(p.get("name")), pid)
     for idx, (channel, cluster, t) in enumerate(mapped):
         person_id = by_name.get(norm_label(cluster)) if channel == "them" else None
@@ -394,16 +404,18 @@ def resolve_speaker(conn, call_id, label: Optional[str], remember: bool = True, 
     engine._emit(conn, actor, "speaker_resolved", node_id=call_id, after={"me_label": label or None, "turns": moved})
     repo.set_call_state(conn, call_id, "diarized", actor=actor)
     bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"))
-    conn.commit()
     if remember and label and label != NOT_PRESENT:
-        remember_me_label(label)
+        remember_me_label(label, conn)
+    conn.commit()
     return moved
 
 
-def remember_me_label(label: str) -> None:
-    """Recorders label the seller the same way every time ("Priya S."). Asking once is enough."""
-    if norm_label(label) in me_keys() or re.fullmatch(r"(?i)speaker[ _-]?\w{1,3}|them|unknown.*", label.strip()):
+def remember_me_label(label: str, conn=None) -> None:
+    """Recorders label the seller the same way every time ("Priya S."). Asking once is enough. Remembered
+    for the ACTING user (user_speaker_labels); without a connection nothing is remembered."""
+    if conn is None:
+        return
+    if norm_label(label) in me_keys(conn=conn) or re.fullmatch(r"(?i)speaker[ _-]?\w{1,3}|them|unknown.*", label.strip()):
         return                                         # "Speaker 2" is a different person in the next meeting
-    data = config.load_user("sources")
-    data["me_labels"] = [*(data.get("me_labels") or []), label.strip()][-20:]
-    config.save_user("sources", data)
+    from .. import users
+    users.remember_label(conn, None, label)

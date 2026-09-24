@@ -42,7 +42,7 @@ def digest(conn, since) -> dict:
 def run_recompute(conn, trigger: str = "manual") -> dict:
     """outcomes.recompute then patterns.recompute, committed together. Never raises."""
     from ..learning import outcomes, patterns
-    from ..store.stores import now, set_state
+    from ..store.stores import now, set_user_state as set_state
     try:
         if conn.in_transaction:
             conn.commit()

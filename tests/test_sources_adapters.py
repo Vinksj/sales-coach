@@ -86,9 +86,11 @@ def test_save_takes_effect_and_validates(db):
 
 
 def test_saving_a_source_keeps_the_remembered_labels(db):
-    base.remember_me_label("Priya S.")
+    from salescoach import users
+    base.remember_me_label("Priya S.", db)
     sources.save("fathom", True)
-    assert config.load_user("sources")["me_labels"] == ["Priya S."]
+    assert users.remembered_labels(db) == ["Priya S."]             # per user now, not in sources.yaml
+    assert "me_labels" not in config.load_user("sources")
 
 
 def test_new_webhook_secret_is_stored_not_logged(db):

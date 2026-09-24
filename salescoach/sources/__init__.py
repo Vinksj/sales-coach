@@ -14,7 +14,8 @@ Settings and polling (what the setup UI and the scheduler call):
 
 The user's choices live in the user overlay `sources.yaml`:
   sources:   [{kind, enabled, poll_minutes, options}]
-  me_labels: [labels the seller said are theirs; base.remember_me_label]
+(me_labels used to live here too; a user's own speaker labels are now user_speaker_labels, per
+user, users.remember_label; an existing key is adopted for the local user on first open.)
 Keys are never in that file: config.set_secret(descriptor["api_key_env"], value).
 """
 import json

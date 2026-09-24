@@ -93,8 +93,8 @@ def page_context(conn) -> dict:
             "decided": patterns.decided_proposals(conn, limit=20), "digest": weekly.last_days(conn, 7),
             **feeds_context(conn),
             "series": patterns.series(conn), "outcomes": outcomes_panel(conn),
-            "last_run": stores.get_state(conn, "learning:last_run"),
-            "last_error": stores.get_state(conn, "learning:last_error"),
+            "last_run": stores.get_user_state(conn, "learning:last_run"),
+            "last_error": stores.get_user_state(conn, "learning:last_error"),
             "rate_min_n": int(cfg("followup")["rate_min_n"]),
             "reply_days": int(cfg("followup")["reply_business_days"]),
             "meeting_days": int(cfg("followup")["meeting_within_days"])}

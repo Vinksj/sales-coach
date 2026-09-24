@@ -96,8 +96,8 @@ def build(conn) -> dict:
     calls = analysed_calls(conn)
     gone = patterns.suppressed_tags(conn)              # the user's verdicts on the learning page hold here too
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM seller_patterns WHERE status!='retired' ORDER BY polarity, frequency DESC, calls_seen DESC")
-            if r["tag"] not in gone]
+        "SELECT * FROM seller_patterns WHERE owner_id=? AND status!='retired' ORDER BY polarity, frequency DESC, "
+        "calls_seen DESC", (_owner(conn),)) if r["tag"] not in gone]
     snapshot = {p["tag"]: {k: p[k] for k in ("name", "polarity", "frequency", "calls_seen", "calls_window", "trend",
                                              "severity", "status", "recommended_intervention")} for p in rows}
     label, detail = trajectory(rows)
@@ -260,8 +260,13 @@ def validate(conn, ctx, raw: dict) -> dict:
     }
 
 
+def _owner(conn) -> str:
+    from .. import identity
+    return identity.actor_of(conn).user_id
+
+
 def latest(conn) -> dict | None:
-    row = conn.execute("SELECT * FROM coach_reports ORDER BY id DESC LIMIT 1").fetchone()
+    row = conn.execute("SELECT * FROM coach_reports WHERE owner_id=? ORDER BY id DESC LIMIT 1", (_owner(conn),)).fetchone()
     if row is None:
         return None
     report = json.loads(row["json"])
@@ -278,22 +283,23 @@ def refresh(conn, trigger="manual", force=False) -> int | None:
         return None
     agent = CoachAgent()
     _, input_sha = shas(agent.system_prompt(ctx), agent.build_prompt(ctx))
-    last = conn.execute("SELECT input_sha FROM coach_reports ORDER BY id DESC LIMIT 1").fetchone()
+    last = conn.execute("SELECT input_sha FROM coach_reports WHERE owner_id=? ORDER BY id DESC LIMIT 1",
+                        (_owner(conn),)).fetchone()
     if not force and last and last["input_sha"] == input_sha:
         return None
     try:
         out, run_id, _, input_sha = agent.run(conn, ctx)
     except AgentFailed as exc:
         log.warning("coach report failed: %s", exc)
-        stores.set_state(conn, "intel:coach_error", f"{stores.now()} {str(exc)[:500]}")
+        stores.set_user_state(conn, "intel:coach_error", f"{stores.now()} {str(exc)[:500]}")
         conn.commit()
         if exc.rate_limited:          # an on-demand request is deferred by the worker; auto triggers swallow it
             raise
         return None
     report = validate(conn, ctx, out.model_dump())
-    cur = conn.execute("INSERT INTO coach_reports(calls_analysed,trigger,input_sha,run_id,json,created_at) "
-                       "VALUES (?,?,?,?,?,?)", (len(ctx["calls"]), trigger, input_sha, run_id,
-                                                json.dumps(report), stores.now()))
-    stores.set_state(conn, "intel:coach_error", "")
+    cur = conn.execute("INSERT INTO coach_reports(calls_analysed,trigger,input_sha,run_id,json,created_at,owner_id) "
+                       "VALUES (?,?,?,?,?,?,?)", (len(ctx["calls"]), trigger, input_sha, run_id,
+                                                  json.dumps(report), stores.now(), _owner(conn)))
+    stores.set_user_state(conn, "intel:coach_error", "")
     conn.commit()
     return db.insert_id(cur)

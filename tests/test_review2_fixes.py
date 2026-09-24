@@ -767,7 +767,7 @@ def test_scheduler_retries_within_fifteen_minutes_after_an_error(db, monkeypatch
     stop = Stop(2)
     scheduler._loop(duty, stores.db_path(), stop)
     assert calls and 0 < stop.delays[1] <= 15 * 60          # not tomorrow 09:30 (~86 400 s)
-    assert db.execute("SELECT value FROM state WHERE key='automation:followups:last_error'").fetchone()
+    assert db.execute("SELECT value FROM user_state WHERE user_id='local' AND key='automation:followups:last_error'").fetchone()
 
 
 OURS = ("On Mon, 14 Sep 2026 at 10:00, Maya Iyer <maya@tessel.test> wrote:\n"

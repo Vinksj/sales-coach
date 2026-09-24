@@ -44,7 +44,8 @@ def item(loop_id, verdict, quote, paras, confidence, **kw):
 
 def test_poll_stores_each_buyer_message_once_and_skips_the_seller(db, world, thread):
     email_id, sent_at = thread
-    repo.create_person(db, "Maya (alias)", email="mi@tessel.test", is_me=True)
+    # a colleague's row (another user's person): their mail in the thread is not a buyer's reply either
+    repo.create_person(db, "Maya (alias)", email="mi@tessel.test", user_id="u-colleague")
     db.commit()
     gmail = FakeGmail(threads={"t-1": [
         gmail_msg("m1", REPLY),

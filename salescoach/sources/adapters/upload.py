@@ -16,7 +16,8 @@ def normalize_file(kind: str, data: bytes, filename: Optional[str] = None, title
                           "(a recording goes through Upload a recording)")
     parsed = parsers.parse_any(data, filename)
     stem = (filename or "").rsplit("/", 1)[-1].rsplit(".", 1)[0].replace("_", " ").strip()
-    return base.from_parsed(parsed, kind, raw=parsers.decode(data), source_ref=base.content_ref("file", data),
+    return base.from_parsed(parsed, kind, raw=parsers.decode(data),
+                            source_ref=base.content_ref("upload" if trusted else "file", data, owned=trusted),
                             title=title or parsed.title or stem or "Imported call", trusted=trusted)
 
 

@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from .. import identity
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store import stores
@@ -86,8 +87,13 @@ def _worker_on(request) -> bool:
 
 
 def _queue(conn, event_type, entity_id, payload=None):
+    """entity_id "coach" means "the acting user's coach report": stored as user:<id>, so the worker
+    knows whose it is (orchestrator/workflow.owner_of_event) and two users' requests never dedupe."""
+    owner = identity.actor_of(conn).user_id
+    if entity_id == "coach":
+        entity_id = f"user:{owner}"
     bus.publish(conn, Event(type=event_type, entity_id=entity_id, payload=payload or {},
-                            dedupe_key=f"{event_type}:{entity_id}:{stores.now()}"))
+                            dedupe_key=f"{event_type}:{owner}:{entity_id}:{stores.now()}"))
     conn.commit()
 
 
@@ -281,11 +287,12 @@ def coach_intel(request: Request):
         report = coach.latest(conn)
         titles = {r["node_id"]: r["title"] for r in conn.execute("SELECT node_id, title FROM calls")}
         n = len(coach.analysed_calls(conn))
-        error = (stores.get_state(conn, "intel:coach_error") or "").strip()
+        error = (stores.get_user_state(conn, "intel:coach_error") or "").strip()
         return _web().templates.TemplateResponse(request, "intel_coach.html", {
             "report": report, "titles": titles, "n_calls": n,
             "min_calls": int((history.cfg().get("coach") or {}).get("min_calls", 3)),
-            "pending": _pending(conn, "COACH_REPORT_REQUESTED"), "error": error, "worker_on": _worker_on(request)})
+            "pending": _pending(conn, "COACH_REPORT_REQUESTED", f"user:{identity.actor_of(conn).user_id}"),
+            "error": error, "worker_on": _worker_on(request)})
 
 
 @router.post("/coach/report")

@@ -18,11 +18,12 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
+from .. import identity
 from ..execution import policy
 from ..orchestrator import bus, review
 from ..schemas.events import Event
 from ..store import stores
-from ..store.stores import get_state, now
+from ..store.stores import get_user_state, now
 from ..validators import recipients as recipients_v
 from ..web import app as core
 from . import autosend, calendar, common, followup
@@ -60,8 +61,8 @@ def _upcoming(conn, limit=8) -> list[dict]:
 
 
 def _calendar_state(conn, request) -> dict:
-    return {"last_sync": core.fromjson(get_state(conn, calendar.LAST_SYNC_KEY), None),
-            "unavailable": core.fromjson(get_state(conn, "automation:calendar:unavailable"), None),
+    return {"last_sync": core.fromjson(get_user_state(conn, calendar.LAST_SYNC_KEY), None),
+            "unavailable": core.fromjson(get_user_state(conn, "automation:calendar:unavailable"), None),
             "refresh_pending": calendar.refresh_pending(conn), "live": core._live_status(request.app),
             "record_cfg": common.cfg("calendar").get("record") or {}}
 
@@ -71,8 +72,9 @@ def _recent_replies(conn, limit=10, include_reviewed=False) -> list[dict]:
     out = []
     for r in conn.execute(
             f"SELECT r.*, d.name AS deal_name, e.subject AS our_subject, e.kind AS our_kind FROM email_replies r "
-            f"LEFT JOIN deals d ON d.node_id=r.deal_id LEFT JOIN emails e ON e.id=r.email_id {where} "
-            f"ORDER BY r.received_at DESC LIMIT ?", (limit,)):
+            f"LEFT JOIN deals d ON d.node_id=r.deal_id LEFT JOIN emails e ON e.id=r.email_id "
+            f"WHERE r.owner_id=? {where.replace('WHERE', 'AND')} ORDER BY r.received_at DESC LIMIT ?",
+            (identity.actor_of(conn).user_id, limit)):
         rep = dict(r)
         rep["ignored"] = core.fromjson(rep["ignored_instructions"], []) or []
         props = []
@@ -108,7 +110,7 @@ def today_data(request) -> dict:
         return {"due": due, "decided": [dict(r) for r in decided], "nudges": _drafted_nudges(conn),
                 "replies": _recent_replies(conn, 6), "upcoming": _upcoming(conn),
                 "calendar": _calendar_state(conn, request),
-                "last_eval": core.fromjson(get_state(conn, "automation:followups:last_eval"), None)}
+                "last_eval": core.fromjson(get_user_state(conn, "automation:followups:last_eval"), None)}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
     finally:
@@ -159,7 +161,8 @@ def calendar_record(request: Request, event_id: str, action: str = Form("arm"),
                     next_url: str = Form("/calendar", alias="next")):
     back = core._clean_next(next_url, "/calendar")
     with core._db(request) as conn:
-        row = conn.execute("SELECT title FROM calendar_meetings WHERE event_id=?", (event_id,)).fetchone()
+        row = conn.execute("SELECT title FROM calendar_meetings WHERE owner_id=? AND event_id=?",
+                           (identity.actor_of(conn).user_id, event_id)).fetchone()
         if row is None:
             return core._redirect(back, err="That meeting is no longer on the calendar.", anchor="upcoming-calls")
         title = row["title"] or "Untitled"
@@ -214,7 +217,7 @@ def followups_page(request: Request):
             s["to"] = core.fromjson(s["to_addrs"], []) or []
         return core.render(request, conn, "automation_followups.html", due=due, recent=recent,
                            drafted=_drafted_nudges(conn), proposals=proposals, escalations=escalations, sent=sent,
-                           last_eval=core.fromjson(get_state(conn, "automation:followups:last_eval"), None),
+                           last_eval=core.fromjson(get_user_state(conn, "automation:followups:last_eval"), None),
                            run_at=common.cfg("followup").get("run_at", "09:30"), today_label=core.fmt_day(today),
                            autosend=autosend.status(conn))
 
@@ -222,7 +225,9 @@ def followups_page(request: Request):
 @router.post("/followups/run")
 def followups_run(request: Request):
     with core._db(request) as conn:
-        bus.publish(conn, Event(type="FOLLOW_UP_RUN", dedupe_key=f"FOLLOW_UP_RUN:{now()}", payload={}))
+        owner = identity.actor_of(conn).user_id           # whose follow-ups: the worker runs it as this user
+        bus.publish(conn, Event(type="FOLLOW_UP_RUN", entity_id=f"user:{owner}",
+                                dedupe_key=f"FOLLOW_UP_RUN:{owner}:{now()}", payload={}))
         conn.commit()
     return core._redirect("/followups", msg="Queued. Decisions appear here as the worker gets to them.")
 
@@ -232,7 +237,8 @@ def followups_nudge(request: Request, loop_id: str, next_url: str = Form("", ali
     with core._db(request) as conn:
         core._loop_or_404(conn, loop_id)
         bus.publish(conn, Event(type="FOLLOW_UP_NUDGE", entity_id=loop_id,
-                                dedupe_key=f"FOLLOW_UP_NUDGE:{loop_id}:{now()}", payload={"loop_id": loop_id}))
+                                dedupe_key=f"FOLLOW_UP_NUDGE:{identity.actor_of(conn).user_id}:{loop_id}:{now()}",
+                                payload={"loop_id": loop_id}))
         conn.commit()
     return core._redirect(core._clean_next(next_url, "/followups"),
                           msg="Drafting a nudge. It appears under Nudges to send; nothing is sent until you press Send.")
@@ -389,7 +395,7 @@ def replies_page(request: Request):
     with core._db(request) as conn:
         return core.render(request, conn, "automation_replies.html",
                            replies=_recent_replies(conn, 60, include_reviewed=show_all), show_all=show_all,
-                           last_poll=core.fromjson(get_state(conn, "automation:replies:last_poll"), None))
+                           last_poll=core.fromjson(get_user_state(conn, "automation:replies:last_poll"), None))
 
 
 @router.post("/replies/poll")
@@ -419,7 +425,7 @@ def replies_reanalyze(request: Request, reply_id: int):
     with core._db(request) as conn:
         row = core._one(conn, "SELECT * FROM email_replies WHERE id=?", (reply_id,), "reply")
         bus.publish(conn, Event(type="STAKEHOLDER_REPLY_RECEIVED", entity_id=row["deal_id"],
-                                dedupe_key=f"REPLY:{row['message_id']}:again:{now()}",
+                                dedupe_key=f"REPLY:{row['owner_id']}:{row['message_id']}:again:{now()}",
                                 payload={"reply_id": reply_id, "force": True}))
         conn.commit()
     return core._redirect("/replies", msg="Re-analysis queued.")

@@ -32,7 +32,7 @@ import logging
 import re
 from datetime import date
 
-from .. import repo, seller
+from .. import identity, repo, seller
 from ..agents.base import AgentFailed, record_items
 from ..memory import gate
 from ..orchestrator import context
@@ -135,9 +135,13 @@ def _resolve_person(conn, s, ctx):
             return None, {"how": "contact", "contact": c}
     email = (s.get("email") or "").lower().strip()
     if email:
-        row = conn.execute("SELECT node_id, is_me FROM people WHERE email=?", (email,)).fetchone()
+        row = conn.execute("SELECT node_id, is_me, user_id FROM people WHERE email=?", (email,)).fetchone()
         if row:
-            return (None, {"how": "reject", "why": f"that is {seller.first_name() or 'the seller'}"}) if row["is_me"] else (row["node_id"], {"how": "known"})
+            if row["is_me"]:                           # any internal user: never a stakeholder
+                mine = row["user_id"] == identity.actor_of(conn).user_id
+                return None, {"how": "reject", "why": f"that is {seller.first_name() or 'the seller'}" if mine
+                              else "that is a colleague, not a buyer"}
+            return row["node_id"], {"how": "known"}
         c = next((c for c in contacts if c["email"] == email), None)
         if c:
             return None, {"how": "contact", "contact": c}

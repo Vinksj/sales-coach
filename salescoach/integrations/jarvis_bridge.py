@@ -51,6 +51,9 @@ class BridgeError(RuntimeError):
 
 
 def available() -> bool:
+    from .. import identity
+    if identity.cloud():                     # world.db is one machine's file; the bridge is local-only
+        return False
     return (JARVIS_DIR / "commitments.py").exists() and stores.world_available()
 
 

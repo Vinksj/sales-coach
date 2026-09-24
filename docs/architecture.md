@@ -187,21 +187,118 @@ connections come from a `psycopg_pool` pool; `close()` returns one.
   statement aborts a Postgres transaction. Prefer `ON CONFLICT` to catching `IntegrityError`.
 - Catch `db.IntegrityError` / `db.OperationalError` / `db.Error`, never `sqlite3.*`.
 
-**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version`, run by every
-connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
+**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (7 today), run by
+every connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
 `store/pgmigrate.py` applies the numbered files in `store/pg/` once, under `pg_advisory_lock`,
-recorded in `schema_migrations`; `salescoach migrate` (`--check` in CI) is the only thing that runs
-DDL, and `stores.sales()` refuses to serve a schema at the wrong version. `store/pg/0001_baseline.sql`
-is generated from the SQLite files by `scripts/gen_pg_baseline.py` (`INTEGER PRIMARY KEY
-AUTOINCREMENT` becomes an identity column, `REAL`/`BLOB` become `DOUBLE PRECISION`/`BYTEA`, PRAGMAs
-are dropped, everything else verbatim); `tests/test_schema_parity.py` fails on any drift between the
-committed file, the generator and a live Postgres database (tables, columns and their order, NOT
-NULL, keys, indexes, defaults, CHECK counts). `store/tenancy.py` classifies every table OWNED / ORG /
-SYSTEM for the multi-user work, and `tests/isolation/test_catalog_lint.py` fails on an unclassified one.
+recorded in `schema_migrations` (0002 today); `salescoach migrate` (`--check` in CI) is the only thing
+that runs DDL, and `stores.sales()` refuses to serve a schema at the wrong version.
+`store/pg/0001_baseline.sql` was generated from the version-6 SQLite files by
+`scripts/gen_pg_baseline.py` (`INTEGER PRIMARY KEY AUTOINCREMENT` becomes an identity column,
+`REAL`/`BLOB` become `DOUBLE PRECISION`/`BYTEA`, PRAGMAs are dropped, everything else verbatim) and is
+**frozen**: every later change is a hand-written numbered file beside it (`0002_owner.sql` is SQLite
+migration 7), because a database that applied 0001 can only move on through them. A schema change
+therefore lands in three places: the tracked SQLite files (the source of truth, what a fresh SQLite
+store gets), a `store/migrate.py` step, and a `store/pg/NNNN_*.sql` file; `tests/test_schema_parity.py`
+fails on any drift between the tracked files and a live Postgres database migrated through every
+numbered file (tables, columns and their order, NOT NULL, keys, indexes, defaults, CHECK counts; the
+one default that differs by design is `owner_id`, below). `store/tenancy.py` classifies every table
+OWNED / ORG / SYSTEM, and `tests/isolation/test_catalog_lint.py` fails on an unclassified one, on an
+OWNED table without `owner_id` and an index on it, and (live) on a Postgres OWNED table whose default
+is not the session setting or a child table without its trigger.
 
-**SQLite-only, on purpose:** the file-based install, live capture and the local ASR, the Jarvis
+**SQLite-only, on purpose:** the file-based install (one user, `local`), live capture and the local ASR, the Jarvis
 bridge (`world.db`), the `user_version` migrations and table rebuilds (marked
 `@pytest.mark.sqlite_only` in the suite).
+
+## Identity and ownership (Phase 1 of the multi-user work)
+
+**Who is acting.** `salescoach/identity.py` holds the acting user: an `Actor(user_id, mode, role,
+profile)` in a contextvar, bound to the store connection as `conn.actor` and, on Postgres, to the
+session settings `app.user_id` / `app.mode` (`PostgresConnection.bind_actor`; re-issued per
+transaction and checked against RLS in Phase 2, hook `_on_begin`). `stores.sales()` binds whatever
+actor is current when it opens. Two modes, `SALESCOACH_MODE`:
+
+- `local` (default): the one user, `"local"`, is implicit everywhere, so a CLI command, a test, a
+  bare thread all act as the local user and the single-user product is unchanged. A SQLite store is
+  always local: `users.create` refuses a second user on SQLite, and every `owner_id` there is
+  `'local'` by column default whoever acts.
+- `cloud`: Postgres only (`stores.sales()` refuses a SQLite path; `serve` refuses at the door). There
+  is no implicit user: `identity.current_actor()` and `seller.profile()` outside a session raise
+  `NoActor`, which is how a background thread that forgot its session is caught. Live capture, the
+  recorder duty, the live-coach plugin, the Claude CLI calendar connector and the Jarvis bridge are
+  off (`hosted.is_hosted()` is also true, so Setup says "not available in a hosted install").
+
+The only ways to set the actor: `identity.session(user_id, mode=)` (opens a connection and binds
+everything; every thread entry point uses it or `as_user`), `as_user(conn, user_id)` (re-bind an
+existing connection), `activate(actor)` (the contextvar alone, for a thread that opens its own
+store later), and the web layer's `ActorGate` (local: the local user; cloud: the login cookie's user
+looked up in `users`, a stub Phase 3 replaces with Google sign-in). Thread entry points:
+
+| Thread | Actor |
+|---|---|
+| worker (`orchestrator/worker.py`) | the connection is opened as nobody (`activate(None)`); `workflow.handle` wraps each event in `as_user(owner_of_event(...), mode="service")`: entity `user:<id>` says the owner, a call/deal/loop id resolves through `nodes.owner_id`, else `payload.owner_id`, else the local user (local mode) or `UnknownOwner` (cloud) |
+| scheduler (`automation/scheduler._loop`) | a per-user duty runs once per `users.active()` inside `as_user(..., service)`; bookkeeping goes to `user_state`. An org-level duty (`per_user=False`: the sources poller until Phase 4) runs once as the local user and not at all in cloud |
+| intel embed (`plugins/intelligence.py`) | per active user, `as_user(..., service)` |
+| learning daily (`plugins/learning.py`) | a per-user scheduler duty |
+| jarvis sync (`web/app.py`) | `session("local", service)`; not started in cloud |
+| live-coach replay (`plugins/live_coach.py`) | the requesting actor is captured before the thread starts and re-entered with `activate()` inside it |
+
+**The profile is two halves** (`seller.py`): `ORG_FIELDS` (company, website, offering, icp,
+buyer_titles, vocabulary, own_domains) from `seller.yaml`, one per install; `USER_FIELDS` (name,
+emails, role title, aliases, languages, timezone, signature, call_context, plus the style guide) from
+`seller.yaml`/`style.md` for the local user and from the acting user's `users` row for anyone else.
+`profile()` merges them; `org_configured()` and `user_configured()` split the old `is_configured()`,
+and the `FirstRunGate` sends an unconfigured org to `/setup` and an unconfigured user to `/me/setup`
+(the local user's is `/setup/you`). `users.py` holds `users`, `teams`, `team_managers`, `user_state`
+and `user_speaker_labels`; the local install has one `users` row, `local`, created from `seller.yaml`
+on first open and kept in step by `/setup/you`.
+
+**people.user_id** is the person row that IS a user (`repo.ensure_me` / `sync_me` key on it for the
+acting user); `is_me` is derived (1 iff `user_id IS NOT NULL`) and kept so untouched readers work,
+now meaning *any internal user*. Every `is_me` read was classified:
+
+| Meaning | Sites | Now |
+|---|---|---|
+| the acting owner (ME) | `repo.ensure_me/sync_me/me_row`, `learning.seller_id`, `coach/slow_pass` (my names), `sources/base.me_addresses` (+ granola), `intel/history` (the `me` stakeholder), the ` (ME)` label in `orchestrator/context.me_label` and `intel/history`, `deal.html` / `live.html` "(you)", `intel/strategist` (the reject reason) | `people.user_id = actor` (`me_label` says ` (colleague)` for another user's row) |
+| any internal user (never a buyer) | every `is_me=0` predicate: `intel/tables`, `intel/history` (buyers/others/extra), `intel/strategist` (name matches), `web/app.py` people list and buyers, `learning/outcomes`, `learning/observe`, `coach/slow_pass` (stakeholders), `integrations/jarvis_bridge`, `automation/calendar`, `automation/followup`, `validators/recipients`, `orchestrator/context` (buyer names, stakeholders), `agents/email_drafter`, `sources/base._people_by_label`, `repo.call_participants` ordering, `automation/common.my_addresses` | unchanged (`is_me`) |
+
+**owner_id.** Every OWNED table (`store/tenancy.py`) has `owner_id TEXT NOT NULL` with an index
+(`idx_<table>_owner_id`); `nodes.owner_id` is NULL for account and person nodes (the org directory,
+`OWNER_NULLABLE`, a CHECK says so) and NOT NULL for call/deal/loop nodes. The default is `'local'`
+on SQLite and `NULLIF(current_setting('app.user_id', true), '')` on Postgres, so an owned INSERT with
+no acting user fails its NOT NULL (fails closed). Child rows (`tenancy.OWNER_PARENTS`: turns, speakers,
+participants, artifacts, claims, assessments, agent_runs, observations, loops, emails and their edits
+/ slot fills / autosend log, replies and proposals, follow-up decisions, the deal tables, embeddings,
+pattern observations, nudges, coach state, and calls/deals/loops/edges/events/sources under their
+node) take the parent's owner through the `app_child_owner()` BEFORE INSERT trigger on Postgres,
+which refuses a mismatch with an integrity error. Phase 1 scopes WRITES and the reads of the tables
+that were re-keyed; the other reads still see every row until Phase 2's row-level security.
+
+| Class | Tables |
+|---|---|
+| OWNED (owner_id) | nodes (nullable), edges, events, sources, deals, deal_people, calls, call_participants, turns, speakers, agent_runs, artifacts, claims, assessments, reconciliations, loops, emails, email_edits, seller_observations, seller_patterns, field_provenance, memory_conflicts, followup_decisions, email_replies, reply_proposals, calendar_cache, calendar_meetings, slot_fills, autosend_log, stakeholders, meddpicc, deal_risks, deal_health, deal_health_history, coach_reports, prep_briefs, embeddings, deal_stage_history, derived_outcomes, pattern_observations, learned_patterns, learning_proposals, nudges, coach_state |
+| ORG | accounts, people, users, teams, team_managers |
+| SYSTEM | wf_events, state, user_state, user_speaker_labels, schema_migrations |
+
+**Keys re-scoped per owner** (migration 7 / 0002): `seller_patterns (owner_id, tag)`,
+`calendar_cache (owner_id, key)`, `calendar_meetings (owner_id, event_id)`, `email_replies UNIQUE
+(owner_id, message_id)`, `learned_patterns UNIQUE (owner_id, family, key, scope)` with ids
+`lp:<family>:u:<owner>:<key>` (rewritten in `merged_into`, `learning_proposals`, `field_provenance`
+and `memory_conflicts`), `coach_reports.owner_id`. A user's own paste or upload gets
+`paste:<owner>:<sha>` / `upload:<owner>:<sha>` (`repo.user_source_ref`); recorder-native and
+folder/webhook refs are unchanged until Phase 4. Ownerless events name their user: `FOLLOW_UP_RUN`
+and `CALENDAR_REFRESH_REQUESTED` carry `entity_id = user:<owner>`, `COACH_REPORT_REQUESTED` too, and
+every timestamp-based dedupe key carries the owner. `sources.yaml me_labels` became
+`user_speaker_labels` (adopted for the local user on first open).
+
+**state vs user_state.** `stores.get_state/set_state` is org-wide; `get_user_state/set_user_state`
+is the acting user's (`user_id` from `conn.actor`):
+
+| Org-wide (`state`) | Per user (`user_state`) |
+|---|---|
+| `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
+| `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard) | `setup:card_dismissed` (the Today card) |
+| `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
 
 ## Prompts
 

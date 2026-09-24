@@ -22,14 +22,14 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from .. import repo
+from .. import identity, repo
 from ..agents.base import AgentFailed, record_items
 from ..execution import cadence
 from ..memory import gate
 from ..orchestrator import bus
 from ..schemas.common import CONFIDENCE_RANK
 from ..schemas.events import Event
-from ..store.stores import engine, now, set_state
+from ..store.stores import engine, now, set_user_state
 from ..store import db
 from ..validators import evidence
 from . import common
@@ -88,9 +88,10 @@ def poll(conn, gmail, lookback_days: int | None = None) -> dict:
     days = int(lookback_days or common.cfg("replies").get("lookback_days", 45))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     mine = common.my_addresses(conn)
+    owner = identity.actor_of(conn).user_id
     threads: dict[str, list] = {}
-    for r in conn.execute("SELECT * FROM emails WHERE status='sent' AND gmail_thread_id IS NOT NULL AND sent_at>=? "
-                          "ORDER BY sent_at", (cutoff,)):
+    for r in conn.execute("SELECT * FROM emails WHERE owner_id=? AND status='sent' AND gmail_thread_id IS NOT NULL "
+                          "AND sent_at>=? ORDER BY sent_at", (owner, cutoff)):
         threads.setdefault(r["gmail_thread_id"], []).append(r)
     new, errors = [], []
     for thread_id, ours in threads.items():
@@ -108,20 +109,20 @@ def poll(conn, gmail, lookback_days: int | None = None) -> dict:
             body_full = m.get("body") or ""
             cur = conn.execute(
                 "INSERT OR IGNORE INTO email_replies(message_id,thread_id,email_id,deal_id,person_id,from_addr,from_name,"
-                "subject,received_at,body,body_full,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)",
+                "subject,received_at,body,body_full,status,created_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?,?)",
                 (m["message_id"], thread_id, latest["id"], latest["deal_id"], repo.find_person_by_email(conn, addr),
                  addr, m.get("from_name"), m.get("subject"), m.get("received_at") or now(),
-                 strip_quoted(body_full)[:20000], body_full[:60000], now()))
+                 strip_quoted(body_full)[:20000], body_full[:60000], now(), owner))
             if not cur.rowcount:
                 continue
             reply_id = db.insert_id(cur)
             bus.publish(conn, Event(type="STAKEHOLDER_REPLY_RECEIVED", entity_id=latest["deal_id"],
-                                    dedupe_key=f"REPLY:{m['message_id']}",
+                                    dedupe_key=f"REPLY:{owner}:{m['message_id']}",
                                     payload={"reply_id": reply_id, "email_id": latest["id"], "thread_id": thread_id}))
             engine._emit(conn, ACTOR, "reply_received", node_id=latest["deal_id"],
                          after={"reply_id": reply_id, "from": addr, "email_id": latest["id"]})
             new.append(reply_id)
-    set_state(conn, "automation:replies:last_poll",
+    set_user_state(conn, "automation:replies:last_poll",
               json.dumps({"at": now(), "threads": len(threads), "new": len(new), "errors": errors[:5]}))
     conn.commit()
     return {"threads": len(threads), "new": new, "errors": errors}

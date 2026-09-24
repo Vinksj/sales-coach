@@ -131,8 +131,10 @@ def digest(conn, since) -> dict:
 
 
 def seller_id(conn) -> str:
-    row = conn.execute("SELECT node_id FROM people WHERE is_me=1 ORDER BY node_id LIMIT 1").fetchone()
-    return row[0] if row else "me"
+    """The acting user's own person id (people.user_id = the actor), or 'me' before it exists."""
+    from .. import repo
+    row = repo.me_row(conn)
+    return row["node_id"] if row else "me"
 
 
 register_gate()

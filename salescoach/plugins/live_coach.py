@@ -28,6 +28,8 @@ import uuid
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .. import identity
+
 log = logging.getLogger("salescoach.plugins.live_coach")
 
 NAV: list = []
@@ -110,6 +112,9 @@ class Supervisor:
 
 
 def start_background(db_path, stop):
+    if identity.cloud():
+        log.info("live coach disabled: no live capture in a cloud install")
+        return
     try:
         from ..live.manager import get_manager
     except Exception:
@@ -259,11 +264,14 @@ def coach_replay(request: Request, call_id: str, speed: float = Form(20.0), slow
             with _lock:
                 _engines[call_id] = engine
 
+        actor = identity.current_actor()                 # captured here: a new thread has no request context
+
         def run():
             publish_status(hub, "listening", call_id, call["title"], mode="replay")
             try:
-                replay_mod.replay(call_id, db_path=db_path, speed=max(0.0, speed), slow=use_slow, publish_hub=hub,
-                                  publish_current=True, session=session, on_engine=register)
+                with identity.activate(actor):
+                    replay_mod.replay(call_id, db_path=db_path, speed=max(0.0, speed), slow=use_slow, publish_hub=hub,
+                                      publish_current=True, session=session, on_engine=register)
             except Exception:
                 log.exception("replay of %s failed", call_id)
             finally:

@@ -33,7 +33,8 @@ def run_sources(conn) -> dict:
 
 def start_background(db_path, stop):
     from ..automation.scheduler import Duty, start
-    start(db_path, stop, duties=[Duty("sources", run_sources, lambda: POLL_TICK_S, first_delay_s=75)])
+    # Org-level until Phase 4 makes recorder connections per user: runs once, as the local user.
+    start(db_path, stop, duties=[Duty("sources", run_sources, lambda: POLL_TICK_S, first_delay_s=75, per_user=False)])
 
 
 # ---- CLI ----------------------------------------------------------------------------------------

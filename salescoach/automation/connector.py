@@ -91,6 +91,10 @@ def calendar_tools(tools: list[str]) -> list[str]:
 
 def discover(conn=None, refresh: bool = False) -> dict:
     """{prefix, tools, discovered_at} for the Google Calendar connector."""
+    from .. import identity
+    if identity.cloud():
+        raise ConnectorError("the Claude CLI calendar connector is not available in a cloud install "
+                             "(per-user Google Calendar comes in Phase 5)")
     if conn is not None and not refresh:
         raw = get_state(conn, STATE_KEY)
         if raw:

@@ -37,7 +37,7 @@ from ..execution import cadence
 from ..memory import gate
 from ..orchestrator import bus
 from ..schemas.events import Event
-from ..store.stores import engine, now, set_state
+from ..store.stores import engine, now, set_user_state
 from ..store import db
 from ..validators import recipients, voice_lint
 from . import common
@@ -75,7 +75,7 @@ class NudgeAgent(common.PluginAgent):
     schema = NudgeDraft
 
     def system_prompt(self, ctx):
-        return super().system_prompt(ctx) + "\n\n## Style guide\n" + seller.render(config.text("style.md"))
+        return super().system_prompt(ctx) + "\n\n## Style guide\n" + seller.render(seller.style_guide())
 
 
 @dataclass
@@ -561,7 +561,7 @@ def evaluate_due(conn, today: Optional[date] = None) -> list[dict]:
             continue
         results.append(evaluate_loop(conn, dict(row), today))
         conn.commit()
-    set_state(conn, "automation:followups:last_eval",
+    set_user_state(conn, "automation:followups:last_eval",
               json.dumps({"date": today.isoformat(), "at": now(), "decisions": len(results)}))
     conn.commit()
     return results

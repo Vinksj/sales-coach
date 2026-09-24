@@ -6,7 +6,7 @@ with full confidence. After review, confirmed loops are mirrored to Jarvis.
 """
 import json
 
-from .. import repo
+from .. import identity, repo
 from ..memory import gate
 from ..schemas.events import Event
 from ..store.stores import engine, now
@@ -81,7 +81,8 @@ def complete_review(conn, call_id):
     """
     if repo.get_call(conn, call_id)["wf_state"] == "awaiting_review":
         repo.set_call_state(conn, call_id, "reviewed", actor=ACTOR)
-    bus.publish(conn, Event(type="REVIEW_COMPLETED", entity_id=call_id, dedupe_key=f"REVIEW:{call_id}:{now()}"))
+    bus.publish(conn, Event(type="REVIEW_COMPLETED", entity_id=call_id,
+                            dedupe_key=f"REVIEW:{identity.actor_of(conn).user_id}:{call_id}:{now()}"))
     conn.commit()
 
 

@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import date
 
-from .. import config, repo
+from .. import config, identity, repo
 from ..agents.actions import ActionAgent
 from ..agents.base import record_items
 from ..agents.call_analyst import CallAnalystAgent
@@ -528,14 +528,40 @@ def _resolve_stale_failures(conn, call_id):
                  "updated_at=? WHERE entity_id=? AND status='pending' AND type='CALL_ENDED'", (now(), call_id))
 
 
+class UnknownOwner(RuntimeError):
+    """Cloud mode, and the event names nothing whose owner is known: it cannot run as anybody."""
+
+
+def owner_of_event(conn, event: Event) -> str:
+    """Whose work an event is. An entity id `user:<id>` says so directly (FOLLOW_UP_RUN, the calendar
+    refresh, a coach-report request); a call, deal or loop id resolves through nodes.owner_id; the
+    payload may carry owner_id. Local mode falls back to the local user; cloud mode refuses."""
+    entity = event.entity_id or ""
+    if entity.startswith("user:"):
+        return entity[len("user:"):]
+    if entity:
+        owner = repo.owner_of(conn, entity)
+        if owner:
+            return owner
+    owner = (event.payload or {}).get("owner_id")
+    if owner:
+        return str(owner)
+    if not identity.cloud():
+        return identity.LOCAL_USER
+    raise UnknownOwner(f"{event.type} {event.entity_id!r}: no owner (nodes.owner_id, user:<id> or payload.owner_id)")
+
+
 def handle(conn, event: Event):
-    """Route one persisted workflow event. Events with no handler are records only."""
+    """Route one persisted workflow event, as the user whose work it is (identity.as_user, service
+    mode): every handler and every seller.profile() read inside runs for that owner. Events with no
+    handler are records only."""
     ensure_plugins()
-    if event.type in ("CALL_ENDED", "PROCESS_CALL"):
-        run_pipeline(conn, event.entity_id, from_step=event.payload.get("from"),
-                     force=bool(event.payload.get("force")))
-    elif event.type == "REVIEW_COMPLETED":
-        from . import review
-        review.after_review(conn, event.entity_id)
-    for fn in HANDLERS.get(event.type, []):
-        fn(conn, event)
+    with identity.as_user(conn, owner_of_event(conn, event), mode=identity.SERVICE):
+        if event.type in ("CALL_ENDED", "PROCESS_CALL"):
+            run_pipeline(conn, event.entity_id, from_step=event.payload.get("from"),
+                         force=bool(event.payload.get("force")))
+        elif event.type == "REVIEW_COMPLETED":
+            from . import review
+            review.after_review(conn, event.entity_id)
+        for fn in HANDLERS.get(event.type, []):
+            fn(conn, event)

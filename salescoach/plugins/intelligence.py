@@ -156,14 +156,18 @@ def register_cli(sub):
 
 def start_background(db_path, stop):
     def loop():
+        from .. import identity, users
         from ..intel import embed
         from ..store import stores
         delay = 60
         while stop is None or not stop.wait(delay):
             try:
-                conn = stores.sales(db_path)
+                with identity.activate(None):
+                    conn = stores.sales(db_path)
                 try:
-                    embed.index_pending(conn)
+                    for user in users.active(conn):            # embeddings are OWNED: indexed as their owner
+                        with identity.as_user(conn, user["id"], mode=identity.SERVICE):
+                            embed.index_pending(conn)
                 finally:
                     conn.close()
             except Exception:

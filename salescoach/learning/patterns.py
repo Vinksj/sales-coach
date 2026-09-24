@@ -37,7 +37,7 @@ is what the weekly digest (weekly.py) reads; a recompute that changes nothing em
 import json
 import re
 
-from .. import config
+from .. import config, identity
 from ..automation import common
 from ..memory import gate
 from ..memory import patterns as seller_memory
@@ -60,8 +60,22 @@ class ActionRefused(ValueError):
     """A user action that cannot be applied; the message is for the user."""
 
 
-def pattern_id(family: str, key: str, scope: str = SCOPE) -> str:
-    return f"lp:{family}:{scope}:{key}"
+def _owner(conn=None) -> str:
+    return identity.actor_of(conn).user_id if conn is not None else identity.current_user_id()
+
+
+def pattern_id(family: str, key: str, scope: str = SCOPE, owner: str | None = None) -> str:
+    """lp:<family>:u:<owner>:<key>. Scope is always 'global' today and is not in the id; UNIQUE(owner_id,
+    family, key, scope) keeps the column for a per-deal scope later (which would then need the id)."""
+    return f"lp:{family}:u:{owner or _owner()}:{key}"
+
+
+def parse_pattern_id(pid: str):
+    """(family, owner, key) for a well-formed id, else None."""
+    parts = pid.split(":", 4)
+    if len(parts) == 5 and parts[0] == "lp" and parts[2] == "u" and parts[1] and parts[3] and parts[4]:
+        return parts[1], parts[3], parts[4]
+    return None
 
 
 def countable(o) -> bool:
@@ -164,9 +178,10 @@ def recompute(conn) -> dict:
     ensure_columns(conn)
     synced = observe.sync(conn)
     rules, taxonomy, sid, stamp = cfg("promotion"), seller_memory.taxonomy(), seller_id(conn), now()
+    owner = _owner(conn)
     analysed = seller_memory._analysed_calls(conn)
     window = analysed[:int(rules["window_calls"])]
-    existing = {r["id"]: r for r in conn.execute("SELECT * FROM learned_patterns")}
+    existing = {r["id"]: r for r in conn.execute("SELECT * FROM learned_patterns WHERE owner_id=?", (owner,))}
 
     # The user's "Wrong" covers observations that arrive later too.
     for p in existing.values():
@@ -223,7 +238,7 @@ def recompute(conn) -> dict:
             status = "active" if len(good) >= int(cfg("nudge_trigger")["propose_min_shown"]) else "candidate"
         if family in CALL_FAMILIES:
             status = absence(calls_with, analysed, rules) or status
-        wanted[pattern_id(family, key)] = {
+        wanted[pattern_id(family, key, owner=owner)] = {
             "family": family, "key": key, "polarity": next((o["polarity"] for o in reversed(good) if o["polarity"]), None),
             "n_obs": len(good), "n_calls": len(calls_with), "n_deals": len(deals_with), "support": support,
             "label": label if status == "active" else "", "status": status,
@@ -269,12 +284,13 @@ def recompute(conn) -> dict:
                                 "family": w["family"]})
         conn.execute(
             "INSERT INTO learned_patterns(id,family,key,scope,polarity,n_obs,n_calls,n_deals,support,label,status,"
-            "first_seen,last_seen,returned,summary,stats,seller_id,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "first_seen,last_seen,returned,summary,stats,seller_id,updated_at,owner_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET polarity=excluded.polarity, n_obs=excluded.n_obs, n_calls=excluded.n_calls, "
             "n_deals=excluded.n_deals, support=excluded.support, label=excluded.label, status=excluded.status, "
             "first_seen=excluded.first_seen, last_seen=excluded.last_seen, returned=excluded.returned, "
             "summary=excluded.summary, stats=excluded.stats, seller_id=excluded.seller_id, updated_at=excluded.updated_at",
-            (pid, *row, stamp))
+            (pid, *row, stamp, owner))
         changed += 1
     gone = [pid for pid in existing if pid not in wanted]
     for pid in gone:
@@ -363,8 +379,8 @@ def _propose_merges(conn, taxonomy: dict) -> int:
     hygiene = cfg("tag_hygiene")
     stop, floor = set(hygiene.get("stop_words") or []), float(hygiene["min_similarity"])
     rows = {r["key"]: r for r in conn.execute(
-        "SELECT * FROM learned_patterns WHERE family='seller' AND merged_into IS NULL "
-        "AND (user_state IS NULL OR user_state='confirmed')")}
+        "SELECT * FROM learned_patterns WHERE owner_id=? AND family='seller' AND merged_into IS NULL "
+        "AND (user_state IS NULL OR user_state='confirmed')", (_owner(conn),))}
     made = 0
     for key, p in sorted(rows.items()):
         if not key.startswith("new:"):
@@ -434,8 +450,8 @@ def _propose_trigger_weights(conn) -> int:
     rule = cfg("nudge_trigger")
     weights = resolved_weights()
     made = 0
-    for p in conn.execute("SELECT * FROM learned_patterns WHERE family='nudge_trigger' AND merged_into IS NULL "
-                          "AND (user_state IS NULL OR user_state='confirmed')").fetchall():
+    for p in conn.execute("SELECT * FROM learned_patterns WHERE owner_id=? AND family='nudge_trigger' AND merged_into IS NULL "
+                          "AND (user_state IS NULL OR user_state='confirmed')", (_owner(conn),)).fetchall():
         s = json.loads(p["stats"] or "{}")
         shown, unhelpful = s.get("shown", 0), s.get("ignored", 0) + s.get("dismissed", 0)
         current = weights.get(p["key"])
@@ -514,11 +530,13 @@ def _ensure_row(conn, pid: str):
     row = conn.execute("SELECT * FROM learned_patterns WHERE id=?", (pid,)).fetchone()
     if row is not None:
         return row
-    parts = pid.split(":", 3)                          # lp:<family>:<scope>:<key>; a taxonomy tag nobody has been seen doing yet
-    if len(parts) == 4 and parts[0] == "lp" and parts[1] == "seller" and parts[3] in seller_memory.taxonomy():
-        conn.execute("INSERT INTO learned_patterns(id,family,key,scope,summary,seller_id,updated_at) VALUES (?,?,?,?,?,?,?)",
-                     (pid, "seller", parts[3], parts[2], _summary("seller", parts[3], {}, seller_memory.taxonomy()),
-                      seller_id(conn), now()))
+    parsed = parse_pattern_id(pid)                     # a taxonomy tag nobody has been seen doing yet
+    if parsed and parsed[0] == "seller" and parsed[1] == _owner(conn) and parsed[2] in seller_memory.taxonomy():
+        family, owner, key = parsed
+        conn.execute("INSERT INTO learned_patterns(id,family,key,scope,summary,seller_id,updated_at,owner_id) "
+                     "VALUES (?,?,?,?,?,?,?,?)",
+                     (pid, "seller", key, SCOPE, _summary("seller", key, {}, seller_memory.taxonomy()),
+                      seller_id(conn), now(), owner))
         return conn.execute("SELECT * FROM learned_patterns WHERE id=?", (pid,)).fetchone()
     raise KeyError(pid)
 
@@ -601,9 +619,9 @@ def for_prompt(conn, target: str, deal_id: str | None = None, limit: int = 3) ->
         return []
     ensure_columns(conn)                               # a store made by phase F1 has no no_prompt column yet
     rows = conn.execute(
-        "SELECT * FROM learned_patterns WHERE status='active' AND merged_into IS NULL AND no_prompt=0 AND family IN (%s) "
-        "AND (user_state IS NULL OR user_state='confirmed') AND scope IN ('global', ?)" % ",".join("?" * len(families)),
-        (*families, f"deal:{deal_id}")).fetchall()
+        "SELECT * FROM learned_patterns WHERE owner_id=? AND status='active' AND merged_into IS NULL AND no_prompt=0 "
+        "AND family IN (%s) AND (user_state IS NULL OR user_state='confirmed') AND scope IN ('global', ?)"
+        % ",".join("?" * len(families)), (_owner(conn), *families, f"deal:{deal_id}")).fetchall()
     if deal_id:
         on_deal = {(r["family"], r["key"]) for r in conn.execute(
             "SELECT DISTINCT family, key FROM pattern_observations WHERE deal_id=? AND excluded=0", (deal_id,))}
@@ -635,12 +653,13 @@ def _evidence_link(o) -> dict:
 def beliefs(conn, evidence_limit: int = 5) -> list[dict]:
     """Everything the page shows, grouped by family: candidate, active and dormant patterns first, then
     the ones retired, merged or marked wrong (so a verdict can be undone)."""
-    rows = [dict(r) for r in conn.execute("SELECT * FROM learned_patterns ORDER BY family, id")]
+    owner = _owner(conn)
+    rows = [dict(r) for r in conn.execute("SELECT * FROM learned_patterns WHERE owner_id=? ORDER BY family, id", (owner,))]
     by_id = {r["id"]: r for r in rows}
     merges = _merge_targets(by_id)
     folded: dict[str, list] = {}
     for src, dst in merges.items():
-        folded.setdefault(pattern_id(*dst), []).append(src[1])
+        folded.setdefault(pattern_id(*dst, owner=owner), []).append(src[1])
     out = []
     for family in PATTERN_FAMILIES:
         live, closed = [], []

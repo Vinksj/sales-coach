@@ -49,7 +49,7 @@ def _pattern_changes(conn, since: datetime) -> dict:
         entry["last"] = after
         if before.get("status") in ("dormant", "retired") and after.get("status") in ("candidate", "active"):
             entry["returned"] = True
-    rows = {r["id"]: r for r in conn.execute("SELECT * FROM learned_patterns")}
+    rows = {r["id"]: r for r in conn.execute("SELECT * FROM learned_patterns WHERE owner_id=?", (patterns._owner(conn),))}
     out = {"new_active": [], "dormant": [], "returned": []}
     for pid in sorted(net):
         entry, row = net[pid], rows.get(pid)

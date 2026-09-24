@@ -7,7 +7,7 @@ checked against the turns it cites.
 """
 import json
 from datetime import datetime, timezone
-from .. import repo, seller
+from .. import identity, repo, seller
 from ..store import stores
 
 def __getattr__(name):
@@ -147,9 +147,18 @@ def meta_block(ctx) -> str:
              f"Language mode: {call.get('lang_mode')}"]
     if ctx["participants"]:
         parts.append("Participants: " + "; ".join(
-            f"{p['name']}{' (ME)' if p['is_me'] else ''}{' <' + p['email'] + '>' if p.get('email') else ''}"
+            f"{p['name']}{me_label(p)}{' <' + p['email'] + '>' if p.get('email') else ''}"
             f"{', ' + p['title'] if p.get('title') else ''}" for p in ctx["participants"]))
     return "\n".join(parts)
+
+
+def me_label(p) -> str:
+    """' (ME)' for the acting user's own person row, ' (colleague)' for any other internal user (a
+    users row of someone else), nothing for a buyer. Prompts must never call a colleague ME."""
+    if not p.get("is_me"):
+        return ""
+    actor = identity.current_actor(required=False)
+    return " (ME)" if (actor is not None and p.get("user_id") == actor.user_id) else " (colleague)"
 
 
 def deal_block(ctx) -> str:

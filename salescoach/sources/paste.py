@@ -33,10 +33,12 @@ def parse(text: str, strict: bool = False) -> list[tuple[str, str, str]]:
     return turns
 
 
-def text_ref(turns) -> str:
-    """paste:<sha of the normalised text>: labels and words only, whitespace collapsed."""
+def text_ref(turns, conn=None) -> str:
+    """paste:<owner>:<sha of the normalised text>: labels and words only, whitespace collapsed. The owner
+    is in the key so the same text pasted by two users is two calls, and one user's re-paste is a no-op."""
+    from .. import repo
     lines = [f"{' '.join(t['speaker_label'].split()).casefold()}|{' '.join(t['text'].split())}" for t in turns]
-    return "paste:" + hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
+    return repo.user_source_ref("paste", hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32], conn)
 
 
 def import_text(conn, text, title, deal_id=None, started_at=None, lang_mode="auto",
@@ -47,7 +49,7 @@ def import_text(conn, text, title, deal_id=None, started_at=None, lang_mode="aut
     parsed = parsers.parse_plain(text, strict=strict)
     if not parsed.turns:
         raise ValueError("no speaker turns found; expected lines like 'Me: ...' and 'Them: ...'")
-    nt = base.NormalizedTranscript(source_kind=source, source_ref=source_ref or text_ref(parsed.turns),
+    nt = base.NormalizedTranscript(source_kind=source, source_ref=source_ref or text_ref(parsed.turns, conn),
                                    title=title, started_at=started_at, ended_at=started_at,
                                    turns=parsed.turns, raw=text)
     outcome = base.import_normalized(conn, nt, deal_id=deal_id, history=history, lang_mode=lang_mode,

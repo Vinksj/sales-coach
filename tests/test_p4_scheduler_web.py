@@ -16,7 +16,7 @@ from salescoach.orchestrator import worker
 from salescoach.plugins import execution
 from salescoach.sources import paste
 from salescoach.store import stores
-from salescoach.store.stores import get_state, now
+from salescoach.store.stores import get_state, get_user_state, now
 from salescoach.web.app import create_app
 from test_p4_followup import run_cli
 from test_p4_support import (ARJUN, ORIGIN, TODAY, FakeCalendar, FakeGmail, at, clock, decision, events_of,  # noqa: F401
@@ -39,7 +39,7 @@ def _wait_for(predicate, timeout=5.0):
 def _state(key):
     conn = stores.sales()
     try:
-        return get_state(conn, key)
+        return get_user_state(conn, key)                   # duties are per user: their bookkeeping is too
     finally:
         conn.close()
 
@@ -96,7 +96,7 @@ def test_followups_run_daily_at_0930_with_a_catch_up(db, world, clock, fake_llm)
     assert scheduler.run_followups(db) == {"skipped": "waiting for 09:30 IST"}
     clock.set(at(TODAY, "14:00"))                                   # started late: catches up once
     assert scheduler.run_followups(db) == {"decisions": 1}
-    assert get_state(db, "automation:followups:ran_for") == TODAY.isoformat()
+    assert get_user_state(db, "automation:followups:ran_for") == TODAY.isoformat()
     assert scheduler.run_followups(db) == {"skipped": "already ran today"}
     clock.set(at(TODAY + timedelta(days=1), "09:31"))
     assert "decisions" in scheduler.run_followups(db)

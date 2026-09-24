@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from .. import config, repo, seller
+from .. import config, identity, repo, seller
 from ..orchestrator import context
 from . import methodology, tables
 
@@ -144,7 +144,8 @@ def build(conn, deal_id, call_id, m=None) -> dict:
     anchor = next((c for c in calls if c["call"]["node_id"] == call_id), None)
 
     people = [dict(p) for p in repo.deal_people(conn, deal_id)]
-    me = next((p for p in people if p["is_me"]), None)
+    me_id = identity.actor_of(conn).user_id
+    me = next((p for p in people if p.get("user_id") == me_id), None)
     buyers = [p for p in people if not p["is_me"]]
     others = [dict(r) for r in conn.execute(
         "SELECT * FROM people WHERE account_id=? AND is_me=0 AND node_id NOT IN "
@@ -247,7 +248,7 @@ def _call_block(c, anchor_id) -> str:
             f" | transcript quality {call.get('quality_score') if call.get('quality_score') is not None else '-'}"
             f"{' | THIS IS THE LATEST CALL (full transcript below)' if cid == anchor_id else ''}")
     lines = [head]
-    names = [p["name"] + (" (ME)" if p["is_me"] else "") for p in c["participants"]]
+    names = [p["name"] + context.me_label(p) for p in c["participants"]]
     lines.append(f"Participants: {', '.join(names) or 'not recorded'}"
                  + (f". Unmapped buyer-side speakers: {', '.join(c['unmapped'])}" if c["unmapped"] else ""))
     a = c["analysis"] or {}

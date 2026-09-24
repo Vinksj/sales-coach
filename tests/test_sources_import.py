@@ -8,7 +8,7 @@ import json
 import pytest
 
 from conftest import SELLER, write_seller
-from salescoach import config, repo
+from salescoach import config, repo, users
 from salescoach.orchestrator import worker, workflow
 from salescoach.sources import base, granola, parsers, paste
 from salescoach.sources.adapters.upload import UploadAdapter
@@ -123,21 +123,21 @@ def test_resolving_fixes_channels_starts_the_pipeline_and_remembers(db):
     # the next transcript from that recorder is not held
     again = paste.import_text(db, "Priya S.: Hello again.\nDev Anand Rao: Hello.", "Next call", result=True)
     assert not again.needs_speaker and channels(db, again.call_id)[0] == ("me", "me")
-    assert config.load_user("sources")["me_labels"] == ["Priya S."]
+    assert users.remembered_labels(db) == ["Priya S."]                   # remembered for this user
 
 
 def test_none_of_them_is_an_answer(db):
     call = paste.import_text(db, STRANGERS, "Two buyers talking")
     assert base.resolve_speaker(db, call, base.NOT_PRESENT) == 0
     assert {c for c, _ in channels(db, call)} == {"them"} and repo.get_call(db, call)["wf_state"] == "diarized"
-    assert "me_labels" not in config.load_user("sources")
+    assert users.remembered_labels(db) == []
 
 
 def test_generic_speaker_labels_are_asked_but_never_remembered(db):
     call = paste.import_text(db, "Speaker A: I'll send it.\nSpeaker B: Thanks.", "Diarized only")
     assert repo.get_call(db, call)["wf_state"] == "needs_speaker"
     base.resolve_speaker(db, call, "Speaker A")
-    assert "me_labels" not in config.load_user("sources")                   # Speaker A is someone else next time
+    assert users.remembered_labels(db) == []                              # Speaker A is someone else next time
 
 
 def test_explicit_me_label_and_a_wrong_one(db):

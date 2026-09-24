@@ -254,8 +254,8 @@ def test_prep_gets_weaknesses_first_then_one_strength_and_falls_back_to_the_old_
         ("weakness", "avoids_budget"), ("weakness", "leaves_open_loops"), ("strength", "multi_threads")]
     text = prep.render_facts(brief)
     assert "COACHING PRIORITY: Avoiding the budget conversation | Ask who owns the budget" in text
-    line = next(ln for ln in text.splitlines() if "lp:seller:global:avoids_budget" in ln)
-    assert line.startswith("- [lp:seller:global:avoids_budget] weakness, emerging, seen on 3+ calls across 2 deals: ")
+    line = next(ln for ln in text.splitlines() if "lp:seller:u:local:avoids_budget" in ln)
+    assert line.startswith("- [lp:seller:u:local:avoids_budget] weakness, emerging, seen on 3+ calls across 2 deals: ")
     assert text.index("leaves_open_loops") < text.index("multi_threads") and "quantifies_impact" not in text
     assert text.splitlines()[[i for i, ln in enumerate(text.splitlines()) if "multi_threads" in ln][0]].endswith(
         "Multi-threads beyond the champion")                           # a strength carries no "do:" instruction
@@ -584,7 +584,7 @@ def test_a_proposals_table_from_phase_f1_is_rebuilt_with_its_history(db):
                "('open','accepted','dismissed')), applied TEXT, created_at TEXT NOT NULL, resolved_at TEXT, "
                "UNIQUE(kind, subject))")
     db.execute("INSERT INTO learning_proposals(kind,subject,pattern_id,summary,payload,status,created_at,resolved_at) VALUES "
-               "('trigger_weight','trigger:status_quo','lp:nudge_trigger:global:status_quo','old','{\"shown\": 15}',"
+               "('trigger_weight','trigger:status_quo','lp:nudge_trigger:u:local:status_quo','old','{\"shown\": 15}',"
                "'dismissed',?,?)", (day(0), day(1)))
     db.commit()
     learning.ensure_columns(db)

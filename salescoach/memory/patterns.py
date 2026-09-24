@@ -18,7 +18,7 @@ import json
 import re
 from collections import Counter
 
-from .. import config
+from .. import config, identity
 from ..store.stores import now
 
 WINDOW = 10
@@ -62,9 +62,13 @@ def _learned_verdicts(conn) -> dict:
     else:
         sql = ("SELECT key, user_state, 0 AS no_prompt FROM learned_patterns WHERE family='seller' "
                "AND user_state IN ('wrong','retired')")
-    for r in conn.execute(sql):
+    for r in conn.execute(sql + " AND owner_id=?", (_owner(conn),)):
         out[r["key"]] = r["user_state"] if r["user_state"] in ("wrong", "retired") else "no_prompt"
     return out
+
+
+def _owner(conn) -> str:
+    return identity.actor_of(conn).user_id
 
 
 def retired_tags(conn) -> set:
@@ -78,22 +82,26 @@ def suppressed_tags(conn) -> set:
 
 
 def _analysed_calls(conn):
+    """The acting user's analysed calls, newest first (the seller memory is one user's)."""
     return [r["node_id"] for r in conn.execute(
-        "SELECT c.node_id FROM calls c WHERE EXISTS "
+        "SELECT c.node_id FROM calls c WHERE c.owner_id=? AND EXISTS "
         "(SELECT 1 FROM artifacts a WHERE a.call_id=c.node_id AND a.kind='analysis') "
-        "ORDER BY c.started_at DESC")]
+        "ORDER BY c.started_at DESC", (_owner(conn),))]
 
 
 def recompute(conn, window: int = WINDOW):
+    """Rebuild the ACTING user's seller_patterns from their own observations. Two users get two rows
+    per tag (PRIMARY KEY (owner_id, tag)); nothing here reads another user's calls."""
     known = taxonomy()
+    owner = _owner(conn)
     analysed = _analysed_calls(conn)
     in_window = analysed[:window]
     retired = retired_tags(conn)
-    tags = {r["tag"] for r in conn.execute("SELECT DISTINCT tag FROM seller_observations")}
+    tags = {r["tag"] for r in conn.execute("SELECT DISTINCT tag FROM seller_observations WHERE owner_id=?", (owner,))}
     for tag in tags:
         obs = conn.execute(
             "SELECT o.*, c.started_at FROM seller_observations o JOIN calls c ON c.node_id=o.call_id "
-            "WHERE o.tag=? AND o.confidence != 'low' ORDER BY c.started_at", (tag,)).fetchall()
+            "WHERE o.tag=? AND o.owner_id=? AND o.confidence != 'low' ORDER BY c.started_at", (tag, owner)).fetchall()
         if not obs:
             continue
         calls_with = {o["call_id"] for o in obs}
@@ -111,8 +119,8 @@ def recompute(conn, window: int = WINDOW):
         status = "retired" if tag in retired else ("active" if len(calls_with) >= 2 else "candidate")
         conn.execute(
             "INSERT INTO seller_patterns(tag,name,description,polarity,frequency,calls_seen,calls_window,severity,"
-            "contexts,examples,first_detected,last_detected,trend,recommended_intervention,status,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tag) DO UPDATE SET "
+            "contexts,examples,first_detected,last_detected,trend,recommended_intervention,status,updated_at,owner_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_id,tag) DO UPDATE SET "
             "name=excluded.name, description=excluded.description, polarity=excluded.polarity, "
             "frequency=excluded.frequency, calls_seen=excluded.calls_seen, calls_window=excluded.calls_window, "
             "severity=excluded.severity, contexts=excluded.contexts, examples=excluded.examples, "
@@ -122,7 +130,7 @@ def recompute(conn, window: int = WINDOW):
             (tag, name, entry.get("description") or entry.get("name"), polarity, round(frequency, 3),
              len(calls_with), len(in_window), severity, json.dumps([c for c, _ in contexts.most_common(3)]),
              json.dumps(examples), obs[0]["started_at"], obs[-1]["started_at"], trend,
-             entry.get("recommended_intervention"), status, now()))
+             entry.get("recommended_intervention"), status, now(), owner))
 
 
 def _trend(analysed, calls_with, polarity) -> str:
@@ -143,7 +151,7 @@ def active_priority(conn):
     """The single weakness to work on next: most frequent active weakness, severity breaking ties."""
     gone = suppressed_tags(conn)
     rows = conn.execute(
-        "SELECT * FROM seller_patterns WHERE polarity='weakness' AND status='active' "
-        "ORDER BY frequency DESC, CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END"
+        "SELECT * FROM seller_patterns WHERE owner_id=? AND polarity='weakness' AND status='active' "
+        "ORDER BY frequency DESC, CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END", (_owner(conn),)
     ).fetchall()
     return next((r for r in rows if r["tag"] not in gone), None)

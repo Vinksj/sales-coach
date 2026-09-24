@@ -80,7 +80,9 @@ def hhmm(text, default: str = "00:00") -> time:
 
 
 def my_addresses(conn=None) -> set[str]:
-    """The seller's own addresses: automation.yaml my_addresses when set (an override), else the profile's."""
+    """Addresses that are never a buyer's: automation.yaml my_addresses when set (an override), else the
+    acting user's profile, plus the person row of EVERY internal user (a colleague's reply in a thread
+    is not a stakeholder reply; a colleague on an invite is not a guest)."""
     addrs = {a.lower().strip() for a in (cfg().get("my_addresses") or seller.emails()) if a}
     if conn is not None:
         addrs |= {r["email"].lower() for r in conn.execute(

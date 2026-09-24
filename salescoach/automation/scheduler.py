@@ -10,7 +10,14 @@ Four threads, each with its own sales.db handle, each honouring the stop Event:
               armed for recording and stops them after the grace period.
 Each duty waits before its first run, so a server that starts and stops at
 once (a test, for example) never reaches Gmail or `claude -p`. Last run,
-result, error and unavailability go into the state table as automation:<duty>:*.
+result, error and unavailability are recorded as automation:<duty>:*: in
+user_state for a per-user duty, in state for an org-level one.
+
+Users. A duty is per user unless it says otherwise (Duty.per_user): each round
+runs it once for every active user (users.active), inside that user's service
+session, so a reply poll reads that user's mailbox and a follow-up run drafts
+in that user's voice. An org-level duty (the sources poller, until Phase 4)
+runs once, as the local user, and not at all in cloud mode.
 """
 import json
 import logging
@@ -19,9 +26,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from .. import config, seller
+from .. import config, identity, seller, users
 from ..store import stores
-from ..store.stores import get_state, now, set_state
+from ..store.stores import get_user_state, now, set_state, set_user_state
 from . import common
 
 log = logging.getLogger("salescoach.automation")
@@ -44,6 +51,7 @@ class Duty:
     run: Callable                 # run(conn) -> json-able result
     interval_s: Callable          # () -> seconds until the next run
     first_delay_s: float = 60.0
+    per_user: bool = True         # once per active user, in that user's session; False = once, org-level
 
 
 def seconds_until(run_at: str, current: Optional[datetime] = None) -> float:
@@ -55,39 +63,73 @@ def seconds_until(run_at: str, current: Optional[datetime] = None) -> float:
     return (target - current).total_seconds()
 
 
+def _record(conn, duty: Duty, key: str, value: str) -> None:
+    if duty.per_user:
+        set_user_state(conn, f"automation:{duty.name}:{key}", value)
+    else:
+        set_state(conn, f"automation:{duty.name}:{key}", value)
+
+
+def _run_once(duty: Duty, conn) -> float | None:
+    """One duty for the user bound to `conn`. Returns a longer delay when the duty is unavailable."""
+    try:
+        if not seller.is_configured():
+            # No profile, no duties: without the seller's addresses a reply poll cannot tell their
+            # mail from a buyer's. Checked every round, so saving the profile is enough to start.
+            raise Unavailable("the seller profile is not set up yet", retry_s=60)
+        result = duty.run(conn)
+        _record(conn, duty, "last_run", now())
+        _record(conn, duty, "last_result", json.dumps(result, default=str)[:4000])
+        conn.commit()
+    except Unavailable as exc:
+        conn.rollback()
+        _record(conn, duty, "unavailable", json.dumps({"at": now(), "why": str(exc)[:500]}))
+        conn.commit()
+        return exc.retry_s
+    except Exception as exc:
+        log.exception("%s failed", duty.name)
+        try:
+            conn.rollback()
+            _record(conn, duty, "last_error", json.dumps({"at": now(), "error": f"{type(exc).__name__}: {exc}"[:1000]}))
+            conn.commit()
+        except Exception:
+            pass
+        return RETRY_AFTER_ERROR_S
+    return None
+
+
 def _loop(duty: Duty, db_path, stop: threading.Event):
     delay = duty.first_delay_s
     while not stop.wait(delay):
         delay = duty.interval_s()
         try:
-            conn = stores.sales(db_path)
+            with identity.activate(None):
+                conn = stores.sales(db_path)
         except Exception:
             log.exception("%s: cannot open sales.db", duty.name)
             continue
         try:
-            if not seller.is_configured():
-                # No profile, no duties: without the seller's addresses a reply poll cannot tell their
-                # mail from a buyer's. Checked every round, so saving the profile is enough to start.
-                raise Unavailable("the seller profile is not set up yet", retry_s=60)
-            result = duty.run(conn)
-            set_state(conn, f"automation:{duty.name}:last_run", now())
-            set_state(conn, f"automation:{duty.name}:last_result", json.dumps(result, default=str)[:4000])
-            conn.commit()
-        except Unavailable as exc:
-            conn.rollback()
-            set_state(conn, f"automation:{duty.name}:unavailable", json.dumps({"at": now(), "why": str(exc)[:500]}))
-            conn.commit()
-            delay = max(delay, exc.retry_s or delay)
-        except Exception as exc:
-            log.exception("%s failed", duty.name)
-            delay = min(delay, RETRY_AFTER_ERROR_S)     # a daily duty must not lose the day to one error
-            try:
-                conn.rollback()
-                set_state(conn, f"automation:{duty.name}:last_error",
-                          json.dumps({"at": now(), "error": f"{type(exc).__name__}: {exc}"[:1000]}))
-                conn.commit()
-            except Exception:
-                pass
+            if duty.per_user:
+                targets = [u["id"] for u in users.active(conn)]
+            elif identity.cloud():
+                log.info("%s: an org-level duty does not run in cloud mode yet (Phase 4)", duty.name)
+                continue
+            else:
+                targets = [identity.LOCAL_USER]
+            for user_id in targets:
+                if getattr(stop, "is_set", lambda: False)():   # tests pass a duck with wait() only
+                    break
+                try:
+                    with identity.as_user(conn, user_id, mode=identity.SERVICE):
+                        retry = _run_once(duty, conn)
+                except identity.NoActor:
+                    log.exception("%s: user %s is gone", duty.name, user_id)
+                    continue
+                if retry is not None:
+                    # An unavailable dependency backs the whole duty off; an error must not lose the day.
+                    delay = max(delay, retry) if retry > RETRY_AFTER_ERROR_S else min(delay, retry)
+        except Exception:
+            log.exception("%s: round failed", duty.name)
         finally:
             conn.close()
 
@@ -107,12 +149,12 @@ def run_followups(conn) -> dict:
     from . import followup
     today = common.today_ist()
     run_at = common.cfg("followup").get("run_at", "09:30")
-    if get_state(conn, "automation:followups:ran_for") == today.isoformat():
+    if get_user_state(conn, "automation:followups:ran_for") == today.isoformat():
         return {"skipped": "already ran today"}
     if common.now_ist().time() < common.hhmm(run_at):
         return {"skipped": f"waiting for {run_at} {seller.tz_label()}"}
     results = followup.evaluate_due(conn, today)
-    set_state(conn, "automation:followups:ran_for", today.isoformat())
+    set_user_state(conn, "automation:followups:ran_for", today.isoformat())
     return {"decisions": len(results)}
 
 
@@ -156,6 +198,8 @@ def run_calendar(conn) -> dict:
 def run_recorder(conn) -> dict:
     """Start armed meetings on time and stop them after the grace period. Needs the live module."""
     from . import calendar
+    if identity.cloud():
+        raise Unavailable("live capture is not available in a cloud install", retry_s=24 * 3600)
     try:
         from ..live.manager import get_manager
         manager = get_manager()

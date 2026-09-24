@@ -103,7 +103,7 @@ def test_pattern_actions_and_proposals_from_the_page(client, db):
     assert (pattern(db, PID)["status"], pattern(db, PID)["n_calls"]) == ("retired", 0)
     assert post({"id": PID, "action": "undo"}).status_code == 303
     assert (pattern(db, PID)["status"], pattern(db, PID)["n_calls"]) == ("active", 3)
-    assert post({"id": "lp:seller:global:new:nope", "action": "retire"}).status_code == 404
+    assert post({"id": "lp:seller:u:local:new:nope", "action": "retire"}).status_code == 404
     assert "Choose+the+pattern" in post({"id": PID, "action": "merge"}).headers["location"]
     assert "Unknown+action" in post({"id": PID, "action": "explode"}).headers["location"]
 
@@ -175,7 +175,7 @@ def test_handlers_recompute_after_the_three_events_and_never_raise(db, monkeypat
         db.commit()
         worker.drain(db)
         assert pattern(db, PID)["label"] == "emerging", event_type
-        assert json.loads(stores.get_state(db, "learning:last_run"))["trigger"]
+        assert json.loads(stores.get_user_state(db, "learning:last_run"))["trigger"]
     assert db.execute("SELECT COUNT(*) FROM wf_events WHERE status='failed'").fetchone()[0] == 0
 
     # A failure inside the learner is rolled back, recorded, and never reaches the pipeline.
@@ -187,7 +187,7 @@ def test_handlers_recompute_after_the_three_events_and_never_raise(db, monkeypat
     db.commit()
     worker.drain(db)
     assert db.execute("SELECT status FROM wf_events WHERE dedupe_key='test:boom'").fetchone()[0] == "done"
-    assert "counting went wrong" in json.loads(stores.get_state(db, "learning:last_error"))["error"]
+    assert "counting went wrong" in json.loads(stores.get_user_state(db, "learning:last_error"))["error"]
     assert db.execute("SELECT COUNT(*) FROM learning_proposals WHERE subject='half'").fetchone()[0] == 0
     assert plugin.run_recompute(db)["error"].startswith("RuntimeError")
 

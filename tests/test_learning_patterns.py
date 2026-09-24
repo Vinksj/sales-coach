@@ -162,7 +162,7 @@ def test_user_retired_never_revives_and_user_state_outranks_recompute(db):
     with pytest.raises(patterns.ActionRefused):
         patterns.set_user_state(db, PID, "maybe")
     with pytest.raises(KeyError):
-        patterns.set_user_state(db, "lp:seller:global:new:never_seen", "wrong")
+        patterns.set_user_state(db, "lp:seller:u:local:new:never_seen", "wrong")
 
 
 def test_wrong_excludes_the_observations_and_recomputes(db):
