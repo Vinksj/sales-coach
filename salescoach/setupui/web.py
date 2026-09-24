@@ -26,7 +26,7 @@ import re
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import config, providers, repo, seller, sources, users
+from .. import config, identity, providers, repo, seller, sources, users
 from ..intel import methodology
 from ..providers.base import ProviderError
 from ..store.stores import now, set_state, set_user_state
@@ -132,7 +132,8 @@ def you_save(request: Request, name: str = Form(""), emails: str = Form(""), com
             (config.user_dir() / "style.md").unlink(missing_ok=True)
     webapp = _web()
     with webapp._db(request) as conn:
-        users.sync_local(conn)
+        if not identity.cloud():                    # the local user's row shadows seller.yaml; cloud users have rows of their own
+            users.sync_local(conn)
         repo.sync_me(conn)
         conn.commit()
     return _go("you", go, msg="Profile saved.")
