@@ -277,6 +277,7 @@ def test_7_malformed_payloads(client, db, secret, payload):
         assert len(files) == 1 and len(_calls(db)) == 1
 
 
+@pytest.mark.sqlite_only          # holds SQLite's one write lock from a raw handle; Postgres has no such lock
 def test_7_a_locked_store_is_a_503_not_a_bad_payload(client, db, secret):
     other = sqlite3.connect(db.execute("PRAGMA database_list").fetchone()[2])
     other.execute("PRAGMA busy_timeout = 0")

@@ -9,6 +9,7 @@ import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -23,6 +24,7 @@ from salescoach.plugins import learning as plugin
 from salescoach.sources import paste
 from salescoach.store.stores import now
 from salescoach.web.app import create_app
+from salescoach.store.db import insert_id
 from test_core_pipeline import CALL1, _script, _setup
 from test_learning_support import day, live_nudge, make_call, make_deal, pattern, sent_edit, tag
 from test_p2_engine import QUIET, call, run_engine, slow_output  # noqa: F401  (call is a fixture)
@@ -404,8 +406,8 @@ def _strategist_run(db, call_id, deal, methodology_key):
     refs = {"call_id": call_id, "deal_id": deal}
     if methodology_key:
         refs["methodology"] = methodology_key
-    return db.execute("INSERT INTO agent_runs(agent,call_id,input_refs,status,started_at) VALUES "
-                      "('deal_strategist',?,?,'ok',?)", (call_id, json.dumps(refs), now())).lastrowid
+    return insert_id(db.execute("INSERT INTO agent_runs(agent,call_id,input_refs,status,started_at) VALUES "
+                      "('deal_strategist',?,?,'ok',?)", (call_id, json.dumps(refs), now())))
 
 
 def _element(db, deal, element, status, run, call_id):
@@ -573,6 +575,7 @@ def test_a_dismissed_merge_returns_when_the_tag_has_been_seen_twice_as_often(db)
     assert again["payload"]["from"] == "new:talking_over_buyer" and again["payload"]["n"] == 4
 
 
+@pytest.mark.sqlite_only          # rebuilds a table an old SQLite install made; the Postgres baseline never had that shape
 def test_a_proposals_table_from_phase_f1_is_rebuilt_with_its_history(db):
     db.execute("DROP TABLE learning_proposals")
     db.execute("CREATE TABLE learning_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN "

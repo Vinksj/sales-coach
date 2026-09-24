@@ -4,6 +4,7 @@ import json
 from salescoach import repo
 from salescoach.execution import policy
 from salescoach.store.stores import now
+from salescoach.store.db import insert_id
 
 
 def _saved(db, kind="followup", with_call=True):
@@ -14,7 +15,7 @@ def _saved(db, kind="followup", with_call=True):
                      "VALUES (?,?,?,?,?,?,?,'saved_to_gmail',?)",
                      (call, deal, kind, json.dumps(["m@northwind.test"]), "S", "B", "B", now()))
     db.commit()
-    return cur.lastrowid, call, deal
+    return insert_id(cur), call, deal
 
 
 def test_mark_sent_records_the_send_and_publishes_it_once(db):

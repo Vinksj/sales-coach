@@ -16,6 +16,7 @@ from salescoach.automation.calendar import CalEvent, CalendarUnavailable
 from salescoach.memory import gate
 from salescoach.orchestrator import bus, workflow
 from salescoach.store.stores import engine, now
+from salescoach.store.db import insert_id
 
 IST = common.IST
 ORIGIN = {"origin": "http://127.0.0.1:8140"}
@@ -119,7 +120,7 @@ def make_email(db, deal, *, to=(ARJUN,), cc=(), subject="The CFO meeting", body=
         (call_id, deal, kind, json.dumps(list(to)), json.dumps(list(cc)), subject, body, body, status, sent_at,
          thread_id, error, created_at, created_at))
     db.commit()
-    return cur.lastrowid
+    return insert_id(cur)
 
 
 def link_nudge(db, loop_id, email_id, deal=None, eval_date="2026-09-10"):

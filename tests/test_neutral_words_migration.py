@@ -86,7 +86,7 @@ def _indexes(conn, table):
 def test_migrates_a_v4_database_with_the_old_words(v4):
     path, before = v4
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 6
 
     # followup_decisions: every row kept, only the two words translated, everything else byte-equal
     rows = [tuple(r) for r in conn.execute("SELECT * FROM followup_decisions ORDER BY id")]
@@ -157,7 +157,7 @@ def test_running_again_is_a_no_op_and_a_fresh_database_has_the_same_shape(v4, tm
     assert conn.execute("SELECT COUNT(*) FROM email_replies").fetchone()[0] == len(REPLIES)
     assert not conn.in_transaction
     fresh = stores.sales(tmp_path / "fresh.db")
-    assert fresh.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert fresh.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     for table in ("followup_decisions", "email_replies"):
         assert _shape(conn, table) == _shape(fresh, table), table
         assert _indexes(conn, table) == _indexes(fresh, table), table
@@ -171,7 +171,7 @@ def test_a_v4_database_without_the_plugin_tables_gets_them_in_todays_shape(tmp_p
     path = _v4_db(tmp_path, with_plugin_tables=False)
     monkeypatch.setenv("SALESCOACH_NO_PLUGINS", "1")
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='followup_decisions'").fetchone()
     conn.close()
     monkeypatch.delenv("SALESCOACH_NO_PLUGINS")
@@ -185,7 +185,7 @@ def test_the_rebuild_fallback_for_an_old_sqlite_gives_the_same_result(v4, monkey
     path, before = v4
     monkeypatch.setattr(migrate, "RENAME_COLUMN_SINCE", (99, 0, 0))
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     assert [tuple(r) for r in conn.execute("SELECT * FROM email_replies ORDER BY id")] == before["email_replies"]
     assert "needs_user" in _cols(conn, "email_replies") and f"needs_{OLD}" not in _cols(conn, "email_replies")
     assert _indexes(conn, "email_replies") == {"idx_replies_deal", "idx_replies_thread"}
@@ -224,7 +224,7 @@ def test_a_failure_half_way_leaves_the_v4_database_untouched(v4, monkeypatch):
     monkeypatch.undo()
     conn.close()
     conn = stores.sales(path)                                                            # then it goes through
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     assert conn.execute("SELECT COUNT(*) FROM followup_decisions WHERE decision='ask_user'").fetchone()[0] == 2
 
 
@@ -246,7 +246,7 @@ def test_several_handles_opening_at_once_migrate_once(v4):
         try:
             barrier.wait(timeout=10)
             conn = stores.sales(path)
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
             assert conn.execute("SELECT COUNT(*) FROM followup_decisions").fetchone()[0] == len(DECISIONS)
             conn.close()
         except Exception as exc:                          # pragma: no cover - reported below
@@ -282,12 +282,13 @@ def test_a_replies_table_that_never_had_the_column_gets_it(tmp_path):
     migrate.run(conn)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(email_replies)")]
     assert "needs_user" in cols and "ignored_instructions" in cols
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     assert conn.execute("SELECT needs_user, ignored_instructions FROM email_replies").fetchone()[:] == (0, "[]")
     migrate.run(conn)                                   # idempotent
     assert [r[1] for r in conn.execute("PRAGMA table_info(email_replies)")].count("needs_user") == 1
 
 
+@pytest.mark.sqlite_only          # reconcile_columns is the SQLite way of adding plugin columns; Postgres migrates
 def test_plugin_tables_gain_columns_added_after_the_install_was_created(db):
     """CREATE IF NOT EXISTS never alters an existing table: the store reconciles columns on connect."""
     from salescoach.store import stores

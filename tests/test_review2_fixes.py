@@ -26,6 +26,7 @@ from salescoach.coach.detectors import FastDetectors
 from salescoach.coach.state import ConversationState, Seg
 from salescoach.coach.text import Vocab, content_words, norm
 from salescoach.execution import policy
+from salescoach.store.db import insert_id
 from salescoach.integrations import jarvis_bridge as bridge
 from salescoach.intel import strategist, tables
 from salescoach.live.vad import EnergyVAD
@@ -385,7 +386,7 @@ def test_recover_running_parks_an_exhausted_event_as_failed(db, monkeypatch):
 def test_embed_index_pending_commits_before_the_embedder_runs(db):
     from salescoach.intel import embed
     db.execute("INSERT INTO embeddings(entity_type,entity_id,text,text_sha,model,dim,vector,created_at) "
-               "VALUES ('claim','999','old','sha','fake-model',1,X'00000000','t')")   # a stale vector
+               "VALUES ('claim','999','old','sha','fake-model',1,?,'t')", (b"\x00\x00\x00\x00",))   # a stale vector
     db.commit()
     nid = repo.create_call(db, source="paste", wf_state="analyzed")
     db.execute("INSERT INTO claims(call_id,agent,subject,statement,kind,confidence,created_at) "
@@ -554,8 +555,8 @@ def test_email_prompt_excludes_summary_commitments_and_other_deals_edits(db, fak
     summary["commitments"] = [{"owner": "prospect", "owner_name": "Arjun Kumar",
                                "text": "Arjun will courier the signed NDA by Thursday", "evidence_turns": [6]}]
     fake_llm.responses["CallSummary"] = lambda s, p: summary
-    other = db.execute("INSERT INTO emails(call_id,deal_id,subject,body,status,created_at,updated_at) "
-                       "VALUES (NULL,NULL,'OM','x','sent',?,?)", (now(), now())).lastrowid
+    other = insert_id(db.execute("INSERT INTO emails(call_id,deal_id,subject,body,status,created_at,updated_at) "
+                       "VALUES (NULL,NULL,'OM','x','sent',?,?)", (now(), now())))
     db.execute("INSERT INTO email_edits(email_id,draft_body,final_body,created_at) VALUES (?,?,?,?)",
                (other, "draft for Eastline Logistics", "Hi Rajesh, Eastline Logistics rate is Rs 4.2 per km, confidential.", now()))
     db.commit()
@@ -631,13 +632,13 @@ def test_reply_alone_does_not_close_an_imported_jarvis_commitment(db, world_db, 
     prov = db.execute("SELECT confidence FROM field_provenance WHERE entity_id=? AND field='status'", (lid,)).fetchone()
     assert prov["confidence"] == "user_input"
 
-    email_id = db.execute("INSERT INTO emails(deal_id,kind,to_addrs,subject,body,status,sent_at,gmail_thread_id,created_at) "
+    email_id = insert_id(db.execute("INSERT INTO emails(deal_id,kind,to_addrs,subject,body,status,sent_at,gmail_thread_id,created_at) "
                           "VALUES (?,'nudge','[\"arjun@northwind.test\"]','CFO meeting','x','sent',?,'t-1',?)",
-                          (deal, now(), now())).lastrowid
+                          (deal, now(), now())))
     body = "Hi Maya,\n\nThe CFO meeting is done, we met her on Monday.\n\nThanks,\nArjun"
-    rid = db.execute("INSERT INTO email_replies(message_id,thread_id,email_id,deal_id,person_id,from_addr,from_name,"
+    rid = insert_id(db.execute("INSERT INTO email_replies(message_id,thread_id,email_id,deal_id,person_id,from_addr,from_name,"
                      "received_at,body,body_full,status,created_at) VALUES ('m1','t-1',?,?,?,?,?,?,?,?,'new',?)",
-                     (email_id, deal, arjun, "arjun@northwind.test", "Arjun Kumar", now(), body, body, now())).lastrowid
+                     (email_id, deal, arjun, "arjun@northwind.test", "Arjun Kumar", now(), body, body, now())))
     db.commit()
     fake_llm.responses["ReplyAnalysis"] = {
         "summary": "The CFO meeting happened.",
@@ -764,7 +765,7 @@ def test_scheduler_retries_within_fifteen_minutes_after_an_error(db, monkeypatch
 
     duty = scheduler.Duty("followups", run, lambda: scheduler.seconds_until("09:30"), first_delay_s=0)
     stop = Stop(2)
-    scheduler._loop(duty, db.execute("PRAGMA database_list").fetchone()[2], stop)
+    scheduler._loop(duty, stores.db_path(), stop)
     assert calls and 0 < stop.delays[1] <= 15 * 60          # not tomorrow 09:30 (~86 400 s)
     assert db.execute("SELECT value FROM state WHERE key='automation:followups:last_error'").fetchone()
 

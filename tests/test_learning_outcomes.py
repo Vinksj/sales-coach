@@ -11,6 +11,7 @@ from salescoach.intel import tables
 from salescoach.learning import outcomes
 from salescoach.memory import gate
 from salescoach.store.stores import now
+from salescoach.store.db import insert_id
 from test_learning_support import day, make_call, make_deal
 from test_p4_support import make_email, make_loop
 
@@ -174,8 +175,8 @@ def test_call_advanced_is_facts_only(db):
     db.execute("UPDATE artifacts SET json=? WHERE call_id=?", (json.dumps({"verdict": {"label": "advanced"}}), c3))
 
     # c4: an element goes unknown -> known in the strategist run OF c4, and a buyer loop reported done on c4, on time.
-    run = db.execute("INSERT INTO agent_runs(agent,call_id,status,started_at) VALUES ('deal_strategist',?,'ok',?)",
-                     (c4, now())).lastrowid
+    run = insert_id(db.execute("INSERT INTO agent_runs(agent,call_id,status,started_at) VALUES ('deal_strategist',?,'ok',?)",
+                     (c4, now())))
     mid = tables.meddpicc_id(deal, "economic_buyer")
     tables.upsert(db, "meddpicc", mid, {"deal_id": deal, "element": "economic_buyer"}, {"status": "unknown"}, "medium",
                   {"kind": "strategist", "ref": "run:0"})

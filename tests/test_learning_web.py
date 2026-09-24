@@ -47,9 +47,9 @@ def test_plugin_attaches_through_the_seam(db):
     plugin.register(workflow)
     for event_type in ("LEARNING_RECOMPUTE", "POST_CALL_ANALYSIS_COMPLETE", "EMAIL_SENT", "STAKEHOLDER_REPLY_RECEIVED"):
         assert any(h.__name__.startswith("learning_after_") for h in workflow.HANDLERS[event_type]), event_type
-    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"deal_stage_history", "derived_outcomes", "pattern_observations", "learned_patterns",
-            "learning_proposals"} <= tables
+    for table in ("deal_stage_history", "derived_outcomes", "pattern_observations", "learned_patterns",
+                  "learning_proposals"):
+        assert db.table_exists(table), table
     sub = argparse.ArgumentParser().add_subparsers()
     plugin.register_cli(sub)
     assert "learn" in sub.choices

@@ -35,7 +35,7 @@ def _analysed_call(db, day, tags):
 
 
 def _has_table(db, name):
-    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+    return db.table_exists(name)
 
 
 def _nudge(db, call, outcome, shown=1, mode="live"):

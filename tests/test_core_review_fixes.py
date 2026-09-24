@@ -16,6 +16,7 @@ from salescoach.store import stores
 from salescoach.store.stores import engine, now
 from salescoach.validators import evidence, voice_lint
 from salescoach.validators.gates import can_feed_external
+from salescoach.store.db import insert_id
 
 needs_jarvis = pytest.mark.skipif(not (bridge.JARVIS_DIR / "commitments.py").exists(), reason="jarvis not installed")
 
@@ -54,7 +55,7 @@ def _email(db, deal, call, status="drafted"):
                      (call, deal, json.dumps(["arjun@northwind.test"]), "[]", "Re: pilot", "Hi Arjun", "Hi Arjun",
                       status, now(), now()))
     db.commit()
-    return cur.lastrowid
+    return insert_id(cur)
 
 
 # ---- evidence -----------------------------------------------------------------

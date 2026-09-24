@@ -7,6 +7,7 @@ from salescoach.execution import policy
 from salescoach.orchestrator import bus
 from salescoach.schemas.events import Event
 from salescoach.store.stores import now
+from salescoach.store.db import insert_id
 
 
 def test_bus_dedupe_claim_fail_recover(db, monkeypatch):
@@ -52,7 +53,7 @@ def _email(db, body="Hi Arjun,\n\nGood speaking today.\n\nThanks", to=("arjun@no
         "VALUES (?,?,?,?,?,?,?,'drafted',?)",
         (call, deal, json.dumps(list(to)), "[]", "NWP: plant-wise savings", body, body, now()))
     db.commit()
-    return cur.lastrowid
+    return insert_id(cur)
 
 
 def test_send_exactly_once(db):

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from salescoach import repo
 from salescoach.orchestrator import context
 from salescoach.store.stores import now
+from salescoach.store.db import insert_id
 
 BASE = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
 
@@ -62,7 +63,7 @@ def live_nudge(db, call_id, trigger, outcome="ignored", dismissed=0, mode="live"
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (call_id, session or f"{mode}-1", mode, 120.0, trigger, "Ask who else is involved", "moment", "fast", shown,
          dismissed, outcome, now()))
-    return cur.lastrowid
+    return insert_id(cur)
 
 
 def sent_edit(db, deal_id, draft, final, sent_at=None, kind="followup", call_id=None) -> int:
@@ -71,8 +72,8 @@ def sent_edit(db, deal_id, draft, final, sent_at=None, kind="followup", call_id=
         "VALUES (?,?,?,?,?,?,?,'sent',?,?)",
         (call_id, deal_id, kind, json.dumps(["buyer@x.test"]), "Following up", final, draft, sent_at or day(1), day(0)))
     db.execute("INSERT INTO email_edits(email_id,draft_body,final_body,created_at) VALUES (?,?,?,?)",
-               (cur.lastrowid, draft, final, sent_at or day(1)))
-    return cur.lastrowid
+               (insert_id(cur), draft, final, sent_at or day(1)))
+    return insert_id(cur)
 
 
 def pattern(db, pid):

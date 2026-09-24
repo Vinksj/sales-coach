@@ -333,7 +333,7 @@ def test_rate_limited_strategist_defers_the_step_and_resumes(db, fake_llm, monke
     assert len(calls_of(fake_llm, "DealStrategy")) == 1                  # no retry burst, no fallback
 
     script_intel(fake_llm)                                               # the quota is back
-    db.execute("UPDATE wf_events SET updated_at='2000-01-01T00:00:00+00:00' WHERE status='pending'")
+    db.execute("UPDATE wf_events SET updated_at='2000-01-01T00:00:00+00:00', not_before=NULL WHERE status='pending'")
     db.commit()
     worker.drain(db)
     assert repo.get_call(db, call)["wf_state"] == "awaiting_review"

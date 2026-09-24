@@ -79,7 +79,7 @@ def _counts(conn):
 def test_migrates_a_v3_database_with_data(v3):
     path, before = v3
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 6
     assert _counts(conn) == {"calls": 6, "turns": 15, "loops": 5, "emails": 5, "call_participants": 5, "nodes": 13}
     # every old column of every row, unchanged and in the same order; history appended
     after = [tuple(r) for r in conn.execute("SELECT * FROM calls ORDER BY node_id")]
@@ -143,7 +143,7 @@ def test_running_again_is_a_no_op_and_a_fresh_database_matches(v3, tmp_path):
     migrate.run(conn)
     assert _counts(conn)["calls"] == 6
     fresh = stores.sales(tmp_path / "fresh.db")
-    assert fresh.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert fresh.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
 
     def shape(c):
         return [(r[1], r[2], r[3], r[4]) for r in c.execute("PRAGMA table_info(calls)")]
