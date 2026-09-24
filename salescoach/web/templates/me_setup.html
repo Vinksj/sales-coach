@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "setup_macros.html" as f %}
+{% block title %}Your profile{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">You</div>
+  <h1>{% if configured %}Your profile{% else %}Tell the coach who you are{% endif %}</h1>
+  <div class="meta">The call analysis, the follow-up emails and the live nudges all read this. The company's own fields (what {{ brand() }} sells, to whom) are set by an admin under Settings.</div>
+</div>
+{% if errors %}<div class="flash flash-err" role="alert">Nothing was saved yet. {{ errors|length }} {{ 'field needs' if errors|length == 1 else 'fields need' }} a second look; each one is marked below.</div>{% endif %}
+
+<form method="post" action="/me/setup" class="stack" novalidate>
+  <section class="card">
+    <div class="eyebrow">You</div>
+    <div class="form-grid-2">
+      {{ f.text(errors, 'name', 'Your name', p.name, required=True, autocomplete='name', placeholder='Priya Nair', hint='As it should appear on the emails you send.') }}
+      {{ f.text(errors, 'role', 'Your role', p.role, placeholder='Account executive') }}
+    </div>
+    {{ f.text(errors, 'emails', 'Your email addresses', p.emails|join(', '), required=True, placeholder='priya@acmecloud.com, priya.nair@gmail.com',
+              hint='Every address you send from or get invited on, separated by commas. Mail from these is never read as the buyer’s.') }}
+    {{ f.text(errors, 'aliases', 'Other names a transcript may use for you', p.aliases|join(', '), placeholder='Optional: a nickname, a short name',
+              hint='Recorders label speakers by name. This is how the coach knows which speaker is you.') }}
+    {{ f.area(errors, 'call_context', 'How you sell', p.call_context, rows=3, placeholder='Optional. Deals take two to three months and always involve finance. My manager joins the pricing call.',
+              hint='Anything else the coach should know: deal size, sales cycle, who joins your side of the call.') }}
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">Calls and email</div>
+    <div class="form-grid-2">
+      {{ f.text(errors, 'languages', 'Languages on your calls', p.languages|join(', '), placeholder='en',
+                hint='The main one first: en, hi, es, or the full names. The coach reads mixed-language calls more carefully.') }}
+      {{ f.text(errors, 'timezone', 'Timezone', p.timezone, placeholder=default_timezone, list='tz-list',
+                hint='Start typing a city: Kolkata, New_York, London. Meeting times in emails use it.') }}
+    </div>
+    <datalist id="tz-list">{% for z in timezones %}<option value="{{ z }}"></option>{% endfor %}</datalist>
+    {{ f.area(errors, 'signature', 'Email sign-off', p.signature, rows=5, placeholder='Best,\nPriya\n\nPriya Nair\nAccount executive\nAcme Cloud',
+              hint='Every follow-up the coach drafts ends with exactly this.') }}
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">Your writing style</div>
+    <p class="meta">The rules the email drafter follows so a follow-up sounds like you. Clear the box to go back to the guide the coach ships with.</p>
+    {{ f.area(errors, 'style', 'Style guide', style, rows=14, cls='mono-area',
+              hint='Plain text. Short rules work best: sentence length, words you never use, how you open and close.') }}
+  </section>
+
+  <div class="actions"><button type="submit" class="btn primary">Save</button></div>
+</form>
+{% endblock %}

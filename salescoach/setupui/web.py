@@ -26,10 +26,10 @@ import re
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import config, providers, repo, seller, sources
+from .. import config, providers, repo, seller, sources, users
 from ..intel import methodology
 from ..providers.base import ProviderError
-from ..store.stores import now, set_state
+from ..store.stores import now, set_state, set_user_state
 from . import forms, state, words
 
 router = APIRouter()
@@ -132,6 +132,7 @@ def you_save(request: Request, name: str = Form(""), emails: str = Form(""), com
             (config.user_dir() / "style.md").unlink(missing_ok=True)
     webapp = _web()
     with webapp._db(request) as conn:
+        users.sync_local(conn)
         repo.sync_me(conn)
         conn.commit()
     return _go("you", go, msg="Profile saved.")
@@ -600,7 +601,7 @@ def finish(request: Request):
 def dismiss_card(request: Request):
     webapp = _web()
     with webapp._db(request) as conn:
-        set_state(conn, state.DISMISSED_KEY, state.card_signature(state.provider_state(conn)))
+        set_user_state(conn, state.DISMISSED_KEY, state.card_signature(state.provider_state(conn)))
         conn.commit()
     return webapp._redirect("/")
 

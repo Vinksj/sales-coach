@@ -95,7 +95,7 @@
 
     <section class="card">
       <div class="eyebrow">On the call</div>
-      <ul class="plain">{% for p in participants %}<li>{{ p.name }}{% if p.is_me %} (you){% endif %}{% if p.title %} <span class="meta">{{ p.title }}</span>{% endif %}</li>{% else %}<li class="muted">Nobody recorded.</li>{% endfor %}</ul>
+      <ul class="plain">{% for p in participants %}<li>{{ p.name }}{% if p.user_id and p.user_id == me_user_id() %} (you){% elif p.is_me %} (colleague){% endif %}{% if p.title %} <span class="meta">{{ p.title }}</span>{% endif %}</li>{% else %}<li class="muted">Nobody recorded.</li>{% endfor %}</ul>
     </section>
   </aside>
 </div>

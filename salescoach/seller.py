@@ -1,9 +1,16 @@
 """The seller: who this install coaches. One source of truth for every name, address,
 domain, language and timezone the code or a prompt needs.
 
-The profile is config/seller.yaml (tracked, empty) with the user's own seller.yaml over it
-(config.user_dir()). Nothing in tracked code or prompts names a person or a company: prompts
-carry {{variables}} and render() fills them from the profile.
+The profile is two halves merged (identity = org profile + acting user; plan, Approach 3):
+  ORG_FIELDS   what the company sells and to whom: config/seller.yaml (tracked, empty) with the
+               install's own seller.yaml over it (config.user_dir()). One per install.
+  USER_FIELDS  who is selling: name, addresses, aliases, signature, timezone, languages, role
+               title, call context, style guide. For the local user ("local", the only user of a
+               SQLite install) they come from the same seller.yaml and style.md, exactly as before;
+               for any other user (cloud) from that user's `users` row, carried on the Actor that
+               identity.session() set. profile() with no actor in cloud mode raises identity.NoActor.
+Nothing in tracked code or prompts names a person or a company: prompts carry {{variables}} and
+render() fills them from the merged profile.
 
 render() substitutes {{name}} ONLY. Prompts contain literal single-brace markers ({garbled},
 {bleed}, {asr:partial}) that must reach the model untouched, so this is never str.format. An
@@ -14,9 +21,12 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import config
+from . import config, identity
 
 DEFAULT_TIMEZONE = "Asia/Kolkata"
+ORG_FIELDS = ("company", "website", "offering", "icp", "buyer_titles", "vocabulary", "own_domains")
+# `role` is the seller.yaml key (a job title); the users table calls the same thing role_title.
+USER_FIELDS = ("name", "emails", "role", "aliases", "languages", "timezone", "signature", "call_context")
 FIELDS = ("name", "emails", "company", "role", "website", "offering", "icp", "buyer_titles", "vocabulary",
           "own_domains", "aliases", "languages", "timezone", "signature", "call_context")
 LIST_FIELDS = ("emails", "own_domains", "aliases", "languages")
@@ -52,6 +62,8 @@ class NotConfigured(RuntimeError):
 
 NOT_CONFIGURED = ("The seller profile is not set up yet. Open /setup in the coach (or write seller.yaml in your "
                   "settings folder) before starting or importing a call.")
+USER_NOT_CONFIGURED = ("Your profile is not set up yet. Open /me/setup in the coach (your name and email "
+                       "address) before starting or importing a call.")
 
 
 class UnknownVariable(KeyError):
@@ -75,27 +87,83 @@ def _list(value) -> list[str]:
     return [s for s in (_clean(v) for v in value) if s]
 
 
-def profile() -> dict:
-    """Every field, always present, lists as lists, text stripped. Empty means not given."""
-    raw = config.load("seller") or {}
+def _fields(raw: dict, keys) -> dict:
     out = {}
-    for key in FIELDS:
+    for key in keys:
         out[key] = _list(raw.get(key)) if key in LIST_FIELDS else _clean(raw.get(key))
-    out["emails"] = list(dict.fromkeys(e.lower() for e in out["emails"]))
-    out["own_domains"] = list(dict.fromkeys(d.lower().lstrip("@") for d in out["own_domains"]))
-    out["signature"] = str(raw.get("signature") or "").strip("\n")
+    if "emails" in out:
+        out["emails"] = list(dict.fromkeys(e.lower() for e in out["emails"]))
+    if "own_domains" in out:
+        out["own_domains"] = list(dict.fromkeys(d.lower().lstrip("@") for d in out["own_domains"]))
+    if "signature" in out:
+        out["signature"] = str(raw.get("signature") or "").strip("\n")
     return out
+
+
+def org_profile() -> dict:
+    """The ORG half, from seller.yaml: the company, what it sells, to whom, its domains."""
+    return _fields(config.load("seller") or {}, ORG_FIELDS)
+
+
+def user_profile_from_yaml() -> dict:
+    """The USER half as seller.yaml + style.md hold it: the local user's profile, and what
+    users.ensure_local copies into the local user's row."""
+    out = _fields(config.load("seller") or {}, USER_FIELDS)
+    out["role_title"] = out["role"]
+    out["style"] = config.text("style.md")
+    return out
+
+
+def user_profile(actor=None) -> dict:
+    """The USER half of the acting user: seller.yaml / style.md for the local user, the users row
+    (as identity.session loaded it) for anyone else. Raises NoActor in cloud mode with no actor."""
+    actor = actor or identity.current_actor()
+    if actor.profile is None:
+        return user_profile_from_yaml()
+    raw = dict(actor.profile)
+    raw["role"] = raw.get("role_title") or ""
+    out = _fields(raw, USER_FIELDS)
+    out["role_title"] = out["role"]
+    out["style"] = str(raw.get("style") or "") or config.text("style.md")
+    return out
+
+
+def profile() -> dict:
+    """Every field, always present, lists as lists, text stripped. Empty means not given. The org's
+    fields and the acting user's, merged (plus role_title and style, the user's style guide)."""
+    return {**org_profile(), **user_profile()}
+
+
+def style_guide() -> str:
+    """The acting user's email style guide (style.md for the local user), for the drafters."""
+    return user_profile()["style"]
+
+
+def org_configured() -> bool:
+    """The org half is enough to coach with: the company and what it sells."""
+    p = org_profile()
+    return bool(p["company"] and p["offering"])
+
+
+def user_configured(actor=None) -> bool:
+    """The acting user is enough to coach: a name and one address. False (never NoActor) with no actor."""
+    actor = actor or identity.current_actor(required=False)
+    if actor is None:
+        return False
+    p = user_profile(actor)
+    return bool(p["name"] and p["emails"])
 
 
 def is_configured() -> bool:
     """Enough to coach with: who they are, one address, the company, what it sells."""
-    p = profile()
-    return bool(p["name"] and p["emails"] and p["company"] and p["offering"])
+    return org_configured() and user_configured()
 
 
 def require_configured() -> None:
-    if not is_configured():
+    if not org_configured():
         raise NotConfigured(NOT_CONFIGURED)
+    if not user_configured():
+        raise NotConfigured(USER_NOT_CONFIGURED)
 
 
 def name() -> str:

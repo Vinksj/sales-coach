@@ -1,7 +1,7 @@
 import json
 import os
 
-from .. import config, seller
+from .. import seller
 from ..orchestrator import context
 from ..schemas.email import EmailDraft
 from .base import Agent
@@ -12,7 +12,7 @@ class EmailAgent(Agent):
     schema = EmailDraft
 
     def system_prompt(self, ctx):
-        return super().system_prompt(ctx) + "\n\n## Style guide\n" + seller.render(config.text("style.md"))
+        return super().system_prompt(ctx) + "\n\n## Style guide\n" + seller.render(seller.style_guide())
 
     def input_refs(self, ctx):
         # Which learned rules this draft saw (phase F2), so their effect can be measured later.

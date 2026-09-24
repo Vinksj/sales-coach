@@ -60,7 +60,7 @@
     <div class="card">
       <ul class="plain people">
         {% for p in stakeholders %}
-        <li><span class="strong">{{ p.name }}</span>{% if p.is_me %} <span class="meta">(you)</span>{% endif %}
+        <li><span class="strong">{{ p.name }}</span>{% if p.user_id and p.user_id == me_user_id() %} <span class="meta">(you)</span>{% elif p.is_me %} <span class="meta">(colleague)</span>{% endif %}
           <div class="meta">{{ p.title or '' }}{% if p.role_in_deal %}{% if p.title %} · {% endif %}{{ p.role_in_deal }}{% endif %}{% if p.email %} · {{ p.email }}{% endif %}</div></li>
         {% else %}<li class="muted">Nobody yet.</li>{% endfor %}
       </ul>

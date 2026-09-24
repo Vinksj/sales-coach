@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .. import config, hosted, providers, seller, sources
 from ..intel import methodology
-from ..store.stores import get_state
+from ..store.stores import get_state, get_user_state
 from . import words
 
 STEPS = (("you", "You and your org"), ("method", "How you sell"), ("model", "Model"),
@@ -317,7 +317,7 @@ def today_card(conn) -> dict | None:
     p = provider_state(conn)
     if p["usable"] and p["tested_ok"]:
         return None
-    if get_state(conn, DISMISSED_KEY) == card_signature(p):
+    if get_user_state(conn, DISMISSED_KEY) == card_signature(p):
         return None
     return {"provider": p["label"], "signature": card_signature(p), "usable": p["usable"], "why": p["why"],
             "text": (f"{p['label']} has not passed a connection test yet. One click checks that the coach can "

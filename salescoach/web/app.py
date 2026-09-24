@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .. import config, hosted, repo, seller
+from .. import config, hosted, identity, repo, seller
 from ..execution import policy
 from ..memory import patterns
 from ..orchestrator import bus, context, review, workflow
@@ -200,7 +200,8 @@ templates.env.filters.update(dt=fmt_dt, day=fmt_day, mmss=mmss, fromjson=fromjso
                              who=seller.display)
 # Called from templates on every render, so a saved profile shows at once: {{ brand() }}, {{ tz_label() }}.
 templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, languages=seller.languages,
-                             settings_problems=config.user_problems, auth_on=hosted.auth_enabled, hosted=hosted.is_hosted)
+                             settings_problems=config.user_problems, auth_on=hosted.auth_enabled, hosted=hosted.is_hosted,
+                             me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None))
 
 
 # ---- same-origin guard --------------------------------------------------------
@@ -312,9 +313,11 @@ _NOT_A_PAGE = re.compile(r"(\.json|/events|/stream|/nudges|/clip)$")
 
 
 class FirstRunGate:
-    """Until the seller profile exists, every page leads to /setup. Streams, JSON and static files
-    pass (they are fetched BY pages), and so does every POST: the routes that would create a call
-    refuse on their own, with a message, instead of bouncing a form post."""
+    """Until the profile exists, every page leads to the setup that is missing: /setup while the ORG
+    half (the company, what it sells) is not there, /me/setup while the acting USER's half (a name,
+    an address) is not. Streams, JSON and static files pass (they are fetched BY pages), and so does
+    every POST: the routes that would create a call refuse on their own, with a message, instead of
+    bouncing a form post."""
 
     def __init__(self, app):
         self.app = app
@@ -322,12 +325,61 @@ class FirstRunGate:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"].upper() in ("GET", "HEAD"):
             path = scope.get("path") or "/"
-            exempt = (path in ("/setup", "/health", "/login") or path.startswith(("/setup/", "/static/"))
+            exempt = (path in ("/setup", "/health", "/login", "/me/setup") or path.startswith(("/setup/", "/static/"))
                       or _NOT_A_PAGE.search(path))
-            if not exempt and not seller.is_configured():
-                await RedirectResponse("/setup", status_code=303)(scope, receive, send)
-                return
+            if not exempt:
+                if not seller.org_configured():
+                    await RedirectResponse("/setup", status_code=303)(scope, receive, send)
+                    return
+                if not seller.user_configured():
+                    await RedirectResponse("/me/setup", status_code=303)(scope, receive, send)
+                    return
         await self.app(scope, receive, send)
+
+
+class ActorGate:
+    """Binds the acting user for the request (identity.activate), so every route handler, Jinja
+    filter and store connection opened inside runs as that user. Local mode: the local user, always.
+    Cloud mode: the user named by the login cookie (hosted.verify_session), looked up in `users`;
+    a request that resolves to no active user gets 401 (open paths pass with no actor). Phase 3
+    replaces the lookup with Google sign-in and server-side sessions; the binding stays."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        actor = identity.LOCAL_ACTOR if not identity.cloud() else self._cloud_actor(scope)
+        if actor is None and identity.cloud():
+            from . import auth
+            if not auth.is_open(scope["method"].upper(), scope.get("path") or "/"):
+                await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
+                return
+        with identity.activate(actor):
+            await self.app(scope, receive, send)
+
+    @staticmethod
+    def _cloud_actor(scope):
+        from . import auth
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        session = hosted.verify_session(auth._cookie(headers))
+        if not session:
+            return None
+        from .. import users
+        try:
+            with identity.activate(None):
+                conn = stores.sales(scope["app"].state.db_path)
+            try:
+                row = users.get(conn, session["user"]) or users.by_email(conn, session["user"])
+            finally:
+                conn.close()
+        except Exception:
+            return None
+        if not row or row["status"] != "active":
+            return None
+        return identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row))
 
 
 # ---- plumbing -----------------------------------------------------------------
@@ -342,6 +394,8 @@ def _db(request: Request):
 
 
 def _default_live_factory():
+    if identity.cloud():                     # no microphone, no MLX: live capture is a local-install feature
+        return None
     try:
         from ..live.manager import get_manager
     except Exception:
@@ -522,7 +576,7 @@ def _is_processing(call) -> bool:
 def _publish_process(conn, call_id, step, force=False) -> bool:
     # The step is in the key so a double click dedupes but Redraft then Retry in the same second does not.
     return bus.publish(conn, Event(type="PROCESS_CALL", entity_id=call_id,
-                                   dedupe_key=f"PROCESS:{call_id}:{step}:{stores.now()}",
+                                   dedupe_key=f"PROCESS:{identity.actor_of(conn).user_id}:{call_id}:{step}:{stores.now()}",
                                    payload={"from": step, "force": bool(force)}))
 
 
@@ -625,21 +679,18 @@ def _background_duties(app, stop):
 
     def jarvis_loop():
         from ..integrations import jarvis_bridge
-        from ..store import stores
         delay = 30
         while not stop.wait(delay):
             try:
-                conn = stores.sales(app.state.db_path)
-                try:
+                with identity.session(identity.LOCAL_USER, mode=identity.SERVICE, db_path=app.state.db_path) as conn:
                     jarvis_bridge.sync(conn)
                     conn.commit()
-                finally:
-                    conn.close()
             except Exception:
                 log.exception("jarvis sync failed")
             delay = JARVIS_SYNC_S
 
-    threading.Thread(target=jarvis_loop, name="salescoach-jarvis-sync", daemon=True).start()
+    if not identity.cloud():                 # the Jarvis bridge is the local user's; nothing to mirror in cloud
+        threading.Thread(target=jarvis_loop, name="salescoach-jarvis-sync", daemon=True).start()
     from .. import plugins
     plugins.start_background(app.state.db_path, stop)
 
@@ -698,10 +749,13 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.login_limiter = hosted.LoginLimiter()
     from . import auth
     app.add_middleware(FirstRunGate)
+    app.add_middleware(ActorGate)                   # outside the gate: "is this USER set up" needs to know who
     app.add_middleware(auth.AuthGate)               # inert without SALESCOACH_PASSWORD; else a session before any page
     app.add_middleware(SameOriginGuard)             # added last = outermost: the gate never sees a foreign request
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+    from . import me
     app.include_router(auth.router)
+    app.include_router(me.router)
     app.include_router(router)
     from . import setup as setup_pages
     app.include_router(setup_pages.router)
@@ -1593,8 +1647,9 @@ def coach_page(request: Request):
     with _db(request) as conn:
         priority = patterns.active_priority(conn)
         rows = conn.execute(
-            "SELECT * FROM seller_patterns WHERE status!='retired' ORDER BY status='active' DESC, frequency DESC, "
-            "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, calls_seen DESC").fetchall()
+            "SELECT * FROM seller_patterns WHERE owner_id=? AND status!='retired' ORDER BY status='active' DESC, frequency DESC, "
+            "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, calls_seen DESC",
+            (identity.actor_of(conn).user_id,)).fetchall()
         titles = {r["node_id"]: r for r in conn.execute("SELECT node_id, title, started_at FROM calls")}
         items = []
         for r in rows:

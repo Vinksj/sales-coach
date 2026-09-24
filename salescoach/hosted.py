@@ -59,7 +59,17 @@ def proxy_mode() -> bool:
     return public_url() is not None
 
 
-is_hosted = proxy_mode        # the wording switch in Setup: "not available in a hosted install"
+def is_cloud() -> bool:
+    """SALESCOACH_MODE=cloud: multi-user on Postgres, no machine-local feature (identity.cloud)."""
+    from . import identity
+    return identity.cloud()
+
+
+def is_hosted() -> bool:
+    """The wording switch in Setup ("not available in a hosted install"): behind a platform proxy, or
+    a cloud install, where the machine-local features (live capture, the Claude CLI connectors, the
+    Jarvis bridge) cannot exist."""
+    return proxy_mode() or is_cloud()
 
 
 def public_origin() -> Optional[str]:

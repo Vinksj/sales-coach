@@ -18,6 +18,7 @@
 """
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -48,7 +49,16 @@ def _loopback(host: str) -> bool:
 
 
 def cmd_serve(args):
-    from . import hosted
+    from . import hosted, identity
+    raw_mode = (os.environ.get(identity.MODE_ENV) or "local").strip().lower()
+    if raw_mode not in identity.MODES:
+        print(f"{identity.MODE_ENV}={raw_mode!r} is not one of {', '.join(identity.MODES)}", file=sys.stderr)
+        return 2
+    if identity.cloud():
+        from .store import db, stores
+        if not db.is_postgres_url(str(stores.db_path())):
+            print(stores.CLOUD_NEEDS_POSTGRES, file=sys.stderr)
+            return 2
     if not _loopback(args.host) and not hosted.auth_enabled() and not args.allow_unauthenticated:
         print(UNAUTHENTICATED_BIND.format(host=args.host), file=sys.stderr)
         return 2

@@ -622,5 +622,5 @@ def test_today_card_shows_until_a_test_passes_or_it_is_dismissed(client, db, pro
     monkeypatch.setattr(providers, "claude_cli_available", lambda: True)
     post(client, "/setup/model/test", {"provider": "claude_code", "heavy": "opus", "light": "sonnet"})
     assert state.today_card(db) is None and 'id="finish-setup"' not in client.get("/").text
-    assert {r["key"] for r in db.execute("SELECT key FROM state WHERE key LIKE 'setup:%'")} == \
-        {"setup:provider_test", "setup:card_dismissed"}
+    assert {r["key"] for r in db.execute("SELECT key FROM state WHERE key LIKE 'setup:%'")} == {"setup:provider_test"}
+    assert {r["key"] for r in db.execute("SELECT key FROM user_state WHERE key LIKE 'setup:%'")} == {"setup:card_dismissed"}

@@ -8,7 +8,7 @@ import json
 import uuid
 from typing import Optional
 
-from . import seller
+from . import identity, seller
 from .store.stores import engine, now
 
 ACTOR = "salescoach"
@@ -52,12 +52,17 @@ def create_deal(conn, name, account_id=None, stage=None, actor=ACTOR, source_id=
 
 
 def create_person(conn, name, email=None, account_id=None, title=None, is_me=False,
-                  contact_file=None, actor=ACTOR, source_id=None) -> str:
+                  contact_file=None, actor=ACTOR, source_id=None, user_id=None) -> str:
+    """A person. `user_id` makes it a user's own row (the acting user's when is_me=True and no id is
+    given); is_me is derived from it: 1 iff the person IS some user, never set on its own."""
     nid = new_id("person")
+    if is_me and user_id is None:
+        user_id = identity.actor_of(conn).user_id
     engine.add_node(conn, actor, id=nid, type="person", title=name, status="full", source_id=source_id)
     conn.execute(
-        "INSERT INTO people(node_id,name,email,account_id,title,is_me,contact_file) VALUES (?,?,?,?,?,?,?)",
-        (nid, name, (email or None) and email.lower().strip(), account_id, title, int(is_me), contact_file))
+        "INSERT INTO people(node_id,name,email,account_id,title,is_me,contact_file,user_id) VALUES (?,?,?,?,?,?,?,?)",
+        (nid, name, (email or None) and email.lower().strip(), account_id, title, int(user_id is not None),
+         contact_file, user_id))
     return nid
 
 
@@ -68,9 +73,15 @@ def find_person_by_email(conn, email: str) -> Optional[str]:
     return row["node_id"] if row else None
 
 
+def me_row(conn):
+    """The acting user's own people row (people.user_id = the actor), or None."""
+    return conn.execute("SELECT * FROM people WHERE user_id=?", (identity.actor_of(conn).user_id,)).fetchone()
+
+
 def ensure_me(conn, name=None, email=None) -> str:
-    """The seller's own people row, created on first use from the seller profile."""
-    row = conn.execute("SELECT node_id FROM people WHERE is_me=1").fetchone()
+    """The ACTING user's own people row, created on first use from their profile. Keyed on
+    people.user_id, never on "the one is_me row": in a team every user has one."""
+    row = me_row(conn)
     if row:
         return row["node_id"]
     name = name or seller.name() or "Me"
@@ -81,8 +92,8 @@ def ensure_me(conn, name=None, email=None) -> str:
 
 
 def sync_me(conn) -> Optional[str]:
-    """After a profile edit: the existing is_me row follows the profile's name and first address."""
-    row = conn.execute("SELECT node_id, name, email FROM people WHERE is_me=1").fetchone()
+    """After a profile edit: the acting user's person row follows the profile's name and first address."""
+    row = me_row(conn)
     if row is None:
         return None
     name, email = seller.name() or row["name"], seller.primary_email() or row["email"]
@@ -129,6 +140,20 @@ def create_call(conn, *, source, title=None, deal_id=None, lang_mode="auto", aud
     engine.set_source(conn, actor, nid, uri=source_ref or f"{source}:{nid}", capture=source,
                       raw_path=audio_dir)
     return nid
+
+
+def owner_of(conn, node_id: str) -> Optional[str]:
+    """Who owns a call, deal or loop (nodes.owner_id); None for an unknown id or a directory node."""
+    row = conn.execute("SELECT owner_id FROM nodes WHERE id=?", (node_id,)).fetchone()
+    return row["owner_id"] if row else None
+
+
+def user_source_ref(prefix: str, digest: str, conn=None) -> str:
+    """A source_ref for something a USER brought in (a paste, an upload): '<prefix>:<owner>:<digest>',
+    so two users importing the same text get two calls. Recorder-native refs (fireflies:<id>) are
+    unchanged until Phase 4 makes the connections per user."""
+    owner = identity.actor_of(conn).user_id if conn is not None else identity.current_user_id()
+    return f"{prefix}:{owner}:{digest}"
 
 
 def get_call(conn, call_id):
