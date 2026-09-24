@@ -39,3 +39,26 @@
   {% if next_href %}<a class="btn btn-primary" href="{{ next_href }}">{{ label }}</a>{% endif %}
 </div>
 {%- endmacro %}
+
+{% macro usage_panel(usage, mine_only=False) %}
+<section class="card usage-panel" aria-labelledby="usage-title">
+  <div class="eyebrow">Usage</div>
+  <h2 id="usage-title">Model spend today</h2>
+  <p class="meta">Since midnight {{ usage.tz }}, from the cost each provider reported (agent_runs). A model without a price in models.yaml counts as nothing{% if usage.unpriced %}: {{ usage.unpriced }} such run{{ '' if usage.unpriced == 1 else 's' }} today{% endif %}.</p>
+  <dl class="usage-numbers">
+    {% if not mine_only %}
+    <div><dt>Everyone</dt><dd>${{ '%.2f' % usage.org }}{% if usage.caps.org %} <span class="meta">of ${{ '%.2f' % usage.caps.org }} cap</span>{% endif %}</dd></div>
+    {% endif %}
+    <div><dt>{% if mine_only %}You{% else %}You ({{ usage.mine.user_id }}){% endif %}</dt><dd>${{ '%.2f' % usage.mine.spent }}{% if usage.caps.user %} <span class="meta">of ${{ '%.2f' % usage.caps.user }} cap</span>{% endif %}{% if usage.mine.deferred %} <span class="pill pill-alert"><i></i>{{ usage.mine.deferred }} deferred</span>{% endif %}</dd></div>
+  </dl>
+  {% if usage.users and not mine_only %}
+  <table class="usage-table">
+    <thead><tr><th>User</th><th>Runs</th><th>Spent</th><th>Deferred</th></tr></thead>
+    <tbody>
+    {% for u in usage.users %}<tr><td>{{ u.name }}</td><td>{{ u.runs }}</td><td>${{ '%.2f' % u.spent }}</td><td>{{ u.deferred or '' }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if not usage.caps.user and not usage.caps.org %}<p class="meta">No daily cap is set (LLM_BUDGET_USER_USD_DAY, LLM_BUDGET_ORG_USD_DAY, or budget.yaml).</p>{% endif %}
+</section>
+{% endmacro %}

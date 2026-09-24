@@ -10,14 +10,18 @@ run() is the only place an agent touches a model:
   * a provider ERROR (not an invalid answer) falls back once to the fallback
     provider from models.yaml, if it is reachable;
   * every attempt is recorded in agent_runs and committed immediately, so the
-    "Why?" view can show failed runs too.
+    "Why?" view can show failed runs too;
+  * before the provider is called, the daily budgets (salescoach/budget.py) are
+    checked: past a cap the run is recorded as "budget_deferred" and AgentFailed
+    is raised rate-limited, so the worker parks the event without spending an
+    attempt and comes back later.
 """
 import hashlib
 import json
 import time
 from pathlib import Path
 
-from .. import providers, seller
+from .. import budget, providers, seller
 from ..providers.base import ProviderError, RateLimited, SchemaViolation
 from ..store.stores import now
 from ..store import db
@@ -54,6 +58,12 @@ class Agent:
         prompt_version = hashlib.sha256(system.encode()).hexdigest()[:12]
         input_sha = hashlib.sha256((system + "\n" + prompt).encode()).hexdigest()
         provider, model, effort = self.route()
+        try:
+            budget.check(conn)
+        except budget.BudgetExceeded as exc:
+            run_id = self._start_run(conn, ctx, prompt_version, provider, model, input_sha)
+            self._finish_run(conn, run_id, "error", error=f"budget_deferred: {exc}"[:4000], duration_ms=0)
+            raise AgentFailed(f"{self.name} deferred: {exc}", rate_limited=True) from exc
         attempts = [(provider, model, effort)]
         last_error = None
         retry_prompt = prompt

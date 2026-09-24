@@ -10,7 +10,7 @@ The FirstRunGate sends a user here when the org is set up but they are not (web/
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import config, identity, repo, seller, users
+from .. import budget, config, identity, repo, seller, users
 from ..setupui import forms
 
 router = APIRouter()
@@ -27,7 +27,7 @@ def _page(request: Request, values: dict, style: str, errors=None, status: int =
     with webapp._db(request) as conn:
         response = webapp.render(request, conn, "me_setup.html", p=values, style=style, errors=errors or {},
                                  timezones=forms.timezones(), default_timezone=seller.DEFAULT_TIMEZONE,
-                                 configured=seller.user_configured())
+                                 configured=seller.user_configured(), usage=budget.usage_today(conn, mine_only=True))
     response.status_code = status
     response.headers["Cache-Control"] = "no-store"
     return response

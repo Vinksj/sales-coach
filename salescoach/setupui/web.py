@@ -296,7 +296,9 @@ def _model_context(conn, selected_key, models=None, models_error=None, test=None
     if shown_test is None:
         last = state.last_test(conn)
         shown_test = last if last and last.get("provider") == selected["key"] else None
+    from .. import budget
     return {"catalog": catalog, "selected": selected, "copy": PROVIDER_COPY, "tier_help": TIER_HELP,
+            "usage": budget.usage_today(conn),
             "models": options, "models_loaded": models is not None, "models_error": models_error,
             "tiers": tiers, "base_url": form.get("base_url") if form.get("base_url") is not None else selected["base_url"],
             "test": shown_test, "key_error": key_error, "provider_state": state.provider_state(conn)}
