@@ -19,6 +19,9 @@ class GranolaAdapter(Adapter):
     default_poll_minutes = 60
 
     def configured(self) -> bool:
+        from ... import identity
+        if identity.cloud():                       # the claude CLI connector is one machine's; not in cloud
+            return False
         return providers.claude_cli_available()
 
     def list_recent(self, since=None) -> list:
