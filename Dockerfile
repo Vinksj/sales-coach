@@ -1,4 +1,6 @@
-# Sales Coach, hosted: one container, one seller, one volume at /data. See docs/deploy.md.
+# Sales Coach, hosted: one container, one seller, one volume at /data (docs/deploy.md); or, with
+# SALESCOACH_MODE=cloud, DATABASE_URL and SALESCOACH_ROLE, one of the three processes of a team install
+# built from this same image (docs/deploy-cloud.md).
 #
 #   docker build -t salescoach .
 #   docker run --rm -p 127.0.0.1:8140:8140 -v salescoach-data:/data \
@@ -40,9 +42,11 @@ RUN pip install -e /app \
 EXPOSE 8140
 VOLUME ["/data"]
 
-# python:slim has no curl; urllib is enough. The check follows PORT so a platform that sets it still works.
+# `salescoach health` follows SALESCOACH_ROLE: HTTP /health (on PORT) for web/all, this host's heartbeat
+# row in the database for a worker or a scheduler, which serve no HTTP.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8140'), timeout=4).status == 200 else 1)"
+    CMD salescoach health
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["sh", "-c", "exec salescoach serve --host 0.0.0.0 --port ${PORT:-8140}"]
+# One image, three roles: SALESCOACH_ROLE=web|worker|scheduler (default all = everything in this process).
+CMD ["sh", "-c", "exec salescoach serve --role ${SALESCOACH_ROLE:-all} --host 0.0.0.0 --port ${PORT:-8140}"]

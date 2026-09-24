@@ -1,30 +1,86 @@
-# Render blueprint for a hosted Sales Coach (an alternative to Fly.io; see docs/deploy.md).
-# One web service built from the Dockerfile, one persistent disk at /data. A disk needs a paid
-# instance type and pins the service to one instance, which is what the app wants anyway.
-# Render sets PORT itself; the container's CMD listens on it. Set the secrets in the dashboard
-# (sync: false below means "ask me at deploy time, never store the value in this file").
+# Render blueprint for a hosted Sales Coach. Two shapes, one image (the Dockerfile):
+#
+#   * A team install (SALESCOACH_MODE=cloud): three services from the same image, told apart by
+#     SALESCOACH_ROLE, and one managed Postgres on the private network. `web` can scale out; `worker`
+#     can scale out (each instance runs WORKER_CONCURRENCY loops and the bus is fair across users);
+#     `scheduler` may run more than once (a Postgres advisory lock elects one leader) but one is enough.
+#     Run `salescoach migrate` (DATABASE_MIGRATE_URL, the owner role) before the first deploy and after
+#     every upgrade: the app refuses to serve a schema at the wrong version. docs/deploy-cloud.md.
+#   * The single-seller install of docs/deploy.md: keep only the `web` service, drop the worker, the
+#     scheduler and the database, set SALESCOACH_ROLE=all and mount a disk at /data.
+#
+# Render sets PORT itself; the web container listens on it. Secrets are `sync: false` ("ask me at
+# deploy time, never store the value in this file"). Values marked fromDatabase / fromService are
+# filled in by Render.
+databases:
+  - name: salescoach-db
+    plan: basic-1gb                       # pick a plan with point-in-time recovery for a client's pipeline
+    ipAllowList: []                       # private network only: nothing outside Render reaches it
+
 services:
   - type: web
-    name: salescoach
+    name: salescoach-web
     runtime: docker
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     autoDeploy: false
-    disk:
-      name: salescoach-data
-      mountPath: /data
-      sizeGB: 3
     envVars:
-      - key: SALESCOACH_DATA
-        value: /data
-      - key: SALESCOACH_RUNTIME
-        value: /data/runtime
-      - key: SALESCOACH_PASSWORD
-        sync: false
+      - key: SALESCOACH_ROLE
+        value: web
+      - key: SALESCOACH_MODE
+        value: cloud
+      - key: DATABASE_URL
+        fromDatabase: {name: salescoach-db, property: connectionString}
       - key: SALESCOACH_PUBLIC_URL      # https://<service>.onrender.com, or your own domain
+        sync: false
+      - key: SALESCOACH_SESSION_SECRET
+        generateValue: true
+      - key: SALESCOACH_PASSWORD        # until Google sign-in (Phase 3) replaces the shared password
         sync: false
       - key: ANTHROPIC_API_KEY          # or OPENAI_API_KEY / XAI_API_KEY for another provider
         sync: false
+      - key: LLM_BUDGET_ORG_USD_DAY     # optional daily caps; the worker defers work past them
+        sync: false
+      - key: LLM_BUDGET_USER_USD_DAY
+        sync: false
       - key: WEBHOOK_SECRET             # optional: switches the transcript webhook on
+        sync: false
+
+  - type: worker
+    name: salescoach-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeploy: false
+    envVars:
+      - key: SALESCOACH_ROLE
+        value: worker
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: SALESCOACH_MODE
+        value: cloud
+      - key: DATABASE_URL
+        fromDatabase: {name: salescoach-db, property: connectionString}
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LLM_BUDGET_ORG_USD_DAY
+        sync: false
+      - key: LLM_BUDGET_USER_USD_DAY
+        sync: false
+
+  - type: worker
+    name: salescoach-scheduler
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeploy: false
+    envVars:
+      - key: SALESCOACH_ROLE
+        value: scheduler
+      - key: SALESCOACH_MODE
+        value: cloud
+      - key: DATABASE_URL
+        fromDatabase: {name: salescoach-db, property: connectionString}
+      - key: ANTHROPIC_API_KEY
         sync: false

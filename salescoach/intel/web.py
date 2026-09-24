@@ -82,8 +82,9 @@ def _pending(conn, event_type, entity_id=None):
 
 
 def _worker_on(request) -> bool:
-    thread = getattr(request.app.state, "worker_thread", None)
-    return thread is not None and thread.is_alive()
+    from ..web import app as webapp
+    with webapp._db(request) as conn:
+        return webapp.worker_on(request.app, conn)
 
 
 def _queue(conn, event_type, entity_id, payload=None):
