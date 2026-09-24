@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Admin</div>
+  <h1>People and teams</h1>
+  <div class="meta">Who can sign in, what they are, and which managers read which team. Being an admin grants no access to anyone's calls or deals: an admin sees a team's work only when listed as one of its managers, like any manager.</div>
+</div>
+
+{% if not is_cloud %}
+<div class="flash flash-ok" role="status">This is a single-user install: one person, this database. Inviting others needs a cloud install on Postgres (docs/deploy-cloud.md).</div>
+{% endif %}
+
+<section class="card" id="users">
+  <div class="eyebrow">People</div>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>Status</th><th>Last sign-in</th><th>Google</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr id="user-{{ u.id }}" data-status="{{ u.status }}" data-role="{{ u.role }}">
+      <td>{{ u.name or '—' }}{% if u.id == me_user_id() %} <span class="pill pill-muted">you</span>{% endif %}{% if u.manages %}<div class="meta">manages {{ u.manages|length }} team{{ '' if u.manages|length == 1 else 's' }}</div>{% endif %}</td>
+      <td>{{ u.email or '—' }}</td>
+      <td>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline">
+          <select name="role" aria-label="Role for {{ u.email }}"{% if u.id == me_user_id() %} disabled{% endif %}>
+            {% for r in roles %}<option value="{{ r }}"{% if r == u.role %} selected{% endif %}>{{ r }}</option>{% endfor %}
+          </select>
+      </td>
+      <td>
+          <select name="team_id" aria-label="Team for {{ u.email }}">
+            <option value="">—</option>
+            {% for t in teams %}<option value="{{ t.id }}"{% if t.id == u.team_id %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
+          </select>
+          <button class="btn btn-sm btn-quiet" type="submit">Save</button>
+        </form>
+      </td>
+      <td><span class="pill {% if u.status == 'active' %}pill-good{% elif u.status == 'invited' %}pill-muted{% else %}pill-alert{% endif %}"><i></i>{{ u.status }}</span></td>
+      <td>{{ u.last_sign_in|dt if u.last_sign_in else 'never' }}{% if u.sessions %}<div class="meta">{{ u.sessions }} signed in</div>{% endif %}</td>
+      <td>{% if u.google == 'active' %}{{ u.features|join(', ') or 'connected' }}{% elif u.google == 'not_connected' %}—{% else %}{{ u.google|replace('_', ' ') }}{% endif %}</td>
+      <td class="actions">
+        {% if u.id != me_user_id() %}
+        {% if u.status == 'disabled' %}
+        <form method="post" action="/admin/users/{{ u.id }}/enable" class="inline"><button class="btn btn-sm btn-secondary" type="submit">Enable</button></form>
+        {% else %}
+        <form method="post" action="/admin/users/{{ u.id }}/disable" class="inline"><button class="btn btn-sm btn-secondary" type="submit">Disable</button></form>
+        {% endif %}
+        {% endif %}
+        {% if u.sessions %}<form method="post" action="/admin/users/{{ u.id }}/logout" class="inline"><button class="btn btn-sm btn-quiet" type="submit">Log out everywhere</button></form>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="meta">Disabling someone ends every browser session and revokes their Google connection at once; their calls, deals and drafts stay where they are. Enabling them again lets them sign in; they reconnect Google themselves.</p>
+</section>
+
+<section class="card" id="invite">
+  <div class="eyebrow">Invite</div>
+  <p class="meta">An invite is an address on this list; the coach sends nothing. Tell the person to open the coach and sign in with that Google account. Only members of the allowed Workspace domain can sign in whatever this list says.</p>
+  <form method="post" action="/admin/invite" class="form-grid-2">
+    <label>Work email <input name="email" type="email" required placeholder="priya@acmecloud.com"></label>
+    <label>Name (optional) <input name="name" type="text" placeholder="Priya Nair"></label>
+    <label>Role <select name="role">{% for r in roles %}<option value="{{ r }}"{% if r == 'rep' %} selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    <label>Team <select name="team_id"><option value="">—</option>{% for t in teams %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></label>
+    <div class="actions"><button class="btn btn-primary" type="submit"{% if not is_cloud %} disabled{% endif %}>Add to the list</button></div>
+  </form>
+  <p class="meta">A rep sees their own work. A manager also reads (never edits, never sends) the work of every team they are listed on below. An admin runs this page and Settings, and reads a team's work only when listed as one of its managers.</p>
+</section>
+
+<section class="card" id="teams">
+  <div class="eyebrow">Teams</div>
+  {% if not teams %}<p class="meta">No teams yet.</p>{% endif %}
+  {% for t in teams %}
+  <div class="status-row" id="team-{{ t.id }}">
+    <form method="post" action="/admin/teams/{{ t.id }}" class="inline">
+      <input name="name" value="{{ t.name }}" aria-label="Team name"> <button class="btn btn-sm btn-quiet" type="submit">Rename</button>
+    </form>
+    <p class="meta">{{ t.members|length }} member{{ '' if t.members|length == 1 else 's' }}{% if t.members %}: {{ t.members|map(attribute='name')|join(', ') }}{% endif %}</p>
+    <form method="post" action="/admin/teams/{{ t.id }}/managers">
+      <fieldset>
+        <legend>Managers (read this team's work)</legend>
+        {% for c in candidates %}
+        <label class="inline"><input type="checkbox" name="manager_id" value="{{ c.id }}"{% if c.id in (t.managers|map(attribute='id')|list) %} checked{% endif %}> {{ c.name or c.email }} ({{ c.role }})</label>
+        {% endfor %}
+        {% if not candidates %}<span class="meta">No managers or admins to choose from yet.</span>{% endif %}
+      </fieldset>
+      <button class="btn btn-sm btn-quiet" type="submit">Save managers</button>
+    </form>
+  </div>
+  {% endfor %}
+  <form method="post" action="/admin/teams" class="inline">
+    <label>New team <input name="name" type="text" placeholder="West" required></label>
+    <button class="btn btn-sm btn-secondary" type="submit">Create team</button>
+  </form>
+</section>
+{% endblock %}
