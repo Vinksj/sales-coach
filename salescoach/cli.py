@@ -281,6 +281,13 @@ def cmd_status(args):
                            "WHERE status!='done' ORDER BY id").fetchall()
     for e in pending:
         print(f"event {e['type']} {e['entity_id']} {e['status']} x{e['attempts']} {e['error'] or ''}")
+    from .orchestrator import bus
+    depth = bus.queue_depth(conn)
+    if depth:
+        print("queue by owner:")
+        for d in depth:
+            print(f"  {d['owner'] or '(none)':<16} pending {d['pending']:<4} running {d['running']:<3} failed {d['failed']:<3}"
+                  + (f" oldest pending {d['oldest_pending']}" if d["oldest_pending"] else ""))
     if any(e["status"] in ("pending", "running") for e in pending) and not _worker_listening():
         print("note: events are queued but no worker is running on this database; start `salescoach serve` "
               "or run `salescoach work` to process them", file=sys.stderr)

@@ -27,6 +27,7 @@ class Worker(threading.Thread):
         self.db_path = db_path
         self._stop_event = threading.Event()
         self.current = None
+        self.handled = 0
 
     def stop(self):
         self._stop_event.set()
@@ -55,6 +56,7 @@ class Worker(threading.Thread):
                     _settle_failure(conn, event, exc)
                 finally:
                     self.current = None
+                    self.handled += 1
             except Exception:
                 # A locked database or a broken connection must not end the worker thread: the
                 # event stays pending (or running, recovered on the next reconnect) and we retry.
@@ -62,6 +64,7 @@ class Worker(threading.Thread):
                 self.current = None
                 if conn is not None:
                     try:
+                        bus.release_owner_locks(conn)     # a session lock must not go back to the pool
                         conn.close()
                     except Exception:
                         pass

@@ -93,7 +93,8 @@ def _queue(conn, event_type, entity_id, payload=None):
     if entity_id == "coach":
         entity_id = f"user:{owner}"
     bus.publish(conn, Event(type=event_type, entity_id=entity_id, payload=payload or {},
-                            dedupe_key=f"{event_type}:{owner}:{entity_id}:{stores.now()}"))
+                            dedupe_key=f"{event_type}:{owner}:{entity_id}:{stores.now()}"),
+                priority=bus.PRIORITY_INTERACTIVE)          # a person is waiting for this one
     conn.commit()
 
 

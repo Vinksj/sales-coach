@@ -346,7 +346,8 @@ def _create(conn, nt, mapped, hold, labels, deal_id, history, lang_mode, partici
                               {"source": nt.source_kind, "trust": "third_party_inference", "text": nt.summary,
                                "captured_at": now()})
     if not hold:
-        bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"))
+        bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"),
+                    priority=bus.PRIORITY_BACKFILL if history else bus.PRIORITY_NORMAL)
     conn.commit()
     return ImportResult(call_id, True, hold, labels)
 
@@ -403,7 +404,9 @@ def resolve_speaker(conn, call_id, label: Optional[str], remember: bool = True, 
         repo.add_participant(conn, call_id, repo.ensure_me(conn))
     engine._emit(conn, actor, "speaker_resolved", node_id=call_id, after={"me_label": label or None, "turns": moved})
     repo.set_call_state(conn, call_id, "diarized", actor=actor)
-    bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"))
+    history = bool(repo.get_call(conn, call_id)["history"])
+    bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"),
+                priority=bus.PRIORITY_BACKFILL if history else bus.PRIORITY_NORMAL)
     if remember and label and label != NOT_PRESENT:
         remember_me_label(label, conn)
     conn.commit()

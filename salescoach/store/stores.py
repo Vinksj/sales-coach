@@ -165,9 +165,16 @@ def _pool(url: str):
             if not _pg_prepare:
                 kwargs["prepare_threshold"] = None
             pool = ConnectionPool(url, min_size=1, max_size=pool_size(), kwargs=kwargs, open=True,
-                                  name="salescoach", timeout=30)
+                                  name="salescoach", timeout=30, reset=_reset_pooled)
             _pg_pools[url] = pool
         return pool
+
+
+def _reset_pooled(raw) -> None:
+    """When a connection goes back to the pool: drop every session advisory lock it holds. The bus takes
+    a per-owner session lock for the duration of an event (orchestrator/bus.py); a wrapper closed with
+    one still held (an exception path, a test) must not hand that lock to whoever gets the connection next."""
+    raw.execute("SELECT pg_advisory_unlock_all()")
 
 
 def _postgres(url: str) -> db.Connection:

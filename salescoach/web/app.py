@@ -577,7 +577,8 @@ def _publish_process(conn, call_id, step, force=False) -> bool:
     # The step is in the key so a double click dedupes but Redraft then Retry in the same second does not.
     return bus.publish(conn, Event(type="PROCESS_CALL", entity_id=call_id,
                                    dedupe_key=f"PROCESS:{identity.actor_of(conn).user_id}:{call_id}:{step}:{stores.now()}",
-                                   payload={"from": step, "force": bool(force)}))
+                                   payload={"from": step, "force": bool(force)}),
+                       priority=bus.PRIORITY_INTERACTIVE)   # a redraft or a retry: someone is waiting
 
 
 def _parse_addrs(raw) -> list:
