@@ -86,7 +86,7 @@ def _indexes(conn, table):
 def test_migrates_a_v4_database_with_the_old_words(v4):
     path, before = v4
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 7
 
     # followup_decisions: every row kept, only the two words translated, everything else byte-equal
     rows = [tuple(r) for r in conn.execute("SELECT * FROM followup_decisions ORDER BY id")]
@@ -139,8 +139,8 @@ def test_the_new_constraints_hold_and_the_old_values_are_refused(v4):
                      "VALUES ('<new@x>','t','a@b','2026-09-19','hi','t')")
     with pytest.raises(sqlite3.OperationalError):                                       # the old column is gone
         conn.execute(f"SELECT needs_{OLD} FROM email_replies")
-    assert _indexes(conn, "followup_decisions") == {"idx_fud_loop", "idx_fud_email"}
-    assert _indexes(conn, "email_replies") == {"idx_replies_deal", "idx_replies_thread"}
+    assert _indexes(conn, "followup_decisions") == {"idx_fud_loop", "idx_fud_email", "idx_followup_decisions_owner_id"}
+    assert _indexes(conn, "email_replies") == {"idx_replies_deal", "idx_replies_thread", "idx_email_replies_owner_id"}
     plan = " ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN SELECT * FROM followup_decisions WHERE loop_id='l'"))
     assert "idx_fud_loop" in plan
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -188,7 +188,7 @@ def test_the_rebuild_fallback_for_an_old_sqlite_gives_the_same_result(v4, monkey
     assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION
     assert [tuple(r) for r in conn.execute("SELECT * FROM email_replies ORDER BY id")] == before["email_replies"]
     assert "needs_user" in _cols(conn, "email_replies") and f"needs_{OLD}" not in _cols(conn, "email_replies")
-    assert _indexes(conn, "email_replies") == {"idx_replies_deal", "idx_replies_thread"}
+    assert _indexes(conn, "email_replies") == {"idx_replies_deal", "idx_replies_thread", "idx_email_replies_owner_id"}
     with pytest.raises(sqlite3.IntegrityError):                                         # UNIQUE(message_id) survived
         conn.execute("INSERT INTO email_replies(message_id,thread_id,from_addr,received_at,body,created_at) "
                      "VALUES ('<m0@x>','t','a@b','2026-09-19','hi','t')")

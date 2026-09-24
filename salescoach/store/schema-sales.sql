@@ -31,8 +31,11 @@ CREATE TABLE IF NOT EXISTS nodes (
   last_reinforced_at TEXT,
   decay_rate         REAL DEFAULT 0.0,
   body_ref           TEXT,
-  depth              TEXT DEFAULT 'full'
+  depth              TEXT DEFAULT 'full',
+  owner_id           TEXT DEFAULT 'local',   -- NULL only for account/person nodes (the org directory)
+  CHECK(owner_id IS NOT NULL OR type IN ('account','person'))
 );
+CREATE INDEX IF NOT EXISTS idx_nodes_owner_id ON nodes(owner_id);
 
 CREATE TABLE IF NOT EXISTS edges (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,9 +49,11 @@ CREATE TABLE IF NOT EXISTS edges (
   created_at         TEXT,
   last_reinforced_at TEXT,
   decay_rate         REAL DEFAULT 0.0,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   FOREIGN KEY(src) REFERENCES nodes(id),
   FOREIGN KEY(dst) REFERENCES nodes(id)
 );
+CREATE INDEX IF NOT EXISTS idx_edges_owner_id ON edges(owner_id);
 CREATE INDEX IF NOT EXISTS idx_edges_src  ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst  ON edges(dst);
 
@@ -61,8 +66,10 @@ CREATE TABLE IF NOT EXISTS events (
   edge_id   INTEGER,
   before    TEXT,
   after     TEXT,
-  source_id TEXT
+  source_id TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_events_owner_id ON events(owner_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_node ON events(node_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
@@ -74,8 +81,10 @@ CREATE TABLE IF NOT EXISTS sources (
   raw_path TEXT,
   capture  TEXT,                            -- capture|audio_file|granola|paste|user_input|world
   lineage  TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   FOREIGN KEY(node_id) REFERENCES nodes(id)
 );
+CREATE INDEX IF NOT EXISTS idx_sources_owner_id ON sources(owner_id);
 
 -- ---- Deal + relationship memory -------------------------------------------
 CREATE TABLE IF NOT EXISTS accounts (
@@ -96,8 +105,10 @@ CREATE TABLE IF NOT EXISTS deals (
   updated_at   TEXT,
   value        REAL,                        -- learning plugin (outcomes): added by learning.ensure_columns
   currency     TEXT,                        --   on a SQLite store created before these columns existed
-  lost_reason  TEXT
+  lost_reason  TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_deals_owner_id ON deals(owner_id);
 
 CREATE TABLE IF NOT EXISTS people (
   node_id          TEXT PRIMARY KEY REFERENCES nodes(id),
@@ -105,17 +116,20 @@ CREATE TABLE IF NOT EXISTS people (
   email            TEXT UNIQUE,
   account_id       TEXT REFERENCES nodes(id),
   title            TEXT,
-  is_me            INTEGER NOT NULL DEFAULT 0,
+  is_me            INTEGER NOT NULL DEFAULT 0, -- derived: 1 iff user_id IS NOT NULL (any internal user)
   contact_file     TEXT,                    -- ~/.claude/contacts/<name>.md
-  world_contact_id TEXT
+  world_contact_id TEXT,
+  user_id          TEXT UNIQUE               -- the users row this person IS; NULL for buyers
 );
 
 CREATE TABLE IF NOT EXISTS deal_people (
   deal_id      TEXT NOT NULL REFERENCES nodes(id),
   person_id    TEXT NOT NULL REFERENCES nodes(id),
   role_in_deal TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY (deal_id, person_id)
 );
+CREATE INDEX IF NOT EXISTS idx_deal_people_owner_id ON deal_people(owner_id);
 
 -- ---- Transcript memory ----------------------------------------------------
 CREATE TABLE IF NOT EXISTS calls (
@@ -135,16 +149,20 @@ CREATE TABLE IF NOT EXISTS calls (
   wf_state       TEXT NOT NULL DEFAULT 'live',
   wf_error       TEXT,
   updated_at     TEXT,
-  history        INTEGER NOT NULL DEFAULT 0 -- 1 = backfilled history: analysed, never a drafted follow-up, not claimed for Jarvis
+  history        INTEGER NOT NULL DEFAULT 0, -- 1 = backfilled history: analysed, never a drafted follow-up, not claimed for Jarvis
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_calls_owner_id ON calls(owner_id);
 CREATE INDEX IF NOT EXISTS idx_calls_deal  ON calls(deal_id);
 CREATE INDEX IF NOT EXISTS idx_calls_state ON calls(wf_state);
 
 CREATE TABLE IF NOT EXISTS call_participants (
   call_id   TEXT NOT NULL REFERENCES nodes(id),
   person_id TEXT NOT NULL REFERENCES nodes(id),
+  owner_id TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY (call_id, person_id)
 );
+CREATE INDEX IF NOT EXISTS idx_call_participants_owner_id ON call_participants(owner_id);
 
 CREATE TABLE IF NOT EXISTS turns (
   call_id         TEXT NOT NULL REFERENCES nodes(id),
@@ -161,8 +179,10 @@ CREATE TABLE IF NOT EXISTS turns (
   quality         TEXT CHECK(quality IN ('ok','partial','garbled')),
   quality_note    TEXT,
   bleed_flag      INTEGER NOT NULL DEFAULT 0,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY (call_id, tier, idx)
 );
+CREATE INDEX IF NOT EXISTS idx_turns_owner_id ON turns(owner_id);
 
 CREATE TABLE IF NOT EXISTS speakers (
   call_id   TEXT NOT NULL REFERENCES nodes(id),
@@ -170,8 +190,10 @@ CREATE TABLE IF NOT EXISTS speakers (
   channel   TEXT NOT NULL,
   person_id TEXT,
   embedding BLOB,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY (call_id, cluster)
 );
+CREATE INDEX IF NOT EXISTS idx_speakers_owner_id ON speakers(owner_id);
 
 -- ---- Observability: every agent execution ---------------------------------
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -191,8 +213,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   cost_usd       REAL,
   created_items  TEXT NOT NULL DEFAULT '[]',
   rejected_items TEXT NOT NULL DEFAULT '[]',
-  started_at     TEXT NOT NULL
+  started_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_id ON agent_runs(owner_id);
 CREATE INDEX IF NOT EXISTS idx_runs_call ON agent_runs(call_id);
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -203,8 +227,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
   input_sha      TEXT,
   prompt_version TEXT,
   json           TEXT NOT NULL,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_id ON artifacts(owner_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_call ON artifacts(call_id, kind);
 
 -- ---- Facts vs inferences, and agent disagreement --------------------------
@@ -219,8 +245,10 @@ CREATE TABLE IF NOT EXISTS claims (
   confidence     TEXT NOT NULL CHECK(confidence IN ('explicit','high','medium','low')),
   evidence_turns TEXT NOT NULL DEFAULT '[]',
   evidence_quote TEXT,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_claims_owner_id ON claims(owner_id);
 CREATE INDEX IF NOT EXISTS idx_claims_deal ON claims(deal_id, subject);
 
 CREATE TABLE IF NOT EXISTS assessments (
@@ -232,8 +260,10 @@ CREATE TABLE IF NOT EXISTS assessments (
   confidence     TEXT,
   rationale      TEXT,
   evidence_turns TEXT NOT NULL DEFAULT '[]',
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_assessments_owner_id ON assessments(owner_id);
 
 CREATE TABLE IF NOT EXISTS reconciliations (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,8 +271,10 @@ CREATE TABLE IF NOT EXISTS reconciliations (
   verdict        TEXT NOT NULL,
   rationale      TEXT,
   assessment_ids TEXT NOT NULL DEFAULT '[]',
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_reconciliations_owner_id ON reconciliations(owner_id);
 
 -- ---- Open-loop memory -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS loops (
@@ -278,8 +310,10 @@ CREATE TABLE IF NOT EXISTS loops (
   world_link          TEXT,                 -- mirror (we landed it) | adopted (model linked it) | imported
   created_at          TEXT NOT NULL,
   last_activity_at    TEXT,
-  closed_at           TEXT
+  closed_at           TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_loops_owner_id ON loops(owner_id);
 CREATE INDEX IF NOT EXISTS idx_loops_deal     ON loops(deal_id, status);
 CREATE INDEX IF NOT EXISTS idx_loops_owner    ON loops(owner, status);
 CREATE INDEX IF NOT EXISTS idx_loops_due      ON loops(due_date);
@@ -315,16 +349,20 @@ CREATE TABLE IF NOT EXISTS emails (
   sent_at          TEXT,
   error            TEXT,
   created_at       TEXT NOT NULL,
-  updated_at       TEXT
+  updated_at       TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_emails_owner_id ON emails(owner_id);
 
 CREATE TABLE IF NOT EXISTS email_edits (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   email_id   INTEGER NOT NULL REFERENCES emails(id),
   draft_body TEXT,
   final_body TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_email_edits_owner_id ON email_edits(owner_id);
 
 -- ---- Seller memory --------------------------------------------------------
 CREATE TABLE IF NOT EXISTS seller_observations (
@@ -337,12 +375,14 @@ CREATE TABLE IF NOT EXISTS seller_observations (
   evidence_turns TEXT NOT NULL DEFAULT '[]',
   evidence_quote TEXT,
   confidence     TEXT NOT NULL,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_seller_observations_owner_id ON seller_observations(owner_id);
 CREATE INDEX IF NOT EXISTS idx_obs_tag ON seller_observations(tag);
 
 CREATE TABLE IF NOT EXISTS seller_patterns (
-  tag                      TEXT PRIMARY KEY,
+  tag                      TEXT NOT NULL,
   name                     TEXT NOT NULL,
   description              TEXT,
   polarity                 TEXT NOT NULL CHECK(polarity IN ('weakness','strength')),
@@ -358,8 +398,11 @@ CREATE TABLE IF NOT EXISTS seller_patterns (
                            CHECK(trend IN ('improving','stable','worsening','insufficient_data')),
   recommended_intervention TEXT,
   status                   TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','active','retired')),
-  updated_at               TEXT
+  updated_at               TEXT,
+  owner_id                 TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, tag)
 );
+CREATE INDEX IF NOT EXISTS idx_seller_patterns_owner_id ON seller_patterns(owner_id);
 
 -- ---- Memory gate ----------------------------------------------------------
 -- The confidence and provenance behind each gated field's CURRENT value, so a
@@ -371,8 +414,10 @@ CREATE TABLE IF NOT EXISTS field_provenance (
   confidence TEXT NOT NULL,                 -- low|medium|high|explicit|user_input
   provenance TEXT NOT NULL DEFAULT '{}',    -- {"kind": call|user_input|email|world, "ref": ..., "turns": [...]}
   updated_at TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   PRIMARY KEY (entity_id, field)
 );
+CREATE INDEX IF NOT EXISTS idx_field_provenance_owner_id ON field_provenance(owner_id);
 
 CREATE TABLE IF NOT EXISTS memory_conflicts (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -385,8 +430,10 @@ CREATE TABLE IF NOT EXISTS memory_conflicts (
   provenance          TEXT,
   status              TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','accepted','rejected')),
   created_at          TEXT NOT NULL,
-  resolved_at         TEXT
+  resolved_at         TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_memory_conflicts_owner_id ON memory_conflicts(owner_id);
 
 -- ---- Workflow bus ---------------------------------------------------------
 CREATE TABLE IF NOT EXISTS wf_events (
@@ -406,8 +453,61 @@ CREATE TABLE IF NOT EXISTS wf_events (
 );
 CREATE INDEX IF NOT EXISTS idx_wf_status ON wf_events(status, id);
 
-CREATE TABLE IF NOT EXISTS state (
+CREATE TABLE IF NOT EXISTS state (                -- org-wide facts; a user's own go in user_state
   key        TEXT PRIMARY KEY,
   value      TEXT,
   updated_at TEXT
+);
+
+-- ---- Users (salescoach/users.py) ------------------------------------------
+-- The USER half of the old seller.yaml. The local install has one row, 'local',
+-- whose profile is still read from seller.yaml; every other row is a cloud user.
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT PRIMARY KEY,
+  email        TEXT UNIQUE,
+  name         TEXT NOT NULL DEFAULT '',
+  role         TEXT NOT NULL DEFAULT 'rep' CHECK(role IN ('rep','manager','admin')),
+  team_id      TEXT,
+  status       TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('invited','active','disabled')),
+  google_sub   TEXT UNIQUE,
+  extra_emails TEXT NOT NULL DEFAULT '[]',     -- json: addresses beyond `email`
+  aliases      TEXT NOT NULL DEFAULT '[]',     -- json
+  signature    TEXT,
+  timezone     TEXT,
+  languages    TEXT NOT NULL DEFAULT '[]',     -- json
+  role_title   TEXT,
+  style        TEXT,                           -- the user's style guide (style.md for the local user)
+  call_context TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS team_managers (
+  team_id TEXT NOT NULL REFERENCES teams(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  PRIMARY KEY (team_id, user_id)
+);
+
+-- What `state` held for one user: automation bookkeeping, dismissed cards, per-user errors.
+CREATE TABLE IF NOT EXISTS user_state (
+  user_id    TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT,
+  updated_at TEXT,
+  PRIMARY KEY (user_id, key)
+);
+
+-- Speaker labels a user said were theirs (was sources.yaml me_labels, org-wide).
+CREATE TABLE IF NOT EXISTS user_speaker_labels (
+  user_id    TEXT NOT NULL,
+  label_norm TEXT NOT NULL,                    -- sources.base.norm_label(label)
+  label      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, label_norm)
 );

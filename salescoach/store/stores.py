@@ -22,13 +22,13 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from .. import config
+from .. import config, identity
 from . import db, engine  # noqa: F401  (engine: the graph/event engine, vendored in this package)
 
 WORLD_DB = Path(os.environ.get("WORLD_DB", os.path.expanduser("~/.claude/jarvis/world.db")))
 SCHEMA = Path(__file__).with_name("schema-sales.sql")
 PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 log = logging.getLogger("salescoach.store")
 
@@ -41,12 +41,35 @@ def db_path():
     return Path(os.environ.get("SALES_DB", config.DATA_DIR / "sales.db"))
 
 
+CLOUD_NEEDS_POSTGRES = ("SALESCOACH_MODE=cloud needs Postgres: set DATABASE_URL to a postgresql:// URL "
+                        "(a SQLite file holds one seller; docs/architecture.md, \"Two backends\")")
+
+
 def sales(path=None) -> db.Connection:
-    """Writable handle on the store; on SQLite initialises the schema on first use."""
+    """Writable handle on the store; on SQLite initialises the schema on first use. The connection is
+    bound to the acting user (identity.current_actor: the implicit local user in local mode, whoever
+    identity.session() set in cloud mode, nobody when nothing did)."""
     target = path if path is not None else db_path()
     if isinstance(target, str) and db.is_postgres_url(target):
-        return _postgres(target)
-    return _sqlite(Path(target))
+        conn = _postgres(target)
+    else:
+        if identity.cloud():
+            raise RuntimeError(CLOUD_NEEDS_POSTGRES)
+        conn = _sqlite(Path(target))
+    identity.bind(conn, identity.current_actor(required=False))
+    return conn
+
+
+_local_ensured: set = set()
+
+
+def _ensure_local_user(conn, key) -> None:
+    """Local mode: the one user's row exists (users.ensure_local), once per store per process."""
+    if identity.cloud() or key in _local_ensured:
+        return
+    from .. import users
+    users.ensure_local(conn)
+    _local_ensured.add(key)
 
 
 # ---- SQLite ------------------------------------------------------------------------------------
@@ -70,6 +93,7 @@ def _sqlite(path: Path) -> db.Connection:
             except sqlite3.Error as exc:
                 # A broken plugin schema must never take the core store down with it.
                 log.error("plugin schema %s failed: %s", sql_file.name, exc)
+    _ensure_local_user(conn, str(path))
     return conn
 
 
@@ -163,6 +187,7 @@ def _postgres(url: str) -> db.Connection:
             from . import pgmigrate
             pgmigrate.assert_current(conn)
             _pg_verified.add(key)
+            _ensure_local_user(conn, key)
     except Exception:
         conn.close()
         raise
@@ -186,6 +211,7 @@ def close_pools() -> None:
                 pass
         _pg_pools.clear()
         _pg_verified.clear()
+        _local_ensured.clear()
 
 
 # ---- world.db (Jarvis, SQLite only) -------------------------------------------------------------
@@ -242,7 +268,26 @@ def get_state(conn, key, default=None):
 
 
 def set_state(conn, key, value):
+    """An ORG-WIDE fact (the sources poller's cursors, the setup wizard's org steps). A fact about one
+    user goes through set_user_state; docs/architecture.md lists which key is which."""
     conn.execute(
         "INSERT INTO state(key,value,updated_at) VALUES (?,?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
         (key, value, now()))
+
+
+def _user(conn, user_id):
+    return user_id or identity.actor_of(conn).user_id
+
+
+def get_user_state(conn, key, default=None, user_id=None):
+    """A fact about the acting user (or `user_id`): automation bookkeeping, dismissed cards, errors."""
+    row = conn.execute("SELECT value FROM user_state WHERE user_id=? AND key=?", (_user(conn, user_id), key)).fetchone()
+    return row["value"] if row else default
+
+
+def set_user_state(conn, key, value, user_id=None):
+    conn.execute(
+        "INSERT INTO user_state(user_id,key,value,updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (_user(conn, user_id), key, value, now()))

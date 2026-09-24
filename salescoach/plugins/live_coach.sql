@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS nudges (
   outcome           TEXT CHECK(outcome IN ('followed','ignored','unknown')),
   outcome_evidence  TEXT,
   shown_wall        TEXT,
-  created_at        TEXT NOT NULL
+  created_at        TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_nudges_owner_id ON nudges(owner_id);
 CREATE INDEX IF NOT EXISTS idx_nudges_call ON nudges(call_id, session, t_call);
 
 -- Conversation-state snapshots (after each slow pass, periodically, and at the end).
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS coach_state (
   session    TEXT NOT NULL,
   t_call     REAL NOT NULL,
   json       TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_coach_state_owner_id ON coach_state(owner_id);
 CREATE INDEX IF NOT EXISTS idx_coach_state_call ON coach_state(call_id, session, t_call);

@@ -24,8 +24,10 @@ CREATE TABLE IF NOT EXISTS followup_decisions (
   risk_loop_id      TEXT,
   conflict_id       INTEGER,
   sent_counted_at   TEXT,                       -- when EMAIL_SENT for its nudge was counted
-  created_at        TEXT NOT NULL
+  created_at        TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_followup_decisions_owner_id ON followup_decisions(owner_id);
 CREATE INDEX IF NOT EXISTS idx_fud_loop  ON followup_decisions(loop_id, eval_date);
 CREATE INDEX IF NOT EXISTS idx_fud_email ON followup_decisions(email_id);
 
@@ -33,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_fud_email ON followup_decisions(email_id);
 -- text: parsed and quoted, never followed.
 CREATE TABLE IF NOT EXISTS email_replies (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  message_id   TEXT NOT NULL UNIQUE,
+  message_id   TEXT NOT NULL,                   -- unique per owner (below): two mailboxes may see one message
   thread_id    TEXT NOT NULL,
   email_id     INTEGER,                         -- our sent email in that thread
   deal_id      TEXT,
@@ -51,8 +53,11 @@ CREATE TABLE IF NOT EXISTS email_replies (
   run_id       INTEGER,
   error        TEXT,
   created_at   TEXT NOT NULL,
-  reviewed_at  TEXT
+  reviewed_at  TEXT,
+  owner_id     TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, message_id)
 );
+CREATE INDEX IF NOT EXISTS idx_email_replies_owner_id ON email_replies(owner_id);
 CREATE INDEX IF NOT EXISTS idx_replies_deal   ON email_replies(deal_id, received_at);
 CREATE INDEX IF NOT EXISTS idx_replies_thread ON email_replies(thread_id);
 
@@ -72,21 +77,26 @@ CREATE TABLE IF NOT EXISTS reply_proposals (
   outcome          TEXT,                        -- applied|conflict|needs_review|unchanged|created|rejected
   conflict_id      INTEGER,
   new_loop_id      TEXT,
-  created_at       TEXT NOT NULL
+  created_at       TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_reply_proposals_owner_id ON reply_proposals(owner_id);
 CREATE INDEX IF NOT EXISTS idx_rprop_reply ON reply_proposals(reply_id);
 
 -- Calendar reads (read-only) and the deal meetings found in them.
 CREATE TABLE IF NOT EXISTS calendar_cache (
-  key        TEXT PRIMARY KEY,
+  key        TEXT NOT NULL,
   fetched_at TEXT NOT NULL,
   source     TEXT,
   events     TEXT NOT NULL DEFAULT '[]',
-  error      TEXT
+  error      TEXT,
+  owner_id   TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, key)
 );
+CREATE INDEX IF NOT EXISTS idx_calendar_cache_owner_id ON calendar_cache(owner_id);
 
 CREATE TABLE IF NOT EXISTS calendar_meetings (
-  event_id        TEXT PRIMARY KEY,
+  event_id        TEXT NOT NULL,                -- unique per owner: two reps may share an invite
   deal_id         TEXT,
   title           TEXT,
   start_at        TEXT,
@@ -103,8 +113,11 @@ CREATE TABLE IF NOT EXISTS calendar_meetings (
   call_id         TEXT,                         -- the capture made for it
   meeting_url     TEXT,                         -- join link
   last_seen_at    TEXT,                         -- last calendar sync that still listed it
-  record_error    TEXT
+  record_error    TEXT,
+  owner_id        TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, event_id)
 );
+CREATE INDEX IF NOT EXISTS idx_calendar_meetings_owner_id ON calendar_meetings(owner_id);
 CREATE INDEX IF NOT EXISTS idx_calmeet_start ON calendar_meetings(start_at);
 
 -- Every attempt to fill [SLOTS] from the calendar, verified or not.
@@ -118,8 +131,10 @@ CREATE TABLE IF NOT EXISTS slot_fills (
   calendar_source TEXT,
   busy_count      INTEGER,
   verified_at     TEXT,
-  created_at      TEXT NOT NULL
+  created_at      TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_slot_fills_owner_id ON slot_fills(owner_id);
 CREATE INDEX IF NOT EXISTS idx_slotfill_email ON slot_fills(email_id);
 
 -- Every auto-send evaluation that changed outcome, including dry runs.
@@ -130,6 +145,8 @@ CREATE TABLE IF NOT EXISTS autosend_log (
   outcome    TEXT NOT NULL CHECK(outcome IN ('refused','would_send','sent','failed')),
   reasons    TEXT NOT NULL DEFAULT '[]',
   dry_run    INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_autosend_log_owner_id ON autosend_log(owner_id);
 CREATE INDEX IF NOT EXISTS idx_autosend_email ON autosend_log(email_id, id);

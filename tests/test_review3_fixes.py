@@ -457,7 +457,8 @@ def test_6_an_old_orphan_elsewhere_does_not_block_migration_4(tmp_path, monkeypa
     schema = stores.SCHEMA.read_text()
     current = re.search(r"CREATE TABLE IF NOT EXISTS calls \(.*?\n\);", schema, re.S).group(0)
     old = tmp_path / "v3.sql"
-    old.write_text(schema.replace(current, V3_CALLS))
+    old.write_text(schema.replace(current, V3_CALLS).replace(               # the v3 table has no owner_id yet
+        "CREATE INDEX IF NOT EXISTS idx_calls_owner_id ON calls(owner_id);", ""))
     path = tmp_path / "v3.db"
     conn = stores.engine.connect(str(path))
     stores.engine.init(conn, schema=str(old))

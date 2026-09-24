@@ -368,6 +368,11 @@ def translate(sql: str) -> Translated:
 
 class Connection:
     dialect = ""
+    actor = None                    # identity.Actor bound by identity.bind(); None = nobody (cloud: fails closed)
+
+    def bind_actor(self, actor) -> None:
+        """Remember who acts through this connection. Postgres also tells the session (see there)."""
+        self.actor = actor
 
     def execute(self, sql, params=()):
         raise NotImplementedError
@@ -490,6 +495,26 @@ class PostgresConnection(Connection):
         self._closed = False
         self._sp_opener = None         # the SAVEPOINT that opened the current transaction, if one did
 
+    # -- the acting user --
+
+    ACTOR_SETTINGS = "SELECT set_config('app.user_id', %s, false), set_config('app.mode', %s, false)"
+
+    def bind_actor(self, actor) -> None:
+        """conn.actor, and the session settings app.user_id / app.mode that the owner_id column defaults
+        read (store/pg/0002_owner.sql) and that Phase 2's row-level policies will read. An unbound
+        connection sets '' so that a default of NULLIF(current_setting('app.user_id', true), '') is NULL
+        and an owned INSERT fails its NOT NULL: nobody's data is ever written as somebody's."""
+        self.actor = actor
+        if self._closed:
+            return
+        self._raw.execute(self.ACTOR_SETTINGS,
+                          (actor.user_id if actor else "", actor.mode if actor else ""))
+
+    def _on_begin(self) -> None:
+        """Phase 2 hook: re-issue the actor settings as SET LOCAL inside every transaction and assert
+        they match conn.actor, so a setting changed behind our back cannot outlive a transaction.
+        Session-level binding (bind_actor) is enough while there is no RLS to defeat."""
+
     # -- transactions --
 
     @property
@@ -499,6 +524,7 @@ class PostgresConnection(Connection):
     def _begin(self):
         self._raw.execute("BEGIN")
         self._sp_opener = None
+        self._on_begin()
 
     def commit(self):
         if self.in_transaction:
@@ -519,6 +545,8 @@ class PostgresConnection(Connection):
             try:
                 if raw.info.transaction_status in (_TS.INTRANS, _TS.INERROR):
                     raw.execute("ROLLBACK")
+                if self.actor is not None:
+                    raw.execute(self.ACTOR_SETTINGS, ("", ""))     # a pooled session must not keep a user
             except Exception:
                 pass
             self._release(raw)

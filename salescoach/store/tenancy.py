@@ -2,8 +2,8 @@
 
 Every table the schema creates is classified here, and tests/isolation/test_catalog_lint.py fails
 the build when one is not: a table nobody has thought about cannot reach a multi-user database.
-No owner column exists yet (Phase 1 adds `owner_id` to every OWNED table; Phase 2 puts row-level
-security on it); this file is the list that work will run down.
+Every OWNED table carries `owner_id` (Phase 1; the lint checks the column and its index); Phase 2
+puts row-level security on it.
 
   OWNED   one rep's work. Reads and writes are scoped to the owner; a manager reads, never writes.
   ORG     the shared directory: visible to everyone in the org, so that a hidden row can never
@@ -16,7 +16,12 @@ Decisions worth a line:
   * coach_reports, the learning tables and the seller memory are OWNED: coaching is about one
     seller, and team roll-ups are computed at read time, never stored (plan §Approach 5).
   * embeddings are OWNED because the text they index is.
-  * state is SYSTEM for now; Phase 1 splits the per-user keys out into user_state.
+  * state is SYSTEM and org-wide; the per-user keys live in user_state (keyed on user_id, not
+    owner_id: it is bookkeeping about a user, never a rep's work, so it is SYSTEM like state).
+    user_speaker_labels likewise.
+  * users, teams and team_managers are the directory of who is here: ORG, like accounts and people.
+  * nodes.owner_id is NULL for account and person nodes (the shared directory's nodes) and NOT NULL
+    for call, deal and loop nodes (a CHECK says so); the rows in accounts/people themselves are ORG.
   * schema_migrations exists on Postgres only (SQLite tracks its version in PRAGMA user_version).
 """
 
@@ -27,8 +32,8 @@ SYSTEM = "SYSTEM"
 TABLE_CLASS = {
     # -- engine core
     "nodes": OWNED, "edges": OWNED, "events": OWNED, "sources": OWNED,
-    # -- deal and relationship memory
-    "accounts": ORG, "people": ORG,
+    # -- the directory
+    "accounts": ORG, "people": ORG, "users": ORG, "teams": ORG, "team_managers": ORG,
     "deals": OWNED, "deal_people": OWNED,
     # -- transcript memory
     "calls": OWNED, "call_participants": OWNED, "turns": OWNED, "speakers": OWNED,
@@ -39,7 +44,8 @@ TABLE_CLASS = {
     "seller_observations": OWNED, "seller_patterns": OWNED,
     "field_provenance": OWNED, "memory_conflicts": OWNED,
     # -- machinery
-    "wf_events": SYSTEM, "state": SYSTEM, "schema_migrations": SYSTEM,
+    "wf_events": SYSTEM, "state": SYSTEM, "user_state": SYSTEM, "user_speaker_labels": SYSTEM,
+    "schema_migrations": SYSTEM,
     # -- execution plugin
     "followup_decisions": OWNED, "email_replies": OWNED, "reply_proposals": OWNED,
     "calendar_cache": OWNED, "calendar_meetings": OWNED, "slot_fills": OWNED, "autosend_log": OWNED,
@@ -56,6 +62,50 @@ TABLE_CLASS = {
 # Tables that exist on one backend only, and why.
 POSTGRES_ONLY = {"schema_migrations": "migration ledger; SQLite uses PRAGMA user_version"}
 SQLITE_ONLY = {"sqlite_sequence": "SQLite's AUTOINCREMENT bookkeeping"}
+
+
+# OWNED tables whose owner_id may be NULL, and why. Everything else OWNED is NOT NULL.
+OWNER_NULLABLE = {"nodes": "account and person nodes belong to the org directory"}
+
+# Child tables whose owner is the parent row's: on Postgres a BEFORE INSERT trigger copies it and
+# refuses a mismatch (store/pg/0002_owner.sql). {child: ((parent_table, parent_key, child_column), ...)},
+# first non-NULL child column wins. Tables not listed are top-level: their owner is the acting user.
+OWNER_PARENTS = {
+    "calls": (("nodes", "id", "node_id"),),
+    "deals": (("nodes", "id", "node_id"),),
+    "loops": (("nodes", "id", "node_id"), ("calls", "node_id", "call_id"), ("deals", "node_id", "deal_id")),
+    "edges": (("nodes", "id", "src"),),
+    "events": (("nodes", "id", "node_id"),),
+    "sources": (("nodes", "id", "node_id"),),
+    "deal_people": (("deals", "node_id", "deal_id"),),
+    "call_participants": (("calls", "node_id", "call_id"),),
+    "turns": (("calls", "node_id", "call_id"),),
+    "speakers": (("calls", "node_id", "call_id"),),
+    "agent_runs": (("calls", "node_id", "call_id"),),
+    "artifacts": (("calls", "node_id", "call_id"),),
+    "claims": (("calls", "node_id", "call_id"), ("deals", "node_id", "deal_id")),
+    "assessments": (("calls", "node_id", "call_id"),),
+    "emails": (("calls", "node_id", "call_id"), ("deals", "node_id", "deal_id")),
+    "email_edits": (("emails", "id", "email_id"),),
+    "seller_observations": (("calls", "node_id", "call_id"),),
+    "followup_decisions": (("loops", "node_id", "loop_id"), ("deals", "node_id", "deal_id")),
+    "email_replies": (("emails", "id", "email_id"),),
+    "reply_proposals": (("email_replies", "id", "reply_id"),),
+    "slot_fills": (("emails", "id", "email_id"),),
+    "autosend_log": (("emails", "id", "email_id"),),
+    "stakeholders": (("deals", "node_id", "deal_id"),),
+    "meddpicc": (("deals", "node_id", "deal_id"),),
+    "deal_risks": (("deals", "node_id", "deal_id"),),
+    "deal_health": (("deals", "node_id", "deal_id"),),
+    "deal_health_history": (("deals", "node_id", "deal_id"),),
+    "prep_briefs": (("deals", "node_id", "deal_id"),),
+    "embeddings": (("calls", "node_id", "call_id"), ("deals", "node_id", "deal_id")),
+    "deal_stage_history": (("deals", "node_id", "deal_id"),),
+    "derived_outcomes": (("deals", "node_id", "deal_id"),),
+    "pattern_observations": (("calls", "node_id", "call_id"), ("deals", "node_id", "deal_id")),
+    "nudges": (("calls", "node_id", "call_id"),),
+    "coach_state": (("calls", "node_id", "call_id"),),
+}
 
 
 def tables_of(kind: str) -> frozenset:

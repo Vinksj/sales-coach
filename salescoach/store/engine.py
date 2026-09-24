@@ -40,18 +40,25 @@ def _emit(conn, actor, kind, node_id=None, edge_id=None, before=None, after=None
     )
 
 
+DIRECTORY_TYPES = ("account", "person")       # the org's shared directory: nodes nobody owns
+
+
 def add_node(conn, actor, id, type, kind=None, title=None, standfirst=None,
              lenses=None, status=None, confidence=0.5, created_at=None,
              body_ref=None, source_id=None):
+    """Owned by whoever the connection acts for, through the column's default (the session setting
+    on Postgres, 'local' on SQLite: one seller per file); account and person nodes belong to the org
+    directory and get owner_id NULL explicitly (store/tenancy.py, OWNER_NULLABLE)."""
     ts = created_at or now()
     row = dict(id=id, type=type, kind=kind, title=title, standfirst=standfirst,
                lenses=json.dumps(lenses or []), status=status, confidence=confidence,
                created_at=ts, last_reinforced_at=ts, decay_rate=0.0, body_ref=body_ref)
+    owner_col, owner_val = (", owner_id", ", NULL") if type in DIRECTORY_TYPES else ("", "")
     conn.execute(
-        "INSERT INTO nodes(id,type,kind,title,standfirst,lenses,status,confidence,"
-        "created_at,last_reinforced_at,decay_rate,body_ref) "
-        "VALUES (:id,:type,:kind,:title,:standfirst,:lenses,:status,:confidence,"
-        ":created_at,:last_reinforced_at,:decay_rate,:body_ref)", row)
+        f"INSERT INTO nodes(id,type,kind,title,standfirst,lenses,status,confidence,"
+        f"created_at,last_reinforced_at,decay_rate,body_ref{owner_col}) "
+        f"VALUES (:id,:type,:kind,:title,:standfirst,:lenses,:status,:confidence,"
+        f":created_at,:last_reinforced_at,:decay_rate,:body_ref{owner_val})", row)
     _emit(conn, actor, "node_created", node_id=id, after=row, source_id=source_id, ts=ts)
     return id
 

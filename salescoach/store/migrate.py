@@ -276,6 +276,283 @@ def _not_before(conn):
 
 MIGRATIONS[6] = _not_before
 
+# ---- 7 (2026-09-24, identity and ownership): every OWNED table (store/tenancy.py) gains owner_id,
+# 'local' for everything this single-user file holds; people gains user_id (the person row that IS a
+# user; the one is_me row becomes the local user's); the keys that would collide between two users
+# are re-scoped on (owner_id, ...) by rebuilding the table (SQLite cannot change a PRIMARY KEY or a
+# UNIQUE in place): seller_patterns, calendar_cache, calendar_meetings, email_replies,
+# learned_patterns (whose ids go from lp:<family>:global:<key> to lp:<family>:u:local:<key>, in
+# merged_into, learning_proposals and the memory gate's rows too); the users, teams, team_managers,
+# user_state and user_speaker_labels tables appear. The DDL below is frozen at version 7 on purpose:
+# a later version's columns are added by that version's step, never by this one.
+#   * Nothing references any rebuilt table by foreign key (every FK in the schema points at nodes,
+#     emails or agent_runs), and there are no triggers or views, so no PRAGMA foreign_keys dance.
+#   * Plugin tables that are not there (SALESCOACH_NO_PLUGINS) are created later by the plugin SQL in
+#     today's shape; the ones that are there are migrated here, before the plugin's IF NOT EXISTS runs.
+OWNED_V7 = (
+    "edges", "events", "sources", "deals", "deal_people", "calls", "call_participants", "turns", "speakers",
+    "agent_runs", "artifacts", "claims", "assessments", "reconciliations", "loops", "emails", "email_edits",
+    "seller_observations", "field_provenance", "memory_conflicts",
+    "followup_decisions", "reply_proposals", "slot_fills", "autosend_log",
+    "stakeholders", "meddpicc", "deal_risks", "deal_health", "deal_health_history", "coach_reports", "prep_briefs",
+    "embeddings", "deal_stage_history", "derived_outcomes", "pattern_observations", "learning_proposals",
+    "nudges", "coach_state",
+)
+REKEYED_V7 = ("seller_patterns", "calendar_cache", "calendar_meetings", "email_replies", "learned_patterns")
+USER_TABLES_V7 = """
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT PRIMARY KEY,
+  email        TEXT UNIQUE,
+  name         TEXT NOT NULL DEFAULT '',
+  role         TEXT NOT NULL DEFAULT 'rep' CHECK(role IN ('rep','manager','admin')),
+  team_id      TEXT,
+  status       TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('invited','active','disabled')),
+  google_sub   TEXT UNIQUE,
+  extra_emails TEXT NOT NULL DEFAULT '[]',
+  aliases      TEXT NOT NULL DEFAULT '[]',
+  signature    TEXT,
+  timezone     TEXT,
+  languages    TEXT NOT NULL DEFAULT '[]',
+  role_title   TEXT,
+  style        TEXT,
+  call_context TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS teams (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_managers (
+  team_id TEXT NOT NULL REFERENCES teams(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  PRIMARY KEY (team_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS user_state (
+  user_id    TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT,
+  updated_at TEXT,
+  PRIMARY KEY (user_id, key)
+);
+CREATE TABLE IF NOT EXISTS user_speaker_labels (
+  user_id    TEXT NOT NULL,
+  label_norm TEXT NOT NULL,
+  label      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, label_norm)
+);
+"""
+PEOPLE_V7 = """CREATE TABLE people_v7 (
+  node_id          TEXT PRIMARY KEY REFERENCES nodes(id),
+  name             TEXT NOT NULL,
+  email            TEXT UNIQUE,
+  account_id       TEXT REFERENCES nodes(id),
+  title            TEXT,
+  is_me            INTEGER NOT NULL DEFAULT 0,
+  contact_file     TEXT,
+  world_contact_id TEXT,
+  user_id          TEXT UNIQUE
+)"""
+SELLER_PATTERNS_V7 = """CREATE TABLE seller_patterns_v7 (
+  tag                      TEXT NOT NULL,
+  name                     TEXT NOT NULL,
+  description              TEXT,
+  polarity                 TEXT NOT NULL CHECK(polarity IN ('weakness','strength')),
+  frequency                REAL NOT NULL DEFAULT 0,
+  calls_seen               INTEGER NOT NULL DEFAULT 0,
+  calls_window             INTEGER NOT NULL DEFAULT 0,
+  severity                 TEXT,
+  contexts                 TEXT NOT NULL DEFAULT '[]',
+  examples                 TEXT NOT NULL DEFAULT '[]',
+  first_detected           TEXT,
+  last_detected            TEXT,
+  trend                    TEXT NOT NULL DEFAULT 'insufficient_data'
+                           CHECK(trend IN ('improving','stable','worsening','insufficient_data')),
+  recommended_intervention TEXT,
+  status                   TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','active','retired')),
+  updated_at               TEXT,
+  owner_id                 TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, tag)
+)"""
+CALENDAR_CACHE_V7 = """CREATE TABLE calendar_cache_v7 (
+  key        TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  source     TEXT,
+  events     TEXT NOT NULL DEFAULT '[]',
+  error      TEXT,
+  owner_id   TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, key)
+)"""
+CALENDAR_MEETINGS_V7 = """CREATE TABLE calendar_meetings_v7 (
+  event_id        TEXT NOT NULL,
+  deal_id         TEXT,
+  title           TEXT,
+  start_at        TEXT,
+  end_at          TEXT,
+  attendees       TEXT NOT NULL DEFAULT '[]',
+  matched_domains TEXT NOT NULL DEFAULT '[]',
+  first_seen_at   TEXT NOT NULL,
+  updated_at      TEXT,
+  prep_status     TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(prep_status IN ('pending','ready','unavailable','failed')),
+  prep_ref        TEXT,
+  prep_error      TEXT,
+  record          TEXT NOT NULL DEFAULT 'no',
+  call_id         TEXT,
+  meeting_url     TEXT,
+  last_seen_at    TEXT,
+  record_error    TEXT,
+  owner_id        TEXT NOT NULL DEFAULT 'local',
+  PRIMARY KEY (owner_id, event_id)
+)"""
+EMAIL_REPLIES_V7 = """CREATE TABLE email_replies_v7 (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id   TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
+  email_id     INTEGER,
+  deal_id      TEXT,
+  person_id    TEXT,
+  from_addr    TEXT NOT NULL,
+  from_name    TEXT,
+  subject      TEXT,
+  received_at  TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  body_full    TEXT,
+  status       TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','analyzed','failed','reviewed')),
+  summary      TEXT,
+  needs_user   INTEGER NOT NULL DEFAULT 0,
+  ignored_instructions TEXT NOT NULL DEFAULT '[]',
+  run_id       INTEGER,
+  error        TEXT,
+  created_at   TEXT NOT NULL,
+  reviewed_at  TEXT,
+  owner_id     TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, message_id)
+)"""
+LEARNED_PATTERNS_V7 = """CREATE TABLE learned_patterns_v7 (
+  id          TEXT PRIMARY KEY,
+  family      TEXT NOT NULL,
+  key         TEXT NOT NULL,
+  scope       TEXT NOT NULL DEFAULT 'global',
+  polarity    TEXT,
+  n_obs       INTEGER NOT NULL DEFAULT 0,
+  n_calls     INTEGER NOT NULL DEFAULT 0,
+  n_deals     INTEGER NOT NULL DEFAULT 0,
+  support     INTEGER NOT NULL DEFAULT 0,
+  label       TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','active','dormant','retired')),
+  user_state  TEXT CHECK(user_state IS NULL OR user_state IN ('confirmed','wrong','retired')),
+  merged_into TEXT,
+  first_seen  TEXT,
+  last_seen   TEXT,
+  returned    INTEGER NOT NULL DEFAULT 0,
+  summary     TEXT,
+  stats       TEXT NOT NULL DEFAULT '{}',
+  seller_id   TEXT,
+  updated_at  TEXT,
+  no_prompt   INTEGER NOT NULL DEFAULT 0,
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, family, key, scope)
+)"""
+REBUILT_V7 = {
+    "people": (PEOPLE_V7, ()),
+    "seller_patterns": (SELLER_PATTERNS_V7, ()),
+    "calendar_cache": (CALENDAR_CACHE_V7, ()),
+    "calendar_meetings": (CALENDAR_MEETINGS_V7, ("CREATE INDEX IF NOT EXISTS idx_calmeet_start ON calendar_meetings(start_at)",)),
+    "email_replies": (EMAIL_REPLIES_V7, ("CREATE INDEX IF NOT EXISTS idx_replies_deal   ON email_replies(deal_id, received_at)",
+                                        "CREATE INDEX IF NOT EXISTS idx_replies_thread ON email_replies(thread_id)")),
+    "learned_patterns": (LEARNED_PATTERNS_V7, ("CREATE INDEX IF NOT EXISTS idx_lp_family ON learned_patterns(family, status)",)),
+}
+
+
+def _rebuild_v7(conn, table, ddl, indexes):
+    """Like _rebuild, but the new table is <table>_v7, a column missing on either side is skipped, and a
+    NULL in a column that is NOT NULL today (a row an early plugin wrote before the constraint) is copied
+    as '' / 0 rather than refusing to open the store."""
+    new = f"{table}_v7"
+    before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    conn.execute(f"DROP TABLE IF EXISTS {new}")
+    conn.execute(ddl)
+    old_cols = set(_columns(conn, table))
+    targets, sources = [], []
+    for _, name, ctype, notnull, default, pk in conn.execute(f"PRAGMA table_info({new})"):
+        if name not in old_cols:
+            continue
+        targets.append(name)
+        if notnull and default is None and not pk:
+            filler = "0" if (ctype or "").upper() in ("INTEGER", "REAL") else "''"
+            sources.append(f"COALESCE({name}, {filler})")
+        else:
+            sources.append(name)
+    conn.execute(f"INSERT INTO {new}({', '.join(targets)}) SELECT {', '.join(sources)} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {new} RENAME TO {table}")
+    for index in indexes:
+        conn.execute(index)
+    after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    if after != before:
+        raise sqlite3.IntegrityError(f"{table} rebuild copied {after} of {before} rows")
+
+
+def _rewrite_pattern_ids(conn, tables):
+    """lp:<family>:global:<key> -> lp:<family>:u:local:<key>, wherever a pattern id is stored."""
+    def fix(table, column):
+        if table not in tables or column not in _columns(conn, table):
+            return
+        conn.execute(f"UPDATE {table} SET {column} = 'lp:' || substr({column}, 4, instr(substr({column}, 4), ':') - 1) "
+                     f"|| ':u:local:' || substr({column}, 4 + instr(substr({column}, 4), ':') + length('global:')) "
+                     f"WHERE {column} LIKE 'lp:%:global:%'")
+    fix("learned_patterns", "id")
+    fix("learned_patterns", "merged_into")
+    fix("learning_proposals", "pattern_id")
+    fix("learning_proposals", "target_id")
+    fix("field_provenance", "entity_id")
+    fix("memory_conflicts", "entity_id")
+
+
+def _identity(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 7:      # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "nodes" in tables and "owner_id" not in _columns(conn, "nodes"):
+            conn.execute("ALTER TABLE nodes ADD COLUMN owner_id TEXT DEFAULT 'local'")
+            conn.execute("UPDATE nodes SET owner_id=NULL WHERE type IN ('account','person')")
+        for table in OWNED_V7:
+            if table in tables and "owner_id" not in _columns(conn, table):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'local'")
+        for table, (ddl, indexes) in REBUILT_V7.items():
+            if table in tables and (table == "people" and "user_id" not in _columns(conn, table)
+                                    or table != "people" and "owner_id" not in _columns(conn, table)):
+                _rebuild_v7(conn, table, ddl, indexes)
+        if "people" in tables:
+            me = conn.execute("SELECT node_id FROM people WHERE is_me=1 AND user_id IS NULL "
+                              "AND NOT EXISTS (SELECT 1 FROM people WHERE user_id='local') "
+                              "ORDER BY node_id LIMIT 1").fetchone()
+            if me:
+                conn.execute("UPDATE people SET user_id='local' WHERE node_id=?", (me[0],))
+        _rewrite_pattern_ids(conn, tables)
+        for table in ("nodes", *OWNED_V7, *REKEYED_V7):
+            if table in tables:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_id ON {table}(owner_id)")
+        for statement in USER_TABLES_V7.split(";"):        # one by one: executescript would commit first
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 7")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[7] = _identity
+
 
 def run(conn):
     version = conn.execute("PRAGMA user_version").fetchone()[0]

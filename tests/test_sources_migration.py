@@ -35,7 +35,9 @@ def v3(tmp_path, monkeypatch):
     current = re.search(r"CREATE TABLE IF NOT EXISTS calls \(.*?\n\);", schema, re.S).group(0)
     assert "history" in current and "CHECK(source" not in current
     old_schema = tmp_path / "schema-v3.sql"
-    old_schema.write_text(schema.replace(current, V3_CALLS))
+    # Phase 1's owner index would name a column the v3 calls table does not have; migration 7 adds both.
+    old_schema.write_text(schema.replace(current, V3_CALLS).replace(
+        "CREATE INDEX IF NOT EXISTS idx_calls_owner_id ON calls(owner_id);", ""))
     path = tmp_path / "v3.db"
     conn = stores.engine.connect(str(path))
     stores.engine.init(conn, schema=str(old_schema))
@@ -79,15 +81,16 @@ def _counts(conn):
 def test_migrates_a_v3_database_with_data(v3):
     path, before = v3
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 7
     assert _counts(conn) == {"calls": 6, "turns": 15, "loops": 5, "emails": 5, "call_participants": 5, "nodes": 13}
-    # every old column of every row, unchanged and in the same order; history appended
+    # every old column of every row, unchanged and in the same order; history (4) and owner_id (7) appended
     after = [tuple(r) for r in conn.execute("SELECT * FROM calls ORDER BY node_id")]
-    assert [row[:-1] for row in after] == before
+    assert [row[:-2] for row in after] == before
+    assert {row[-1] for row in after} == {"local"}
     assert {r["node_id"]: r["history"] for r in conn.execute("SELECT node_id, history FROM calls")} == {
         "call-0": 0, "call-1": 0, "call-2": 1, "call-3": 0, "call-4": 1, "call-null": 0}
     cols = [r[1] for r in conn.execute("PRAGMA table_info(calls)")]
-    assert cols[-1] == "history" and cols[:3] == ["node_id", "deal_id", "source"]
+    assert cols[-2:] == ["history", "owner_id"] and cols[:3] == ["node_id", "deal_id", "source"]
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='calls'").fetchone()[0]
     assert "CHECK(source" not in sql and "calls_v4" not in sql
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='calls_v4'").fetchone()[0] == 0
@@ -204,4 +207,4 @@ def test_several_handles_opening_at_once_migrate_once(v3):
         t.join(timeout=30)
     assert errors == []
     conn = stores.sales(path)
-    assert [tuple(r)[:-1] for r in conn.execute("SELECT * FROM calls ORDER BY node_id")] == before
+    assert [tuple(r)[:-2] for r in conn.execute("SELECT * FROM calls ORDER BY node_id")] == before

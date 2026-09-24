@@ -1,10 +1,15 @@
 """The two schemas are the same schema.
 
-store/pg/0001_baseline.sql is generated from the SQLite files; this pins (1) that the committed
-file is what the generator produces today and (2), on Postgres, that a live database built from
-it has the same tables, the same columns in the same order, the same NOT NULL, the same primary
-and unique keys, the same indexes (by columns, partial ones included), the same defaults and the
-same number of CHECK constraints as the SQLite schema. Any drift fails here, on either side.
+store/pg/0001_baseline.sql was generated from the SQLite files at SQLite version 6 and is frozen:
+every later change is a numbered migration beside it (0002_owner.sql for SQLite migration 7, ...),
+hand-written to land the same shape the tracked SQLite files now declare. This pins (1) that the
+baseline stays what it was and (2), on Postgres, that a live database migrated through every
+numbered file has the same tables, the same columns in the same order, the same NOT NULL, the
+same primary and unique keys, the same indexes (by columns, partial ones included), the same
+defaults and the same number of CHECK constraints as the SQLite schema. Any drift fails here.
+
+The one default that differs by design: owner_id is 'local' on SQLite (one seller per file) and the
+session setting app.user_id on Postgres (store/pg/0002_owner.sql; tests/isolation checks it live).
 """
 import importlib.util
 import re
@@ -26,9 +31,22 @@ def _generator():
     return mod
 
 
-def test_committed_baseline_matches_the_generator():
+def test_the_baseline_is_frozen_at_version_6():
+    """0001 is what the generator made from the version-6 files and must never be regenerated: a
+    Postgres database that applied it can only move on through the numbered files after it."""
     gen = _generator()
-    assert gen.OUT.read_text() == gen.generate(), "run scripts/gen_pg_baseline.py and commit the result"
+    text = gen.OUT.read_text()
+    assert "at SQLite\n-- user_version 6." in text or "user_version 6" in text
+    assert "owner_id" not in text and "CREATE TABLE IF NOT EXISTS users" not in text
+
+
+def test_the_generator_would_write_the_current_schema():
+    """The generator still converts today's files (a future re-baseline would use it); what it makes is
+    the current schema, which the live test below checks against a migrated database."""
+    gen = _generator()
+    text = gen.generate()
+    assert "owner_id TEXT NOT NULL DEFAULT 'local'" in text and "CREATE TABLE IF NOT EXISTS users" in text
+    assert text != gen.OUT.read_text()
 
 
 def test_generator_rewrites_only_types_and_pragmas():
@@ -72,6 +90,10 @@ def test_live_postgres_schema_matches_sqlite(db):
             if c.pk != r["pk"]:
                 drift.append(f"{table}.{c.name}: pk position sqlite={c.pk} postgres={r['pk']}")
             pg_default = None if (r["dflt_value"] or "").startswith("nextval(") else r["dflt_value"]
+            if c.name == "owner_id":                     # by design: 'local' vs the session setting (see the docstring)
+                if "current_setting('app.user_id'" not in (pg_default or ""):
+                    drift.append(f"{table}.owner_id: postgres default {pg_default!r} is not the session setting")
+                continue
             if _norm_default(c.default) != _norm_default(pg_default) and not (c.pk and table in catalog.identity_tables()):
                 drift.append(f"{table}.{c.name}: default sqlite={c.default!r} postgres={pg_default!r}")
 

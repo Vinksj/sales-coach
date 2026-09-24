@@ -14,8 +14,10 @@ CREATE TABLE IF NOT EXISTS deal_stage_history (
   to_status   TEXT,
   lost_reason TEXT,
   changed_at  TEXT NOT NULL,
-  "by"        TEXT NOT NULL
+  "by"        TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_deal_stage_history_owner_id ON deal_stage_history(owner_id);
 CREATE INDEX IF NOT EXISTS idx_stage_hist_deal ON deal_stage_history(deal_id, id);
 
 -- Outcomes derived from facts already in the store (outcomes.recompute).
@@ -29,8 +31,10 @@ CREATE TABLE IF NOT EXISTS derived_outcomes (
   value        INTEGER,
   computed_at  TEXT NOT NULL,
   details      TEXT NOT NULL DEFAULT '{}',
+  owner_id TEXT NOT NULL DEFAULT 'local',
   UNIQUE(kind, subject_type, subject_id)
 );
+CREATE INDEX IF NOT EXISTS idx_derived_outcomes_owner_id ON derived_outcomes(owner_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON derived_outcomes(deal_id, kind);
 
 -- One row per (family, key) seen on one subject (a call, an email edit, a sent
@@ -56,15 +60,17 @@ CREATE TABLE IF NOT EXISTS pattern_observations (
   excluded         INTEGER NOT NULL DEFAULT 0,
   observed_at      TEXT,
   created_at       TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   UNIQUE(family, key, subject)
 );
+CREATE INDEX IF NOT EXISTS idx_pattern_observations_owner_id ON pattern_observations(owner_id);
 CREATE INDEX IF NOT EXISTS idx_pobs_family ON pattern_observations(family, key);
 CREATE INDEX IF NOT EXISTS idx_pobs_call   ON pattern_observations(call_id);
 
 -- What the coach believes. user_state, merged_into and no_prompt sit behind the
 -- memory gate (user_input); patterns.recompute never writes them.
 CREATE TABLE IF NOT EXISTS learned_patterns (
-  id          TEXT PRIMARY KEY,          -- lp:<family>:<scope>:<key>
+  id          TEXT PRIMARY KEY,          -- lp:<family>:u:<owner_id>:<key> (scope is always 'global' today)
   family      TEXT NOT NULL,
   key         TEXT NOT NULL,
   scope       TEXT NOT NULL DEFAULT 'global',
@@ -85,8 +91,10 @@ CREATE TABLE IF NOT EXISTS learned_patterns (
   seller_id   TEXT,
   updated_at  TEXT,
   no_prompt   INTEGER NOT NULL DEFAULT 0,   -- the user's "Do not use in prompts" (phase F2); for_prompt honours it
-  UNIQUE(family, key, scope)
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, family, key, scope)
 );
+CREATE INDEX IF NOT EXISTS idx_learned_patterns_owner_id ON learned_patterns(owner_id);
 CREATE INDEX IF NOT EXISTS idx_lp_family ON learned_patterns(family, status);
 
 -- Things the learner suggests and only the user can apply: tag merges and
@@ -108,6 +116,8 @@ CREATE TABLE IF NOT EXISTS learning_proposals (
   applied     TEXT,                         -- config|recorded|merge
   created_at  TEXT NOT NULL,
   resolved_at TEXT,
-  decided_n   INTEGER                       -- evidence n (shown nudges / calls with the tag) when the user decided
+  decided_n   INTEGER,                       -- evidence n (shown nudges / calls with the tag) when the user decided
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_learning_proposals_owner_id ON learning_proposals(owner_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(kind, subject) WHERE status='open';

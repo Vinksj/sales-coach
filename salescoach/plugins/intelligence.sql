@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS stakeholders (
   evidence              TEXT NOT NULL DEFAULT '[]',
   confidence            TEXT,              -- of the latest strategist read
   run_id                INTEGER,
-  updated_at            TEXT
+  updated_at            TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_stakeholders_owner_id ON stakeholders(owner_id);
 CREATE INDEX IF NOT EXISTS idx_stakeholders_deal ON stakeholders(deal_id);
 
 CREATE TABLE IF NOT EXISTS meddpicc (
@@ -41,8 +43,10 @@ CREATE TABLE IF NOT EXISTS meddpicc (
   evidence      TEXT NOT NULL DEFAULT '[]',
   confidence    TEXT,
   run_id        INTEGER,
-  updated_at    TEXT
+  updated_at    TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_meddpicc_owner_id ON meddpicc(owner_id);
 CREATE INDEX IF NOT EXISTS idx_meddpicc_deal ON meddpicc(deal_id);
 
 CREATE TABLE IF NOT EXISTS deal_risks (
@@ -57,8 +61,10 @@ CREATE TABLE IF NOT EXISTS deal_risks (
   source      TEXT,                        -- strategist|rule
   run_id      INTEGER,
   first_seen  TEXT,
-  updated_at  TEXT
+  updated_at  TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_deal_risks_owner_id ON deal_risks(owner_id);
 CREATE INDEX IF NOT EXISTS idx_risks_deal ON deal_risks(deal_id);
 
 CREATE TABLE IF NOT EXISTS deal_health (
@@ -73,8 +79,10 @@ CREATE TABLE IF NOT EXISTS deal_health (
   summary          TEXT,
   call_id          TEXT,
   run_id           INTEGER,
-  updated_at       TEXT
+  updated_at       TEXT,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_deal_health_owner_id ON deal_health(owner_id);
 
 CREATE TABLE IF NOT EXISTS deal_health_history (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,8 +91,10 @@ CREATE TABLE IF NOT EXISTS deal_health_history (
   label      TEXT,
   call_id    TEXT,
   run_id     INTEGER,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_deal_health_history_owner_id ON deal_health_history(owner_id);
 CREATE INDEX IF NOT EXISTS idx_health_hist_deal ON deal_health_history(deal_id, id);
 
 CREATE TABLE IF NOT EXISTS coach_reports (
@@ -94,8 +104,10 @@ CREATE TABLE IF NOT EXISTS coach_reports (
   input_sha      TEXT,
   run_id         INTEGER,
   json           TEXT NOT NULL,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_coach_reports_owner_id ON coach_reports(owner_id);
 
 CREATE TABLE IF NOT EXISTS prep_briefs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,8 +117,10 @@ CREATE TABLE IF NOT EXISTS prep_briefs (
   attendees     TEXT NOT NULL DEFAULT '[]',
   run_id        INTEGER,
   json          TEXT NOT NULL,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local'
 );
+CREATE INDEX IF NOT EXISTS idx_prep_briefs_owner_id ON prep_briefs(owner_id);
 CREATE INDEX IF NOT EXISTS idx_prep_deal ON prep_briefs(deal_id, id);
 
 -- Local embeddings (nomic-embed-text via Ollama on loopback). One row per
@@ -123,6 +137,8 @@ CREATE TABLE IF NOT EXISTS embeddings (
   dim         INTEGER NOT NULL,
   vector      BLOB NOT NULL,               -- float32
   created_at  TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local',
   UNIQUE(entity_type, entity_id, model)
 );
+CREATE INDEX IF NOT EXISTS idx_embeddings_owner_id ON embeddings(owner_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(model, entity_type);

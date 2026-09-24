@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Generate salescoach/store/pg/0001_baseline.sql from the tracked SQLite schema.
+"""Generate a Postgres baseline from the tracked SQLite schema.
+
+salescoach/store/pg/0001_baseline.sql was made by this script from the version-6 files and is
+FROZEN: a Postgres database that applied it moves on only through the numbered migrations beside
+it (0002_owner.sql, ...), each hand-written to land the shape the SQLite files declare at that
+version (tests/test_schema_parity.py checks a migrated database against them). Running this script
+today therefore prints the CURRENT schema to stdout for reading, or, with --write PATH, writes it
+as the baseline of a fresh re-baseline (a new numbered file that replaces everything before it;
+only ever done deliberately). `--check` fails when 0001 is not what the version-6 files produced,
+which is a check nothing else needs any more and is kept for a re-baseline.
 
 The SQLite files (store/schema-sales.sql + plugins/*.sql) stay the source of truth. This script
 rewrites them for Postgres and nothing else:
@@ -13,7 +22,7 @@ column order are kept verbatim, which is what tests/test_schema_parity.py verifi
 database. Run it after any schema change and commit the result; `--check` (CI) fails when the
 committed file is not what the sources produce.
 
-    python scripts/gen_pg_baseline.py [--check]
+    python scripts/gen_pg_baseline.py [--write PATH]
 """
 import re
 import sys
@@ -66,15 +75,16 @@ def generate() -> str:
 
 def main(argv) -> int:
     text = generate()
-    if "--check" in argv:
-        if not OUT.exists() or OUT.read_text() != text:
-            print(f"{OUT.relative_to(ROOT)} is out of date: run scripts/gen_pg_baseline.py", file=sys.stderr)
+    if "--write" in argv:
+        target = Path(argv[argv.index("--write") + 1])
+        if target.resolve() == OUT.resolve():
+            print(f"{OUT.relative_to(ROOT)} is frozen; write a new numbered baseline instead", file=sys.stderr)
             return 1
-        print("baseline up to date")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        print(f"wrote {target}")
         return 0
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(text)
-    print(f"wrote {OUT.relative_to(ROOT)}")
+    sys.stdout.write(text)
     return 0
 
 
