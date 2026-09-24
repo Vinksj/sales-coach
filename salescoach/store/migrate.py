@@ -250,6 +250,32 @@ def _neutral_words(conn):
 
 MIGRATIONS[5] = _neutral_words
 
+# ---- 6 (2026-09-24, two backends): the bus no longer computes "not before" from updated_at with
+# julianday(), which Postgres does not have. fail() and defer() write the earliest retry time into
+# not_before; NULL means claimable now, so every existing pending row stays claimable.
+def _not_before(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 6:      # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        # A database whose tables were created by a newer schema-sales.sql and then rewound (the test
+        # fixtures do this) already has the column: adding it twice is the only way this step can fail.
+        # One without the table at all (a hand-built fixture) has nothing to migrate.
+        cols = _columns(conn, "wf_events")
+        if cols and "not_before" not in cols:
+            conn.execute("ALTER TABLE wf_events ADD COLUMN not_before TEXT")
+        conn.execute("PRAGMA user_version = 6")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[6] = _not_before
+
 
 def run(conn):
     version = conn.execute("PRAGMA user_version").fetchone()[0]

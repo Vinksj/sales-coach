@@ -40,6 +40,7 @@ dependencies = [
   "httpx",
   "google-api-python-client",
   "google-auth",
+  "psycopg[binary,pool]>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,7 @@ include = ["salescoach*"]
 [tool.setuptools.package-data]
 salescoach = [
   "store/*.sql",
+  "store/pg/*.sql",
   "plugins/*.sql",
   "agents/prompts/*.md",
   "automation/prompts/*.md",

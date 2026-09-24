@@ -8,22 +8,22 @@ This is the subset of the original engine that the coach uses, kept inside the
 package so an install has no dependency outside it.
 """
 import json
-import sqlite3
 from datetime import datetime, timezone
+
+from . import db
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def connect(path) -> db.Connection:
+    """A SQLite file (rows by name and index, foreign keys on) behind the store/db.py surface."""
+    return db.connect(path)
 
 
 def init(conn, schema) -> None:
+    """Create the schema from a SQL script: SQLite only (Postgres is migrated by store/pgmigrate.py)."""
     with open(schema) as f:
         conn.executescript(f.read())
     conn.commit()
@@ -59,8 +59,9 @@ def add_node(conn, actor, id, type, kind=None, title=None, standfirst=None,
 def set_source(conn, actor, node_id, uri=None, sha=None, raw_path=None,
                capture="seed", lineage=None):
     conn.execute(
-        "INSERT OR REPLACE INTO sources(node_id,uri,sha,raw_path,capture,lineage) "
-        "VALUES (?,?,?,?,?,?)",
+        "INSERT INTO sources(node_id,uri,sha,raw_path,capture,lineage) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(node_id) DO UPDATE SET uri=excluded.uri, sha=excluded.sha, raw_path=excluded.raw_path, "
+        "capture=excluded.capture, lineage=excluded.lineage",
         (node_id, uri, sha, raw_path, capture, json.dumps(lineage or [])))
     _emit(conn, actor, "source_registered", node_id=node_id,
           after=dict(uri=uri, capture=capture))

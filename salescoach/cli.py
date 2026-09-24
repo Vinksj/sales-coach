@@ -276,6 +276,34 @@ def cmd_status(args):
               "or run `salescoach work` to process them", file=sys.stderr)
 
 
+def cmd_migrate(args):
+    """Bring the Postgres schema up to this build (or, with --check, say whether it is)."""
+    import os
+    from .store import db, pgmigrate, stores
+    url = args.url or os.environ.get("DATABASE_MIGRATE_URL") or os.environ.get("DATABASE_URL")
+    if not url or not db.is_postgres_url(url):
+        # SQLite migrates itself on open (store/migrate.py); opening the store is the migration.
+        conn = stores.sales()
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+        print(f"sqlite: schema at version {version} (expected {stores.SCHEMA_VERSION})")
+        return 0 if version == stores.SCHEMA_VERSION else 1
+    conn = db.connect(url)
+    try:
+        current, expected = pgmigrate.check(conn)
+        if args.check:
+            state = "up to date" if current == expected else "BEHIND" if current < expected else "AHEAD of this build"
+            print(f"postgres: schema at version {current}, this build expects {expected}: {state}")
+            return 0 if current == expected else 1
+        applied = pgmigrate.apply(conn, log=print)
+        current, expected = pgmigrate.check(conn)
+        print(f"postgres: schema at version {current}" + ("" if applied else " (nothing to apply)"))
+        stores.forget_verified()
+        return 0 if current == expected else 1
+    finally:
+        conn.close()
+
+
 def _worker_listening(port: int = 8140) -> bool:
     import socket
     try:
@@ -394,6 +422,11 @@ def main(argv=None):
     ev.set_defaults(fn=cmd_eval)
 
     sub.add_parser("status").set_defaults(fn=cmd_status)
+
+    mg = sub.add_parser("migrate", help="apply the Postgres schema migrations (DATABASE_MIGRATE_URL or DATABASE_URL)")
+    mg.add_argument("--check", action="store_true", help="exit 1 when the database is behind this build")
+    mg.add_argument("--url", help="the postgresql:// URL to migrate (default: the environment)")
+    mg.set_defaults(fn=cmd_migrate)
 
     from . import plugins
     plugins.register_cli(sub)

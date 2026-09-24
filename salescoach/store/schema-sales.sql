@@ -93,7 +93,10 @@ CREATE TABLE IF NOT EXISTS deals (
                CHECK(status IN ('active','won','lost','paused')),
   next_step    TEXT,
   close_target TEXT,
-  updated_at   TEXT
+  updated_at   TEXT,
+  value        REAL,                        -- learning plugin (outcomes): added by learning.ensure_columns
+  currency     TEXT,                        --   on a SQLite store created before these columns existed
+  lost_reason  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS people (
@@ -398,7 +401,8 @@ CREATE TABLE IF NOT EXISTS wf_events (
   attempts     INTEGER NOT NULL DEFAULT 0,
   error        TEXT,
   created_at   TEXT NOT NULL,
-  updated_at   TEXT
+  updated_at   TEXT,
+  not_before   TEXT                        -- NULL = claimable now; fail()/defer() set the earliest retry (UTC ISO)
 );
 CREATE INDEX IF NOT EXISTS idx_wf_status ON wf_events(status, id);
 
