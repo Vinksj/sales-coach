@@ -29,9 +29,11 @@ and a SAVEPOINT outside a transaction opens one (its RELEASE commits). On Postgr
 statement aborts the transaction: code that catches a database error must roll back (or use
 ON CONFLICT) instead of carrying on, which is the one rule the subset adds.
 """
+import os
 import re
 import sqlite3
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -63,6 +65,18 @@ else:
 
 class NotSupported(sqlite3.OperationalError if psycopg is None else psycopg.OperationalError):
     """A statement outside the portable subset reached the Postgres translator."""
+
+
+class NoActorBound(RuntimeError):
+    """A statement ran on Postgres with no actor bound to the connection and the connection not marked
+    system. Raised only when ASSERT_ACTOR is on (the test suite; SALESCOACH_ASSERT_ACTOR=1): in
+    production the row-level policies make such a statement see and write nothing, which is safe but
+    silent, and silence is what this assertion exists to catch (a background thread that forgot its
+    identity.session(), a route the ActorGate let through as nobody)."""
+
+
+# The debug assertion behind NoActorBound. tests/conftest.py switches it on for every test.
+ASSERT_ACTOR = os.environ.get("SALESCOACH_ASSERT_ACTOR") == "1"
 
 
 def is_postgres_url(value) -> bool:
@@ -369,10 +383,25 @@ def translate(sql: str) -> Translated:
 class Connection:
     dialect = ""
     actor = None                    # identity.Actor bound by identity.bind(); None = nobody (cloud: fails closed)
+    system = False                  # True: statements may run with no actor (migrations, bootstrap, the worker's claim loop)
 
     def bind_actor(self, actor) -> None:
         """Remember who acts through this connection. Postgres also tells the session (see there)."""
         self.actor = actor
+
+    @contextmanager
+    def as_system(self):
+        """Mark the connection system for the block: it may run statements with nobody bound. On Postgres
+        such statements still run under the policies (nobody sees or writes OWNED rows); the mark only
+        says the code meant it, which is what the debug assertion (NoActorBound) checks. Used by the
+        migrator, the store's own version check and local-user bootstrap, identity._load (reading the
+        users row that becomes the actor), the ActorGate's lookup and the worker's claim loop."""
+        previous = self.system
+        self.system = True
+        try:
+            yield self
+        finally:
+            self.system = previous
 
     def execute(self, sql, params=()):
         raise NotImplementedError
@@ -497,23 +526,42 @@ class PostgresConnection(Connection):
 
     # -- the acting user --
 
+    # Session-level: what reads outside a transaction (autocommit) run under. Transaction-local: re-issued
+    # by _on_begin at the start of every transaction, so the settings a transaction runs under are always
+    # exactly conn.actor, whatever a pooled session or an earlier statement left behind.
     ACTOR_SETTINGS = "SELECT set_config('app.user_id', %s, false), set_config('app.mode', %s, false)"
+    LOCAL_SETTINGS = "SELECT set_config('app.user_id', %s, true), set_config('app.mode', %s, true)"
+
+    def _settings(self) -> tuple:
+        actor = self.actor
+        return (actor.user_id if actor else "", actor.mode if actor else "")
 
     def bind_actor(self, actor) -> None:
         """conn.actor, and the session settings app.user_id / app.mode that the owner_id column defaults
-        read (store/pg/0002_owner.sql) and that Phase 2's row-level policies will read. An unbound
-        connection sets '' so that a default of NULLIF(current_setting('app.user_id', true), '') is NULL
-        and an owned INSERT fails its NOT NULL: nobody's data is ever written as somebody's."""
+        (store/pg/0002_owner.sql) and the row-level policies (0003_rls.sql) read. An unbound connection
+        sets '' so that NULLIF(current_setting('app.user_id', true), '') is NULL: nobody sees an OWNED
+        row and an owned INSERT is refused, so nobody's data is ever read or written as somebody's.
+        Inside an open transaction the transaction-local value is set too (as_user mid-transaction)."""
         self.actor = actor
         if self._closed:
             return
-        self._raw.execute(self.ACTOR_SETTINGS,
-                          (actor.user_id if actor else "", actor.mode if actor else ""))
+        values = self._settings()
+        self._raw.execute(self.ACTOR_SETTINGS, values)
+        if self.in_transaction:
+            self._raw.execute(self.LOCAL_SETTINGS, values)
 
     def _on_begin(self) -> None:
-        """Phase 2 hook: re-issue the actor settings as SET LOCAL inside every transaction and assert
-        they match conn.actor, so a setting changed behind our back cannot outlive a transaction.
-        Session-level binding (bind_actor) is enough while there is no RLS to defeat."""
+        """The start of EVERY transaction (explicit BEGIN, a SAVEPOINT outside one, the implicit one a DML
+        statement opens, serialize(), lock_rows()): re-issue the actor as transaction-local settings. The
+        code commits mid-function, so a SET LOCAL made once would be lost with the first COMMIT; this is
+        what makes the identity a transaction runs under a property of conn.actor and nothing else."""
+        self._raw.execute(self.LOCAL_SETTINGS, self._settings())
+
+    def _check_actor(self) -> None:
+        if ASSERT_ACTOR and self.actor is None and not self.system:
+            raise NoActorBound("a statement ran on Postgres with no actor bound: open the store inside "
+                               "identity.session() / as_user(), or mark the connection conn.as_system() if "
+                               "running as nobody is meant (docs/architecture.md, \"Isolation\")")
 
     # -- transactions --
 
@@ -565,6 +613,7 @@ class PostgresConnection(Connection):
     def execute(self, sql, params=()):
         if self._closed:
             raise psycopg.ProgrammingError("Cannot operate on a closed database.")
+        self._check_actor()
         t = translate(sql)
         if t.kind == "PRAGMA":
             return self._pragma(sql)
@@ -590,6 +639,7 @@ class PostgresConnection(Connection):
         return self._wrap(cur, t)
 
     def executemany(self, sql, seq):
+        self._check_actor()
         t = translate(sql)
         if t.is_dml and not self.in_transaction:
             self._begin()
@@ -599,6 +649,7 @@ class PostgresConnection(Connection):
 
     def executescript(self, sql):
         """Several statements, no parameters (sqlite3 commits first; so do we)."""
+        self._check_actor()
         self.commit()
         self._raw.execute(sql)
         return Cursor(None, [], -1)

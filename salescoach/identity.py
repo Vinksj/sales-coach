@@ -20,9 +20,11 @@ Two modes (SALESCOACH_MODE):
           nothing set raises NoActor, which is how a background thread that forgot to open a session
           is caught (a forgotten actor must never silently become somebody's data).
 
-The Postgres binding is session-level for now (set_config(..., false)). Phase 2 re-issues it at
-the start of every transaction (PostgresConnection._on_begin) and adds the RLS assertion; the hook
-is there, this module only fills it.
+On Postgres the binding is the session settings app.user_id / app.mode, set for the session by
+bind() and re-issued transaction-locally at the start of every transaction
+(store/db.py PostgresConnection._on_begin), which the row-level policies (store/pg/0003_rls.sql)
+read. A connection with no actor sees and writes nothing OWNED; in the test suite it also trips
+db.NoActorBound unless the code marked the connection conn.as_system() on purpose.
 """
 import os
 from contextlib import contextmanager
@@ -113,7 +115,8 @@ def _load(conn, user_id: str, mode: str, role: Optional[str]) -> Actor:
     if user_id == LOCAL_USER:
         return Actor(LOCAL_USER, mode, role or "admin", None)
     from . import users
-    row = users.get(conn, user_id)
+    with conn.as_system():                          # reading the row that BECOMES the actor: nobody is bound yet
+        row = users.get(conn, user_id)
     if row is None:
         raise NoActor(f"no such user: {user_id}")
     return Actor(user_id, mode, role or row["role"], users.profile_of(row))

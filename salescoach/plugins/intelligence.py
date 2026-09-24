@@ -165,7 +165,9 @@ def start_background(db_path, stop):
                 with identity.activate(None):
                     conn = stores.sales(db_path)
                 try:
-                    for user in users.active(conn):            # embeddings are OWNED: indexed as their owner
+                    with conn.as_system():
+                        active = users.active(conn)
+                    for user in active:                        # embeddings are OWNED: indexed as their owner
                         with identity.as_user(conn, user["id"], mode=identity.SERVICE):
                             embed.index_pending(conn)
                 finally:

@@ -352,7 +352,11 @@ def nudge_mark_sent(request: Request, email_id: int):
     back = f"/nudges/{email_id}"
     with core._db(request) as conn:
         core._email_or_404(conn, email_id)
-        if not policy.mark_sent_manually(conn, email_id):
+        try:
+            marked = policy.mark_sent_manually(conn, email_id)
+        except policy.SendRefused as exc:
+            return core._redirect(back, err=f"Refused: {exc}")
+        if not marked:
             return core._redirect(back, err="Only a nudge saved to Gmail Drafts can be marked sent.")
     return core._redirect(back, msg="Marked as sent from Gmail.")
 
@@ -364,7 +368,11 @@ def nudge_not_sent(request: Request, email_id: int):
     back = f"/nudges/{email_id}"
     with core._db(request) as conn:
         core._email_or_404(conn, email_id)
-        if not policy.acknowledge_not_sent(conn, email_id):
+        try:
+            released = policy.acknowledge_not_sent(conn, email_id)
+        except policy.SendRefused as exc:
+            return core._redirect(back, err=f"Refused: {exc}")
+        if not released:
             return core._redirect(back, err="Only an email stuck in sending can be released.")
     return core._redirect(back, msg="Marked as not sent. You can send it again.")
 

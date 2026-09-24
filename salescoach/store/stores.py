@@ -50,13 +50,16 @@ def sales(path=None) -> db.Connection:
     bound to the acting user (identity.current_actor: the implicit local user in local mode, whoever
     identity.session() set in cloud mode, nobody when nothing did)."""
     target = path if path is not None else db_path()
+    first = None
     if isinstance(target, str) and db.is_postgres_url(target):
-        conn = _postgres(target)
+        conn, first = _postgres(target)
     else:
         if identity.cloud():
             raise RuntimeError(CLOUD_NEEDS_POSTGRES)
         conn = _sqlite(Path(target))
     identity.bind(conn, identity.current_actor(required=False))
+    if first is not None:
+        _ensure_local_user(conn, first)          # after the bind: the row's labels are written as the local user
     return conn
 
 
@@ -170,28 +173,33 @@ def _pool(url: str):
         return pool
 
 
-def _postgres(url: str) -> db.Connection:
+def _postgres(url: str) -> tuple:
+    """A pooled connection on the schema, plus the (url, schema) key the first time this process opens
+    it (the caller creates the local user then), else None. Nothing here has an actor yet, so the
+    search_path and the version check run with the connection marked system."""
     schema = _pg_schema
     if schema is None and _pg_schema_hook is not None:
         schema = _pg_schema_hook(url)
     pool = _pool(url)
     raw = pool.getconn(timeout=30)
     conn = db.PostgresConnection(raw, release=pool.putconn)
+    first = None
     try:
-        if schema:
-            if not _SCHEMA_NAME.match(schema):
-                raise ValueError(f"bad schema name {schema!r}")
-            conn.execute(f'SET search_path TO "{schema}"')
-        key = (url, schema)
-        if key not in _pg_verified:
-            from . import pgmigrate
-            pgmigrate.assert_current(conn)
-            _pg_verified.add(key)
-            _ensure_local_user(conn, key)
+        with conn.as_system():
+            if schema:
+                if not _SCHEMA_NAME.match(schema):
+                    raise ValueError(f"bad schema name {schema!r}")
+                conn.execute(f'SET search_path TO "{schema}"')
+            key = (url, schema)
+            if key not in _pg_verified:
+                from . import pgmigrate
+                pgmigrate.assert_current(conn)
+                _pg_verified.add(key)
+                first = key
     except Exception:
         conn.close()
         raise
-    return conn
+    return conn, first
 
 
 def forget_verified(url=None, schema=None) -> None:

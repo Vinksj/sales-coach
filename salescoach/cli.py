@@ -299,6 +299,7 @@ def cmd_migrate(args):
         print(f"sqlite: schema at version {version} (expected {stores.SCHEMA_VERSION})")
         return 0 if version == stores.SCHEMA_VERSION else 1
     conn = db.connect(url)
+    conn.system = True                                     # the migrator acts as nobody, as the owner role
     try:
         current, expected = pgmigrate.check(conn)
         if args.check:

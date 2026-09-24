@@ -38,6 +38,7 @@ class Worker(threading.Thread):
                 if conn is None:
                     with identity.activate(None):           # nobody: handle() binds the owner per event
                         conn = stores.sales(self.db_path)
+                    conn.system = True                      # the claim loop runs as nobody, on purpose (bus rows only)
                     bus.recover_running(conn)
                 if self.live_busy():
                     time.sleep(self.poll_s)

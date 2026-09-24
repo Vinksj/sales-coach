@@ -19,6 +19,7 @@ pytestmark = pytest.mark.postgres_only
 
 def test_serve_boots_against_database_url(db):
     assert stores.db_path() == os.environ["DATABASE_URL"]
+    assert os.environ["DATABASE_URL"] != os.environ["DATABASE_MIGRATE_URL"]       # the app role, not the owner
     app = create_app(start_worker=False, live_factory=None, hub=None)
     assert app.state.db_path is None                       # the URL comes from the environment
     client = TestClient(app)
@@ -35,12 +36,18 @@ def test_serve_boots_against_database_url(db):
 
 
 def _url_in_schema(schema):
-    return f"{os.environ['DATABASE_URL']}?options=-c%20search_path%3D{schema}"
+    return f"{os.environ['DATABASE_MIGRATE_URL']}?options=-c%20search_path%3D{schema}"
+
+
+def _admin():
+    conn = db.connect(os.environ["DATABASE_MIGRATE_URL"])       # the owner role, as nobody
+    conn.system = True
+    return conn
 
 
 def test_migrate_cli_applies_and_checks(capsys):
     schema = f"sc_test_cli_{uuid.uuid4().hex[:8]}"
-    admin = db.connect(os.environ["DATABASE_URL"])
+    admin = _admin()
     try:
         admin.execute(f'CREATE SCHEMA "{schema}"')
         url = _url_in_schema(schema)
@@ -54,6 +61,7 @@ def test_migrate_cli_applies_and_checks(capsys):
         assert cli.main(["migrate", "--url", url]) == 0                     # a second run applies nothing
         assert "nothing to apply" in capsys.readouterr().out
         conn = db.connect(url)
+        conn.system = True
         try:
             assert conn.table_exists("calls") and conn.table_exists("schema_migrations")
             assert pgmigrate.check(conn) == (pgmigrate.expected_version(), pgmigrate.expected_version())
@@ -66,7 +74,7 @@ def test_migrate_cli_applies_and_checks(capsys):
 
 def test_store_refuses_a_schema_behind_the_code():
     schema = f"sc_test_old_{uuid.uuid4().hex[:8]}"
-    admin = db.connect(os.environ["DATABASE_URL"])
+    admin = _admin()
     try:
         admin.execute(f'CREATE SCHEMA "{schema}"')
         stores._pg_schema = schema                              # the harness's own slot, restored by it

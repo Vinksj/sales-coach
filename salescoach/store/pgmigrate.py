@@ -49,9 +49,10 @@ def _ensure_table(conn) -> None:
 
 
 def current_version(conn) -> int:
-    if not conn.table_exists("schema_migrations"):
-        return 0
-    row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    with conn.as_system():
+        if not conn.table_exists("schema_migrations"):
+            return 0
+        row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
     return int(row[0] or 0)
 
 
@@ -59,7 +60,16 @@ def apply(conn, log=None) -> list:
     """Apply every step above the current version. Returns the versions applied."""
     if conn.dialect != "postgres":
         raise SchemaOutOfDate("pgmigrate runs on Postgres only; SQLite migrates in store/migrate.py")
+    with conn.as_system():
+        return _apply(conn, log)
+
+
+def _apply(conn, log) -> list:
     conn.commit()
+    # Migrations run as the owner role, which bypasses row-level security (docs/architecture.md,
+    # "Isolation"). row_security = off makes a statement that a policy WOULD filter fail loudly instead
+    # of silently touching no rows: an owner role without BYPASSRLS shows up here, not as a half-done backfill.
+    conn.execute("SET row_security = off")
     conn.execute("SELECT pg_advisory_lock(%s)" % MIGRATE_LOCK)
     applied = []
     try:
@@ -85,6 +95,7 @@ def apply(conn, log=None) -> list:
                 log(f"applied {version:04d}_{name}")
     finally:
         conn.execute("SELECT pg_advisory_unlock(%s)" % MIGRATE_LOCK)
+        conn.execute("RESET row_security")
     return applied
 
 

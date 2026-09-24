@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .. import config, seller
+from .. import config, identity, seller
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store.stores import now
@@ -76,6 +76,20 @@ def evaluate(conn, email_row, user_added=()) -> Decision:
 
 class SendRefused(RuntimeError):
     pass
+
+
+def _owner_at_the_keyboard(conn, row, approved_by: str = "user:ui") -> None:
+    """Only the email's OWNER, acting INTERACTIVELY, may send it, mark it sent or release it: a manager
+    reads a rep's drafts (the row-level policies let them) and can never send one, and no background
+    duty sends on a person's behalf. The one exception is the local install's auto-send executor
+    (automation/autosend.py, approved_by='policy:<name>'), the owner's own service-mode duty; it stays off
+    in cloud mode, where service mode is refused outright. Raises SendRefused."""
+    actor = identity.actor_of(conn)
+    owner = row["owner_id"] if "owner_id" in row.keys() else actor.user_id
+    if owner != actor.user_id:
+        raise SendRefused("this email belongs to another user; only its owner can act on it")
+    if actor.mode != identity.INTERACTIVE and (identity.cloud() or not str(approved_by).startswith("policy:")):
+        raise SendRefused("sending needs the email's owner at the keyboard")
 
 
 def _definitely_not_sent(exc) -> bool:
@@ -141,6 +155,7 @@ def mark_sent_manually(conn, email_id: int, by: str = "user:ui") -> bool:
     row = conn.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
     if row is None or row["status"] != "saved_to_gmail":
         return False
+    _owner_at_the_keyboard(conn, row, by)
     _write(conn, "UPDATE emails SET status='sent', sent_at=?, approved_by=COALESCE(approved_by, ?), updated_at=? "
                  "WHERE id=?", (now(), by, now(), email_id))
     bus.publish(conn, Event(type="EMAIL_SENT", entity_id=row["call_id"] or row["deal_id"],
@@ -179,6 +194,7 @@ def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by
         row = conn.lock_rows("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
         if row is None:
             raise SendRefused("no such email")
+        _owner_at_the_keyboard(conn, row, approved_by)
         if row["status"] in ("sent", "saved_to_gmail"):
             conn.execute("ROLLBACK")
             return {"status": row["status"], "duplicate": True, "message_id": row["gmail_message_id"]}
@@ -242,9 +258,10 @@ def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by
 
 def acknowledge_not_sent(conn, email_id: int, by: str = "user:ui") -> bool:
     """The seller checked Gmail Sent and the stuck email is not there: allow a retry."""
-    row = conn.execute("SELECT status FROM emails WHERE id=?", (email_id,)).fetchone()
+    row = conn.execute("SELECT status, owner_id FROM emails WHERE id=?", (email_id,)).fetchone()
     if row is None or row["status"] != "sending":
         return False
+    _owner_at_the_keyboard(conn, row, by)
     conn.execute("UPDATE emails SET status='failed', error=?, updated_at=? WHERE id=?",
                  (f"confirmed not sent by {by}; safe to retry", now(), email_id))
     conn.commit()

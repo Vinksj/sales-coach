@@ -110,7 +110,8 @@ def _loop(duty: Duty, db_path, stop: threading.Event):
             continue
         try:
             if duty.per_user:
-                targets = [u["id"] for u in users.active(conn)]
+                with conn.as_system():                     # who to run for: read before anyone is bound
+                    targets = [u["id"] for u in users.active(conn)]
             elif identity.cloud():
                 log.info("%s: an org-level duty does not run in cloud mode yet (Phase 4)", duty.name)
                 continue

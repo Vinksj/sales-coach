@@ -556,7 +556,9 @@ def handle(conn, event: Event):
     mode): every handler and every seller.profile() read inside runs for that owner. Events with no
     handler are records only."""
     ensure_plugins()
-    with identity.as_user(conn, owner_of_event(conn, event), mode=identity.SERVICE):
+    with conn.as_system():                          # the owner is looked up before anyone is bound
+        owner = owner_of_event(conn, event)
+    with identity.as_user(conn, owner, mode=identity.SERVICE):
         if event.type in ("CALL_ENDED", "PROCESS_CALL"):
             run_pipeline(conn, event.entity_id, from_step=event.payload.get("from"),
                          force=bool(event.payload.get("force")))

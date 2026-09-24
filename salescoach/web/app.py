@@ -340,9 +340,13 @@ class FirstRunGate:
 class ActorGate:
     """Binds the acting user for the request (identity.activate), so every route handler, Jinja
     filter and store connection opened inside runs as that user. Local mode: the local user, always.
-    Cloud mode: the user named by the login cookie (hosted.verify_session), looked up in `users`;
-    a request that resolves to no active user gets 401 (open paths pass with no actor). Phase 3
-    replaces the lookup with Google sign-in and server-side sessions; the binding stays."""
+    Cloud mode: the user named by the login cookie (hosted.verify_session), looked up in `users`.
+    The order matters and is pinned by tests/isolation/test_actor_gate.py: a request with no valid
+    session is answered (401, or a redirect to /login for a page) BEFORE any store is opened; a
+    session naming a user who is not `active` gets 403 and the session counts for nothing; open paths
+    (auth.is_open: /login, /logout, /health, /static, the webhook) pass with no actor and must mark
+    any store they open conn.as_system(). Phase 3 replaces the cookie with Google sign-in and
+    server-side sessions; the binding and the order stay."""
 
     def __init__(self, app):
         self.app = app
@@ -351,35 +355,67 @@ class ActorGate:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        actor = identity.LOCAL_ACTOR if not identity.cloud() else self._cloud_actor(scope)
-        if actor is None and identity.cloud():
-            from . import auth
-            if not auth.is_open(scope["method"].upper(), scope.get("path") or "/"):
-                await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
+        if not identity.cloud():
+            with identity.activate(identity.LOCAL_ACTOR):
+                await self.app(scope, receive, send)
+            return
+        from . import auth
+        method, path = scope["method"].upper(), scope.get("path") or "/"
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        session = self._session(headers)
+        if not session:
+            if auth.is_open(method, path):
+                with identity.activate(None):
+                    await self.app(scope, receive, send)
                 return
+            await self._refused(scope, receive, send, method, path, headers)
+            return
+        row = self._user_row(scope, session)
+        if row is None:                                    # a session for a user who no longer exists
+            if auth.is_open(method, path):
+                with identity.activate(None):
+                    await self.app(scope, receive, send)
+                return
+            await self._refused(scope, receive, send, method, path, headers)
+            return
+        if row["status"] != "active":
+            await JSONResponse({"error": "this user is not active"}, status_code=403)(scope, receive, send)
+            return
+        from .. import users
+        actor = identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row))
         with identity.activate(actor):
             await self.app(scope, receive, send)
 
     @staticmethod
-    def _cloud_actor(scope):
+    def _session(headers):
+        """The login session the request carries, without touching the store. None = no valid session."""
         from . import auth
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        session = hosted.verify_session(auth._cookie(headers))
-        if not session:
-            return None
+        return hosted.verify_session(auth._cookie(headers))
+
+    @staticmethod
+    def _user_row(scope, session):
         from .. import users
         try:
             with identity.activate(None):
                 conn = stores.sales(scope["app"].state.db_path)
             try:
-                row = users.get(conn, session["user"]) or users.by_email(conn, session["user"])
+                with conn.as_system():                     # the lookup that decides WHO is bound: nobody is yet
+                    return users.get(conn, session["user"]) or users.by_email(conn, session["user"])
             finally:
                 conn.close()
         except Exception:
             return None
-        if not row or row["status"] != "active":
-            return None
-        return identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row))
+
+    @staticmethod
+    async def _refused(scope, receive, send, method, path, headers):
+        from . import auth
+        if auth._wants_page(method, path, headers):
+            query = scope.get("query_string") or b""
+            nxt = path + (("?" + query.decode("latin-1")) if query else "")
+            target = auth.LOGIN + "?" + urlencode({"next": nxt}) if nxt != "/" else auth.LOGIN
+            await RedirectResponse(target, status_code=303)(scope, receive, send)
+        else:
+            await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
 
 
 # ---- plumbing -----------------------------------------------------------------
@@ -785,7 +821,7 @@ def health(request: Request):
     """For the platform's health check: open (no session, no origin needed beyond a valid Host), cheap
     (one SELECT 1 on the store), and it names no secret. 503 when the store cannot answer."""
     try:
-        with _db(request) as conn:
+        with _db(request) as conn, conn.as_system():       # open path: nobody is bound, on purpose
             conn.execute("SELECT 1").fetchone()
         db_state = "ok"
     except Exception as exc:                        # a broken volume is exactly what this must report
@@ -850,7 +886,14 @@ def today_page(request: Request):
 @router.post("/events/{event_id}/retry")
 def event_retry(request: Request, event_id: int):
     with _db(request) as conn:
-        _one(conn, "SELECT id FROM wf_events WHERE id=?", (event_id,), "event")
+        row = _one(conn, "SELECT * FROM wf_events WHERE id=?", (event_id,), "event")
+        # The bus is open to every connection (store/rls.py); whose event it is decides here.
+        try:
+            owner = workflow.owner_of_event(conn, bus._to_event(row))
+        except workflow.UnknownOwner:
+            owner = None
+        if owner != identity.actor_of(conn).user_id:
+            raise HTTPException(404, "event not found")
         conn.execute("UPDATE wf_events SET status='pending', attempts=0, error=NULL, updated_at=? WHERE id=?",
                      (stores.now(), event_id))
         conn.commit()
@@ -1529,7 +1572,11 @@ def email_not_sent(request: Request, email_id: int):
     """The seller checked Gmail Sent after an unknown-delivery error: the email is not there."""
     with _db(request) as conn:
         row = _email_or_404(conn, email_id)
-        if not policy.acknowledge_not_sent(conn, email_id):
+        try:
+            released = policy.acknowledge_not_sent(conn, email_id)
+        except policy.SendRefused as exc:
+            return _redirect(f"/calls/{row['call_id']}", err=f"Refused: {exc}", anchor="email")
+        if not released:
             return _redirect(f"/calls/{row['call_id']}", err="Only an email stuck in sending can be released.",
                              anchor="email")
     return _redirect(f"/calls/{row['call_id']}", msg="Marked as not sent. You can send it again.", anchor="email")
@@ -1539,7 +1586,11 @@ def email_not_sent(request: Request, email_id: int):
 def email_mark_sent(request: Request, email_id: int):
     with _db(request) as conn:
         row = _email_or_404(conn, email_id)
-        if not policy.mark_sent_manually(conn, email_id):
+        try:
+            marked = policy.mark_sent_manually(conn, email_id)
+        except policy.SendRefused as exc:
+            return _redirect(f"/calls/{row['call_id']}", err=f"Refused: {exc}", anchor="email")
+        if not marked:
             return _redirect(f"/calls/{row['call_id']}", err="Only an email saved to Gmail Drafts can be marked sent.",
                              anchor="email")
         try:

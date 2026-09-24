@@ -28,6 +28,16 @@ def _as(conn, actor):
     return identity.as_actor(conn, actor)
 
 
+@pytest.fixture(autouse=True)
+def two_users(db, dialect):
+    """Postgres: the row-level policies (store/pg/0003_rls.sql) give an id with no active users row no
+    rows at all, so A and B exist. SQLite holds one user per file and has no policies: nothing to do."""
+    if dialect == "postgres":
+        for actor, name in ((A, "Alpha"), (B, "Beta")):
+            users.create(db, f"{actor.user_id}@tessel.test", name, role="rep", user_id=actor.user_id)
+        db.commit()
+
+
 # ---- defaults and compat ------------------------------------------------------------------------
 
 def test_owned_rows_default_to_the_acting_user_and_directory_nodes_to_nobody(db, dialect):
@@ -42,10 +52,10 @@ def test_owned_rows_default_to_the_acting_user_and_directory_nodes_to_nobody(db,
     assert db.execute("SELECT owner_id FROM events WHERE node_id=?", (call,)).fetchone()[0] == "local"
     with _as(db, B):
         other = repo.create_deal(db, "Beta deal")
-    # SQLite is one seller per file: the default is 'local' whoever acts. Postgres reads the session setting.
-    want = "u-beta" if dialect == "postgres" else "local"
-    assert db.execute("SELECT owner_id FROM deals WHERE node_id=?", (other,)).fetchone()[0] == want
-    assert db.execute("SELECT owner_id FROM nodes WHERE id=?", (other,)).fetchone()[0] == want
+        # SQLite is one seller per file: the default is 'local' whoever acts. Postgres reads the session setting.
+        want = "u-beta" if dialect == "postgres" else "local"
+        assert db.execute("SELECT owner_id FROM deals WHERE node_id=?", (other,)).fetchone()[0] == want
+        assert db.execute("SELECT owner_id FROM nodes WHERE id=?", (other,)).fetchone()[0] == want
 
 
 def test_is_me_is_derived_from_user_id(db):
@@ -98,7 +108,11 @@ def test_seller_patterns_recompute_yields_one_row_per_owner(db, fake_llm):
             db.execute("UPDATE calls SET owner_id=? WHERE node_id=?", (actor.user_id, call))
             seller_memory.recompute(db)
             db.commit()
-    rows = db.execute("SELECT owner_id, tag, calls_seen FROM seller_patterns ORDER BY owner_id").fetchall()
+    rows = []
+    for actor in (A, B):                                   # each owner reads their own row (RLS on Postgres)
+        with _as(db, actor):
+            rows += db.execute("SELECT owner_id, tag, calls_seen FROM seller_patterns WHERE owner_id=?",
+                               (actor.user_id,)).fetchall()
     assert [tuple(r) for r in rows] == [("u-alpha", "avoids_budget", 1), ("u-beta", "avoids_budget", 1)]
     with _as(db, A):
         assert seller_memory.active_priority(db) is None                 # candidate until seen on 2 calls
@@ -142,7 +156,10 @@ def test_calendar_meetings_share_an_event_id_across_owners(db):
                        "VALUES (?,?,?,?,?,?)", ("evt-1", f"meeting of {actor.user_id}", "2026-09-25T10:00:00+05:30",
                                                 "2026-09-25T10:30:00+05:30", stores.now(), actor.user_id))
     db.commit()
-    assert db.execute("SELECT COUNT(*) FROM calendar_meetings WHERE event_id='evt-1'").fetchone()[0] == 2
+    for actor in (A, B):
+        with _as(db, actor):
+            assert db.execute("SELECT COUNT(*) FROM calendar_meetings WHERE event_id='evt-1' AND owner_id=?",
+                              (actor.user_id,)).fetchone()[0] == 1
     from datetime import datetime
     from salescoach.automation import common
     moment = datetime(2026, 9, 25, 9, 0, tzinfo=common.IST)
@@ -150,22 +167,29 @@ def test_calendar_meetings_share_an_event_id_across_owners(db):
         mine = calendar.upcoming_meetings(db, now_dt=moment)
         assert [m["title"] for m in mine] == ["meeting of u-alpha"]
         assert calendar.set_record(db, "evt-1", True)
-    assert db.execute("SELECT record FROM calendar_meetings WHERE owner_id='u-beta'").fetchone()[0] == "no"
-    with pytest.raises(dbmod.IntegrityError):
-        db.execute("INSERT INTO calendar_meetings(event_id,first_seen_at,owner_id) VALUES ('evt-1',?,?)",
-                   (stores.now(), "u-alpha"))
-    db.rollback()
+    with _as(db, B):
+        assert db.execute("SELECT record FROM calendar_meetings WHERE owner_id='u-beta'").fetchone()[0] == "no"
+    with _as(db, A):
+        with pytest.raises(dbmod.IntegrityError):
+            db.execute("INSERT INTO calendar_meetings(event_id,first_seen_at,owner_id) VALUES ('evt-1',?,?)",
+                       (stores.now(), "u-alpha"))
+        db.rollback()
 
 
 def test_email_replies_share_a_message_id_across_owners(db):
     for actor in (A, B):
-        db.execute("INSERT INTO email_replies(message_id,thread_id,from_addr,received_at,body,created_at,owner_id) "
-                   "VALUES ('<m1@x>','t','a@b',?, 'hi', ?, ?)", (stores.now(), stores.now(), actor.user_id))
+        with _as(db, actor):
+            db.execute("INSERT INTO email_replies(message_id,thread_id,from_addr,received_at,body,created_at,owner_id) "
+                       "VALUES ('<m1@x>','t','a@b',?, 'hi', ?, ?)", (stores.now(), stores.now(), actor.user_id))
     db.commit()
-    assert db.execute("SELECT COUNT(*) FROM email_replies WHERE message_id='<m1@x>'").fetchone()[0] == 2
-    cur = db.execute("INSERT OR IGNORE INTO email_replies(message_id,thread_id,from_addr,received_at,body,created_at,"
-                     "owner_id) VALUES ('<m1@x>','t','a@b',?, 'hi', ?, ?)", (stores.now(), stores.now(), "u-alpha"))
-    assert cur.rowcount == 0
+    for actor in (A, B):
+        with _as(db, actor):
+            assert db.execute("SELECT COUNT(*) FROM email_replies WHERE message_id='<m1@x>' AND owner_id=?",
+                              (actor.user_id,)).fetchone()[0] == 1
+    with _as(db, A):
+        cur = db.execute("INSERT OR IGNORE INTO email_replies(message_id,thread_id,from_addr,received_at,body,created_at,"
+                         "owner_id) VALUES ('<m1@x>','t','a@b',?, 'hi', ?, ?)", (stores.now(), stores.now(), "u-alpha"))
+        assert cur.rowcount == 0
 
 
 def test_the_same_pasted_text_by_two_users_is_two_calls(db, dialect):
@@ -175,17 +199,22 @@ def test_the_same_pasted_text_by_two_users_is_two_calls(db, dialect):
     with _as(db, B):
         second = paste.import_text(db, TEXT, "two")
     assert first == again and second != first
-    refs = {r["node_id"]: r["source_ref"] for r in db.execute("SELECT node_id, source_ref FROM calls")}
+    refs = {}
+    for actor in (A, B):
+        with _as(db, actor):
+            refs.update({r["node_id"]: r["source_ref"] for r in db.execute("SELECT node_id, source_ref FROM calls")})
     assert refs[first].startswith("paste:u-alpha:") and refs[second].startswith("paste:u-beta:")
     assert refs[first].split(":")[2] == refs[second].split(":")[2]       # the same text, the same digest
     if dialect == "postgres":                      # the rows are B's too (SQLite: 'local', one seller per file)
-        assert db.execute("SELECT owner_id FROM calls WHERE node_id=?", (second,)).fetchone()[0] == "u-beta"
-        assert {r[0] for r in db.execute("SELECT owner_id FROM turns WHERE call_id=?", (second,))} == {"u-beta"}
+        with _as(db, B):
+            assert db.execute("SELECT owner_id FROM calls WHERE node_id=?", (second,)).fetchone()[0] == "u-beta"
+            assert {r[0] for r in db.execute("SELECT owner_id FROM turns WHERE call_id=?", (second,))} == {"u-beta"}
 
 
 def test_user_state_is_per_user(db):
     set_user_state(db, "automation:followups:ran_for", "2026-09-24")               # the local user
-    set_user_state(db, "automation:followups:ran_for", "2026-01-01", user_id="u-beta")
+    with _as(db, B):                                       # a user's state is written as that user (RLS: own rows only)
+        set_user_state(db, "automation:followups:ran_for", "2026-01-01", user_id="u-beta")
     assert get_user_state(db, "automation:followups:ran_for") == "2026-09-24"
     with _as(db, B):
         assert get_user_state(db, "automation:followups:ran_for") == "2026-01-01"
@@ -211,13 +240,17 @@ def test_pg_owner_default_is_the_session_setting_and_a_missing_one_fails(db):
         assert db.execute("SELECT current_setting('app.user_id', true)").fetchone()[0] == "u-beta"
         db.execute("INSERT INTO nodes(id,type,title) VALUES ('deal-b','deal','B')")
         db.execute("INSERT INTO deals(node_id,name) VALUES ('deal-b','B')")
-    assert db.execute("SELECT owner_id FROM deals WHERE node_id='deal-b'").fetchone()[0] == "u-beta"
+    with _as(db, B):
+        assert db.execute("SELECT owner_id FROM deals WHERE node_id='deal-b'").fetchone()[0] == "u-beta"
     identity.bind(db, None)
     try:
-        assert db.execute("SELECT current_setting('app.user_id', true)").fetchone()[0] == ""
-        with pytest.raises(dbmod.IntegrityError):                          # NOT NULL: nobody's data is written
-            db.execute("INSERT INTO nodes(id,type,title) VALUES ('deal-x','deal','X')")
-        db.rollback()
+        with pytest.raises(dbmod.NoActorBound):                           # the suite's assertion: nobody is bound
+            db.execute("SELECT 1")
+        with db.as_system():
+            assert db.execute("SELECT current_setting('app.user_id', true)").fetchone()[0] == ""
+            with pytest.raises(dbmod.Error):                              # the policy, ahead of the NOT NULL: nobody's data is written
+                db.execute("INSERT INTO nodes(id,type,title) VALUES ('deal-x','deal','X')")
+            db.rollback()
     finally:
         identity.bind(db, identity.LOCAL_ACTOR)
 
@@ -227,13 +260,9 @@ def test_pg_trigger_copies_the_parents_owner_and_refuses_a_mismatch(db):
     with _as(db, A):
         call = repo.create_call(db, source="paste", title="A's call")
         db.commit()
-    identity.bind(db, None)
-    try:
         db.execute("INSERT INTO turns(call_id,tier,idx,channel,text) VALUES (?,?,?,?,?)", (call, "final", 0, "me", "hi"))
         assert db.execute("SELECT owner_id FROM turns WHERE call_id=?", (call,)).fetchone()[0] == "u-alpha"
         db.commit()
-    finally:
-        identity.bind(db, identity.LOCAL_ACTOR)
     with _as(db, B):
         with pytest.raises(dbmod.IntegrityError) as exc:
             db.execute("INSERT INTO turns(call_id,tier,idx,channel,text) VALUES (?,?,?,?,?)", (call, "final", 1, "me", "no"))
@@ -242,13 +271,14 @@ def test_pg_trigger_copies_the_parents_owner_and_refuses_a_mismatch(db):
     with _as(db, A):
         db.execute("INSERT INTO turns(call_id,tier,idx,channel,text) VALUES (?,?,?,?,?)", (call, "final", 1, "me", "yes"))
         db.commit()
-    assert db.execute("SELECT COUNT(*) FROM turns WHERE call_id=? AND owner_id='u-alpha'", (call,)).fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM turns WHERE call_id=? AND owner_id='u-alpha'", (call,)).fetchone()[0] == 2
 
 
 @pytest.mark.postgres_only
 def test_pg_every_child_table_has_its_trigger(db):
     have = {r[0] for r in db.execute(
-        "SELECT event_object_table FROM information_schema.triggers WHERE trigger_schema = current_schema()")}
+        "SELECT event_object_table FROM information_schema.triggers WHERE trigger_schema = current_schema() "
+        "AND trigger_name LIKE 'trg_%_owner'")}
     assert have == set(tenancy.OWNER_PARENTS)
 
 

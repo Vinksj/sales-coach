@@ -470,10 +470,18 @@ def fallback() -> Methodology:
 
 # ----------------------------------------------------------------------------------- loading
 
+def settings_version() -> int:
+    """The version of any methodology settings that do not live in a file. 0 today: the three YAML
+    files above are the whole input. When the org's settings move into the database (plan, Phase 6:
+    org_settings cached on `version`), this returns that version so that _library, which is keyed on
+    it, cannot serve another process's stale read (tests/isolation/test_caches.py)."""
+    return 0
+
+
 def _stamps() -> tuple:
     user = config.user_dir()
     paths = (Path(config.CONFIG_DIR) / "methodologies.yaml", user / "methodologies.yaml", user / "methodology.yaml")
-    return tuple((str(p), config._stamp(p)) for p in paths)
+    return tuple((str(p), config._stamp(p)) for p in paths) + (("settings", settings_version()),)
 
 
 def _safe_load(name: str) -> dict:
