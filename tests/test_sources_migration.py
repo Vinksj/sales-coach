@@ -81,7 +81,7 @@ def _counts(conn):
 def test_migrates_a_v3_database_with_data(v3):
     path, before = v3
     conn = stores.sales(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 8
     assert _counts(conn) == {"calls": 6, "turns": 15, "loops": 5, "emails": 5, "call_participants": 5, "nodes": 13}
     # every old column of every row, unchanged and in the same order; history (4) and owner_id (7) appended
     after = [tuple(r) for r in conn.execute("SELECT * FROM calls ORDER BY node_id")]
