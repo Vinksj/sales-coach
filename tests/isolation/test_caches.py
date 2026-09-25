@@ -30,6 +30,7 @@ ALLOWED = {
     ("store.catalog", "identity_tables"): (),
     ("store.catalog", "always_not_null_columns"): (),
     ("store.catalog", "check_counts"): (),
+    ("store.catalog", "foreign_keys"): (),
 }
 USER_WORDS = ("user_id", "actor", "owner", "session", "request", "conn")   # "user" alone is the user settings FILE
 

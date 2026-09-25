@@ -74,7 +74,7 @@ def test_the_server_duties_start_and_stop_without_touching_gmail_or_claude(db, m
     threads = scheduler.start(stores.db_path(), stop)
     assert sorted(t.name for t in threads) == \
         ["salescoach-autosend", "salescoach-calendar", "salescoach-followups", "salescoach-recorder",
-             "salescoach-replies"]
+             "salescoach-replies", "salescoach-retention"]
     assert all(t.daemon and t.is_alive() for t in threads)
     stop.set()
     for t in threads:
@@ -85,7 +85,7 @@ def test_the_server_duties_start_and_stop_without_touching_gmail_or_claude(db, m
     before = set(threading.enumerate())
     execution.start_background(stores.db_path(), stop2)             # the plugin seam `serve` uses
     started = [t for t in threading.enumerate() if t not in before and t.name.startswith("salescoach-")]
-    assert len(started) == 5
+    assert len(started) == 6
     stop2.set()
     assert _wait_for(lambda: not any(t.is_alive() for t in started), 3)
 

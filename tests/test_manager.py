@@ -29,7 +29,8 @@ MARKER = "ZEBRA-QUOKKA-7731"
 TABLES = re.compile(r"\b(FROM|JOIN|INTO|UPDATE|TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(comments|access_log)\b", re.I)
 
 # The only modules that may run SQL on comments / access_log: the manager package itself and the schema.
-SQL_ALLOWED = {"manager/comments.py", "manager/views.py", "store/migrate.py", "store/rls.py"}
+# lifecycle/retention.py only DELETES them, with the expired call they are about (Phase 8); it builds no prompt.
+SQL_ALLOWED = {"manager/comments.py", "manager/views.py", "store/migrate.py", "store/rls.py", "lifecycle/retention.py"}
 # Modules allowed to import salescoach.manager: page and route code, and the bus's ownership check.
 # None of them builds a prompt (the list below is checked against the prompt builders too).
 IMPORT_ALLOWED = {"web/app.py", "intel/web.py", "learning/web.py", "automation/web.py", "plugins/live_coach.py",
