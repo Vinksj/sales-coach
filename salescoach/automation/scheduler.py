@@ -4,7 +4,8 @@ Four threads, each with its own sales.db handle, each honouring the stop Event:
   followups   daily at followup.run_at IST (09:30), and soon after start when
               today's run was missed;
   replies     every replies.poll_minutes, only while Gmail credentials load;
-  calendar    every calendar.scan_hours, only while the connector answers;
+  calendar    every calendar.scan_hours: the connector on a local install (only while it
+              answers), each rep's own Google Calendar in cloud mode (automation/gcal.py);
   autosend    every auto_send.interval_minutes; a no-op unless enabled;
   recorder    every calendar.record.poll_seconds: starts the meetings the seller
               armed for recording and stops them after the grace period.
@@ -201,7 +202,12 @@ def _replies_duty() -> Duty:
 
 
 def run_calendar(conn) -> dict:
+    """Local: the machine's connector (backs the whole duty off while it is missing). Cloud: the acting
+    user's own Google Calendar; a rep without one, or with a dead link, is noted and skipped quietly
+    (calendar.sync_own_calendar), never backing off the other reps."""
     from . import calendar, connector
+    if identity.cloud():
+        return calendar.sync_own_calendar(conn)
     try:
         connector.discover(conn)
     except connector.ConnectorError as exc:
