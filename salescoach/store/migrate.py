@@ -859,12 +859,13 @@ def _owner_keys(conn):
 MIGRATIONS[12] = _owner_keys
 
 
-# ---- 13 (2026-09-25, security review: derived outcomes are one owner's) ----------------------------------
+# ---- 13 (2026-09-25, security review fixes) --------------------------------------------------------------
 # derived_outcomes UNIQUE(kind, subject_type, subject_id) becomes UNIQUE(owner_id, kind, subject_type,
 # subject_id). outcomes.recompute reads and writes only the acting user's rows now; a row another user's
 # recompute wrote about the same subject (a manager's, before that fix) must not block or be overwritten by
-# the owner's own. Rebuilt like migration 12 (nothing references it by foreign key, no triggers, no views);
-# the DDL is frozen at version 13. The Postgres side is store/pg/0009_derived_outcomes_owner.sql.
+# the owner's own. access_log's entity_type CHECK widens from ('call','deal') to ('call','deal','email',
+# 'coaching') (manager/views.KINDS). Both are rebuilt like migration 12 (nothing references them by foreign
+# key, no triggers, no views); the DDL is frozen at version 13. The Postgres side is store/pg/0009_review_fixes.sql.
 DERIVED_OUTCOMES_V13 = """CREATE TABLE derived_outcomes_v13 (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   kind         TEXT NOT NULL,
@@ -881,6 +882,35 @@ DERIVED_OUTCOMES_V13_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_derived_outcomes_owner_id ON derived_outcomes(owner_id)",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON derived_outcomes(deal_id, kind)",
 )
+ACCESS_LOG_V13 = """CREATE TABLE access_log_v13 (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  viewer_id     TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  entity_type   TEXT NOT NULL CHECK(entity_type IN ('call','deal','email','coaching')),
+  entity_id     TEXT NOT NULL,
+  viewed_at     TEXT NOT NULL
+)"""
+ACCESS_LOG_V13_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_access_log_entity ON access_log(entity_type, entity_id, viewed_at)",
+)
+
+
+def _rebuild_v13(conn, table: str, ddl: str, indexes) -> None:
+    """The 12-step rebuild of `table` into `ddl` (which creates <table>_v13), keeping every row."""
+    new = f"{table}_v13"
+    before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    conn.execute(f"DROP TABLE IF EXISTS {new}")
+    conn.execute(ddl)
+    old = set(_columns(conn, table))
+    cols = [c for c in _columns(conn, new) if c in old]
+    conn.execute(f"INSERT INTO {new}({', '.join(cols)}) SELECT {', '.join(cols)} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {new} RENAME TO {table}")
+    for index in indexes:
+        conn.execute(index)
+    after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    if after != before:
+        raise sqlite3.IntegrityError(f"{table} rebuild copied {after} of {before} rows")
 
 
 def _derived_outcomes_owner(conn):
@@ -892,20 +922,11 @@ def _derived_outcomes_owner(conn):
             return
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "derived_outcomes" in tables and not _unique_has_owner(conn, "derived_outcomes"):
-            new = "derived_outcomes_v13"
-            before = conn.execute("SELECT COUNT(*) FROM derived_outcomes").fetchone()[0]
-            conn.execute(f"DROP TABLE IF EXISTS {new}")
-            conn.execute(DERIVED_OUTCOMES_V13)
-            old = set(_columns(conn, "derived_outcomes"))
-            cols = [c for c in _columns(conn, new) if c in old]
-            conn.execute(f"INSERT INTO {new}({', '.join(cols)}) SELECT {', '.join(cols)} FROM derived_outcomes")
-            conn.execute("DROP TABLE derived_outcomes")
-            conn.execute(f"ALTER TABLE {new} RENAME TO derived_outcomes")
-            for index in DERIVED_OUTCOMES_V13_INDEXES:
-                conn.execute(index)
-            after = conn.execute("SELECT COUNT(*) FROM derived_outcomes").fetchone()[0]
-            if after != before:
-                raise sqlite3.IntegrityError(f"derived_outcomes rebuild copied {after} of {before} rows")
+            _rebuild_v13(conn, "derived_outcomes", DERIVED_OUTCOMES_V13, DERIVED_OUTCOMES_V13_INDEXES)
+        if "access_log" in tables:
+            sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='access_log'").fetchone()[0]
+            if "'coaching'" not in sql:
+                _rebuild_v13(conn, "access_log", ACCESS_LOG_V13, ACCESS_LOG_V13_INDEXES)
         conn.execute("PRAGMA user_version = 13")
         conn.execute("COMMIT")
     except BaseException:

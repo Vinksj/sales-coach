@@ -62,7 +62,7 @@ OLD_OUTCOMES = """CREATE TABLE derived_outcomes (
   owner_id TEXT NOT NULL DEFAULT 'local', UNIQUE(kind, subject_type, subject_id))"""
 
 
-def test_migration_13_scopes_derived_outcomes_to_the_owner_and_keeps_the_rows(tmp_path, monkeypatch):
+def test_migration_13_scopes_derived_outcomes_and_widens_access_log_keeping_the_rows(tmp_path, monkeypatch):
     path = tmp_path / "sales.db"
     monkeypatch.setenv("SALES_DB", str(path))
     stores.sales().close()
@@ -72,6 +72,11 @@ def test_migration_13_scopes_derived_outcomes_to_the_owner_and_keeps_the_rows(tm
         {OLD_OUTCOMES};
         INSERT INTO derived_outcomes(kind,subject_type,subject_id,value,computed_at,owner_id)
             VALUES ('email_replied','email','7',1,'t','u-m');
+        DROP TABLE access_log;
+        CREATE TABLE access_log (id INTEGER PRIMARY KEY AUTOINCREMENT, viewer_id TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL, entity_type TEXT NOT NULL CHECK(entity_type IN ('call','deal')),
+            entity_id TEXT NOT NULL, viewed_at TEXT NOT NULL);
+        INSERT INTO access_log(viewer_id,owner_user_id,entity_type,entity_id,viewed_at) VALUES ('u-m','u-a','call','c1','t');
         PRAGMA user_version = 12;
     """)
     raw.close()
@@ -87,6 +92,14 @@ def test_migration_13_scopes_derived_outcomes_to_the_owner_and_keeps_the_rows(tm
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index' "
                                              "AND tbl_name='derived_outcomes'")}
         assert {"idx_derived_outcomes_owner_id", "idx_outcomes_deal"} <= names
+        # access_log takes the two new kinds (manager/views.KINDS) and keeps its rows
+        conn.execute("INSERT INTO access_log(viewer_id,owner_user_id,entity_type,entity_id,viewed_at) "
+                     "VALUES ('u-m','u-a','coaching','u-a','t'), ('u-m','u-a','email','7','t')")
+        assert [r[0] for r in conn.execute("SELECT entity_type FROM access_log ORDER BY id")] == ["call", "coaching", "email"]
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO access_log(viewer_id,owner_user_id,entity_type,entity_id,viewed_at) "
+                         "VALUES ('u-m','u-a','loop','x','t')")
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='idx_access_log_entity'").fetchone()
     finally:
         conn.close()
     migrate.run(stores.sales())                   # idempotent

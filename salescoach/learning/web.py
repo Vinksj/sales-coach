@@ -20,7 +20,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import identity
-from ..manager import access, comments
+from ..manager import access, comments, views
 from ..store import stores
 from . import cfg, ensure_columns, feedback, outcomes, patterns, weekly
 
@@ -117,6 +117,7 @@ def learning_page(request: Request, rep: str = ""):
                 owner = access.page_owner(conn, subject)
                 return _web().render(request, conn, "learning_page.html", **page_context(conn, owner["readonly"]),
                                      **owner, subject=subject, coaching=comments.coaching_notes(conn, subject),
+                                     viewed_by=views.viewed_by(conn, "coaching", subject),
                                      here="/learning" + (f"?rep={subject}" if owner["readonly"] else ""))
         except LookupError:
             raise HTTPException(404, "Not found")

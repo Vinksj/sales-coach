@@ -430,6 +430,52 @@ class WriteGuard:
         await self.app(scope, receive, send)
 
 
+class ReadLog:
+    """Cloud mode: a successful GET that reads someone else's work (a call, a deal, a nudge, a run, a rep's
+    Coach or Learning page) is written to the access log, whichever route served it
+    (manager/views.READ_PATHS, REP_PAGES). Inside the ActorGate, so the actor is known; after the response,
+    so a 404 or a redirect logs nothing, and a logging failure never breaks the page."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"].upper() not in ("GET", "HEAD") or not identity.cloud():
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path") or ""
+        rep = dict(parse_qsl((scope.get("query_string") or b"").decode("latin-1"))).get("rep") or None
+        actor = identity.current_actor(required=False)
+        if actor is None or not views.logs(path, rep):
+            await self.app(scope, receive, send)
+            return
+        status = {}
+
+        async def watch(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, watch)
+        if status.get("code") != 200:
+            return
+        state = getattr(scope.get("app"), "state", None)
+        db_path = getattr(state, "db_path", None)
+
+        def record():
+            with identity.activate(actor):
+                conn = stores.sales(db_path)
+                try:
+                    views.log_read(conn, path, rep)
+                except Exception:
+                    logging.getLogger("salescoach.web").exception("access log: could not record a read of %s", path)
+                    conn.rollback()
+                finally:
+                    conn.close()
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(record)
+
+
 # ---- plumbing -----------------------------------------------------------------
 
 @contextmanager
@@ -867,6 +913,7 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.login_limiter = hosted.LoginLimiter()
     from . import auth
     app.add_middleware(FirstRunGate)
+    app.add_middleware(ReadLog)                     # inside the ActorGate: needs the actor; logs a read of others' work
     app.add_middleware(WriteGuard)                  # inside the ActorGate: needs the actor; before any route
     app.add_middleware(ActorGate)                   # outside the gate: "is this USER set up" needs to know who
     app.add_middleware(auth.AuthGate)               # inert without SALESCOACH_PASSWORD; else a session before any page
@@ -1873,7 +1920,8 @@ def _coach_page(request: Request, conn, subject: str):
     return render(request, conn, "coach.html", priority=next((p for p in items if p["is_priority"]), None),
                   weaknesses=[p for p in items if p["polarity"] == "weakness"],
                   strengths=[p for p in items if p["polarity"] == "strength"],
-                  insights=insights, titles=titles, subject=subject, **access.page_owner(conn, subject))
+                  insights=insights, titles=titles, subject=subject, **access.page_owner(conn, subject),
+                  viewed_by=views.viewed_by(conn, "coaching", subject))
 
 
 # ---- import -------------------------------------------------------------------

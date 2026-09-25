@@ -39,6 +39,7 @@
   <div class="meta">Counted from what the analyst saw on each call. Frequency is calls with the pattern out of the last calls analysed.{% if readonly %} <a href="/learning?rep={{ owner_id }}">{{ owner_name }}'s Learning page</a> has the coaching notes.{% endif %}</div>
 </div>
 {% if readonly %}{{ mm.readonly_banner(owner_name, 'Coach page') }}{% endif %}
+{{ mm.viewed_by(viewed_by) }}
 
 <link rel="stylesheet" href="/static/intel.css">
 <section class="section" id="coach-intel" data-intel-src="/coach/intel{% if readonly %}?rep={{ owner_id }}{% endif %}">

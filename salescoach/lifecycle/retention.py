@@ -87,7 +87,7 @@ def _forget_annotations(conn, counts, entity_type, ids):
     else:
         n = conn.execute(f"DELETE FROM comments WHERE owner_id=? AND entity_type=? AND entity_id IN ({_marks(ids)})",
                          (_owner(conn), entity_type, *ids)).rowcount
-        if entity_type in ("call", "deal"):
+        if entity_type in ("call", "deal", "email"):
             n += conn.execute(f"DELETE FROM access_log WHERE owner_user_id=? AND entity_type=? "
                               f"AND entity_id IN ({_marks(ids)})", (_owner(conn), entity_type, *ids)).rowcount
     if n:

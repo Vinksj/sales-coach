@@ -636,14 +636,14 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_owner_id ON comments(owner_id);
 CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);
 
--- Who opened someone else's call or deal page, and when: insert-only. owner_user_id is whose object
+-- Who read someone else's work (a call, a deal, a nudge email, a rep's coaching pages), and when: insert-only. owner_user_id is whose object
 -- it was (not owner_id: this is SYSTEM bookkeeping about people, never a rep's work). The owner sees
 -- "Viewed by" from it; their managers may read it too; nobody updates or deletes a row.
 CREATE TABLE IF NOT EXISTS access_log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   viewer_id     TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
-  entity_type   TEXT NOT NULL CHECK(entity_type IN ('call','deal')),
+  entity_type   TEXT NOT NULL CHECK(entity_type IN ('call','deal','email','coaching')),
   entity_id     TEXT NOT NULL,
   viewed_at     TEXT NOT NULL
 );
