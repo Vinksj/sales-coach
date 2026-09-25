@@ -548,6 +548,27 @@ def test_import_sqlite_round_trips_a_laptop_install(tmp_path):
     EVIDENCE["import_sqlite"] = S["import_counts"]
 
 
+EXPECTED_ERRORS = ("BudgetExceeded", "budget for today is used up")      # step 7's deferral, logged by the worker
+
+
+def test_zy_no_unexpected_exception_in_any_process_log():
+    """Every traceback the app processes logged during the run must be one a step above caused on purpose."""
+    logs = compose("logs", "--no-color", "web", "worker", "scheduler").stdout
+    blocks, current = [], None
+    for line in logs.splitlines():
+        text = line.split("|", 1)[-1][1:] if "|" in line else line
+        if text.startswith("Traceback (most recent call last)"):
+            current = [text]
+            blocks.append(current)
+        elif current is not None:
+            current.append(text)
+            if text and not text.startswith((" ", "\t")) and not text.startswith(("During handling", "The above")):
+                current = None                                   # the exception line ends the block
+    unexpected = ["\n".join(b[-3:]) for b in blocks if not any(e in "\n".join(b) for e in EXPECTED_ERRORS)]
+    assert not unexpected, unexpected
+    EVIDENCE["tracebacks"] = {"total": len(blocks), "unexpected": len(unexpected)}
+
+
 def test_zz_evidence():
     """Not a check: the numbers behind the checks above, printed for the run's record (-rA shows them)."""
     print(json.dumps(EVIDENCE, indent=1, sort_keys=True))
