@@ -33,6 +33,13 @@ Decisions worth a line:
     ciphertext, and only a session bound to the owner decrypts it (sources/connections.py filters on
     owner_id = the actor as well). The push webhook resolves a connection's owner with nobody bound
     through app_source_connection_owner() (store/rls.py), an id, never content.
+
+  * comments (Phase 7) are OWNED by the rep whose object is commented on, whoever wrote them, so a
+    rep reads every comment on their work and their managers read the same thread; top-level (the
+    owner is named by the app from the object, and the insert policy checks it against the object).
+    Its write policies are the one OWNED exception (store/rls.OWNED_EXCEPTIONS says why).
+  * access_log (Phase 7) is SYSTEM: bookkeeping about who looked at what, keyed on owner_user_id
+    (whose object was viewed), insert-only.
 """
 
 OWNED = "OWNED"
@@ -72,6 +79,9 @@ TABLE_CLASS = {
     "org_settings": SYSTEM, "raw_payloads": OWNED,
     # -- Phase 4: one rep's own recorder account; what it delivers is that rep's
     "source_connections": OWNED,
+
+    # -- Phase 7: a comment is the commented rep's (written by them or their manager); who-viewed-what is machinery
+    "comments": OWNED, "access_log": SYSTEM,
 }
 
 # Tables that exist on one backend only, and why.

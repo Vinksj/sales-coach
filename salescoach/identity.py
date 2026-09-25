@@ -156,6 +156,29 @@ def as_user(conn, user_id: str, mode: str = INTERACTIVE, role: Optional[str] = N
         yield conn
 
 
+# ---- whose pages are on screen (Phase 7) -----------------------------------------------------------
+# A manager reading a rep's Coach or Learning page is still the ACTOR (the database binding, every write
+# check); the rep is only the SUBJECT: whose rows the page's own-work queries select. Reads that mean
+# "my coaching" ask subject_id(); anything that writes asks the actor. Set only around a read-only page
+# render (salescoach/manager/access.py); nothing in a worker, a duty or a prompt path ever sets it.
+_viewing: ContextVar = ContextVar("salescoach_viewing", default=None)
+
+
+@contextmanager
+def viewing(user_id: Optional[str]):
+    """Render the block's own-work reads for `user_id` (None: the actor's own)."""
+    token = _viewing.set(user_id)
+    try:
+        yield user_id
+    finally:
+        _viewing.reset(token)
+
+
+def subject_id(conn=None) -> str:
+    """The user whose work a page shows: the one being viewed, else the acting user."""
+    return _viewing.get() or (actor_of(conn).user_id if conn is not None else current_user_id())
+
+
 def refresh(conn) -> Optional[Actor]:
     """Re-read the acting user's row after a profile edit, so the rest of the request sees it."""
     actor = current_actor(required=False)

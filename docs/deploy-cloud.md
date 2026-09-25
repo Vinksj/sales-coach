@@ -186,7 +186,7 @@ and the person reconnects. The ring is never written to the database or to any f
 | Role | Can |
 |---|---|
 | rep | their own work: calls, deals, drafts, sending from their own mailbox |
-| manager | the above, plus reading (never editing, never sending) the work of every team they are listed on |
+| manager | the above, plus reading (never editing, never sending) the work of every team they are listed on, commenting on it, and the Team page ([docs/manager.md](manager.md)) |
 | admin | the Admin page (people, teams, invites) and Settings. Being an admin grants no access to anyone's calls: an admin reads a team's work only when listed as one of its managers. |
 
 ## Processes

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Calls{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Calls{% if f.rep and f.rep != me %} · {{ rep_name }}{% endif %}</div>
+  <h1>{{ rows|length }}{% if rows|length >= limit %}+{% endif %} call{{ '' if rows|length == 1 else 's' }}</h1>
+  <div class="meta">{% if show_owner %}Your calls and your team's. You can read and comment on a rep's call; only the rep can change it.{% else %}Every call you have recorded or imported.{% endif %}</div>
+</div>
+
+<form method="get" action="/calls" class="filters card">
+  {% if show_owner %}<label>Rep<select name="rep"><option value="">Everyone</option><option value="{{ me }}"{% if f.rep == me %} selected{% endif %}>You</option>{% for r in reps %}<option value="{{ r.id }}"{% if f.rep == r.id %} selected{% endif %}>{{ r.name or r.email or r.id }}</option>{% endfor %}</select></label>{% endif %}
+  <label>From<input type="date" name="from" value="{{ f['from'] }}"></label>
+  <label>To<input type="date" name="to" value="{{ f.to }}"></label>
+  <label>Deal<select name="deal"><option value="">Any deal</option>{% for d in deals %}<option value="{{ d.node_id }}"{% if f.deal == d.node_id %} selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></label>
+  <label>State<select name="state"><option value="">Any</option>{% for key, s in states.items() %}<option value="{{ key }}"{% if f.state == key %} selected{% endif %}>{{ s[0] }}</option>{% endfor %}</select></label>
+  {% if gaps %}<label>Deal gap<select name="gap"><option value="">Any</option>{% for key, label in gaps %}<option value="{{ key }}"{% if f.gap == key %} selected{% endif %}>{{ label }} unknown</option>{% endfor %}</select></label>{% endif %}
+  <label>Follow-up<select name="email"><option value="">Any</option>{% for key, e in emails.items() %}<option value="{{ key }}"{% if f.email == key %} selected{% endif %}>{{ e[0] }}</option>{% endfor %}</select></label>
+  <div class="filters-go"><button class="btn btn-primary btn-sm">Filter</button> <a href="/calls" class="meta">Reset</a></div>
+</form>
+
+{% if rows %}
+<div class="table-wrap"><table class="table calls-table">
+  <thead><tr><th scope="col">When</th><th scope="col">Call</th>{% if show_owner %}<th scope="col">Rep</th>{% endif %}<th scope="col">Deal</th><th scope="col">State</th><th scope="col" class="r">Comments</th></tr></thead>
+  <tbody>
+  {% for c in rows %}
+  <tr>
+    <td class="nowrap">{{ c.started_at|dt if c.started_at else '' }}</td>
+    <td><a class="strong" href="/calls/{{ c.node_id }}">{{ c.title or 'Untitled call' }}</a><div class="meta">{{ c.source|human }}</div></td>
+    {% if show_owner %}<td>{% if c.owner_id == me %}You{% else %}{{ c.owner_name }}{% endif %}</td>{% endif %}
+    <td>{% if c.deal_id %}<a href="/deals/{{ c.deal_id }}">{{ c.deal_name or c.deal_id }}</a>{% else %}<span class="muted">none</span>{% endif %}</td>
+    <td>{{ c.state_label }}</td>
+    <td class="r num">{% if c.comments %}<a href="/calls/{{ c.node_id }}#comments">{{ c.comments }}</a>{% if c.open_comments %} <span class="meta">{{ c.open_comments }} open</span>{% endif %}{% else %}<span class="muted">0</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% if rows|length >= limit %}<p class="meta">Showing the newest {{ limit }}. Narrow the filters to see older calls.</p>{% endif %}
+{% else %}
+<p class="empty">No calls match.</p>
+{% endif %}
+{% endblock %}

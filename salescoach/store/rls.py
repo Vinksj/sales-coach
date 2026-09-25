@@ -43,6 +43,9 @@ Policies, per class:
           INSERT / UPDATE / DELETE   app_can_write(owner_id): the row is the acting user's own,
                    the user is active and a mode is bound. A manager reads a rep's rows and can
                    never write one; nobody bound reads and writes nothing.
+          The one exception (OWNED_EXCEPTIONS, with its reason): comments. A comment is owned by the
+                   rep whose object it is on; its author (the rep, or a manager of the rep's team)
+                   inserts it, the rep or the author resolves it, the author deletes it.
   ORG     accounts, people: readable and writable by any active user (every rep contributes to
                    the shared directory). users, teams, team_managers: readable by every connection
                    (a connection has to read `users` to learn who it is); writable by admins, and
@@ -70,6 +73,8 @@ Policies, per class:
                    for an active admin (disabling a user revokes their grants; the admin page shows
                    link status). Nobody bound reads nothing. `salescoach tokens rotate` runs as the
                    owner role (DATABASE_MIGRATE_URL) or as an admin.
+          access_log: insert-only. The viewer logs their own view of an object they may read, under
+                   its true owner (app_entity_owner); that owner and their managers read the log.
           org_settings: SELECT open to the app role: config.load() reads the overlay from every
                    thread, including before any actor exists (the scheduler's intervals, the sign-in
                    page's brand, process start); it holds no per-user data and no secrets (those stay
@@ -239,6 +244,39 @@ END $$;
 DROP TRIGGER IF EXISTS trg_users_guard ON users;
 CREATE TRIGGER trg_users_guard BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION app_users_guard();
 
+-- Whose object an (entity_type, entity_id) names (Phase 7: comments and access_log), readable by the policies
+-- whoever asks: a call, deal or loop node's owner, an email's owner, or, for a coaching note, the user it is
+-- about. An owner id, never content (like app_owner_of); NULL for anything that does not exist.
+-- (Parameters are prefixed: nodes has a column named `kind`, which would shadow a parameter of that name.)
+CREATE OR REPLACE FUNCTION app_entity_owner(p_type text, p_id text) RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT CASE
+    WHEN p_type IN ('call', 'deal', 'loop') THEN (SELECT n.owner_id FROM nodes n WHERE n.id = p_id AND n.type = p_type)
+    WHEN p_type = 'email' THEN (SELECT e.owner_id FROM emails e
+                                WHERE e.id = CASE WHEN p_id ~ '^[0-9]{1,9}$' THEN p_id::integer END)
+    WHEN p_type = 'coaching' THEN (SELECT u.id FROM users u WHERE u.id = p_id)
+  END
+$$;
+
+-- A comment's thread, author and time never change; only its author edits the text; a resolve is signed by
+-- whoever resolved it. The policies say WHO may update a comment (its rep or its author); this says WHAT.
+CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF session_user = '@APP_ROLE@' AND (
+       NEW.id IS DISTINCT FROM OLD.id OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.author_id IS DISTINCT FROM OLD.author_id OR NEW.entity_type IS DISTINCT FROM OLD.entity_type
+       OR NEW.entity_id IS DISTINCT FROM OLD.entity_id OR NEW.turn_idx IS DISTINCT FROM OLD.turn_idx
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (NEW.body IS DISTINCT FROM OLD.body AND OLD.author_id IS DISTINCT FROM app_actor_id())
+       OR (NEW.resolved_by IS DISTINCT FROM OLD.resolved_by AND NEW.resolved_by IS DISTINCT FROM app_actor_id()
+           AND NEW.resolved_by IS NOT NULL)) THEN
+    RAISE EXCEPTION 'a comment keeps its thread, author and time; only its author edits it; a resolve is signed by who resolved it'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_comments_guard ON comments;
+CREATE TRIGGER trg_comments_guard BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION app_comments_guard();
+
 """
 
 # ---- policy expressions -------------------------------------------------------------------------
@@ -279,6 +317,39 @@ SYSTEM_POLICIES = {
     "oauth_tokens": (OWN_GRANT,) * 4,
     # Phase 6.
     "org_settings": (ANY, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE),
+    # Phase 7. Insert-only: a view is logged by the viewer, of an object they may read, whose owner is
+    # recorded truthfully; the object's owner (and that owner's managers) read who looked. Nobody edits it.
+    "access_log": ("owner_user_id = ANY (app_visible_owners())",
+                   "viewer_id = app_actor_id() AND app_mode_ok() AND owner_user_id = ANY (app_visible_owners()) "
+                   "AND owner_user_id = app_entity_owner(entity_type, entity_id)", None, None),
+}
+
+
+# OWNED tables whose writes are NOT "the owner writes": {table: (select, insert, update, delete, reason)}.
+# Reads stay the OWNED read (the owner and the owner's managers); every write expression still names the
+# acting user (app_actor_id) and the owners they may see (app_visible_owners), so nothing here is open.
+COMMENT_VISIBLE = "owner_id = ANY (app_visible_owners())"
+OWNED_EXCEPTIONS = {
+    "comments": (
+        OWNED_READ,
+        # INSERT: the author is the acting user, the owner is one they may read (themselves, or a rep of a
+        # team they manage), and that owner really is the owner of the object the comment names. A coaching
+        # note is about someone else: nobody writes one on themselves.
+        f"author_id = app_actor_id() AND app_mode_ok() AND {COMMENT_VISIBLE} "
+        "AND owner_id = app_entity_owner(entity_type, entity_id) "
+        "AND (entity_type <> 'coaching' OR owner_id <> author_id)",
+        # UPDATE (resolve; the author may also edit the text): the rep whose comment it is, or its author
+        # while the rep is still theirs to see. trg_comments_guard fixes which columns may change.
+        f"app_can_write(owner_id) OR (author_id = app_actor_id() AND app_mode_ok() AND {COMMENT_VISIBLE})",
+        # DELETE: the author only, while the rep is still theirs to see.
+        f"author_id = app_actor_id() AND app_mode_ok() AND {COMMENT_VISIBLE}",
+        "The one deliberate exception to 'the owner writes' (plan, Phase 7): a manager comments on their "
+        "rep's call, and a comment is OWNED by the rep whose work it is about (so it lives, is read and is "
+        "exported with that work, and the rep can resolve it), not by the manager who wrote it. So the "
+        "author, not the owner, is the acting user on INSERT; the owner must be someone the author may read "
+        "AND the actual owner of the commented object (app_entity_owner), so nobody files a comment under a "
+        "rep they do not manage or against an object that is not that rep's. Comments never reach a prompt.",
+    ),
 }
 
 
@@ -286,6 +357,8 @@ def policies_for(table: str) -> tuple:
     """(select, insert, update, delete) expressions for a table, from its class."""
     kind = tenancy.TABLE_CLASS[table]
     if kind == tenancy.OWNED:
+        if table in OWNED_EXCEPTIONS:
+            return OWNED_EXCEPTIONS[table][:4]
         if table in tenancy.OWNER_NULLABLE:
             return (NULLABLE_READ, NULLABLE_WRITE, NULLABLE_WRITE, NULLABLE_WRITE)
         return (OWNED_READ, OWNED_WRITE, OWNED_WRITE, OWNED_WRITE)
@@ -320,6 +393,9 @@ def generate() -> str:
     for table, policies in list(ORG_POLICIES.items()) + list(SYSTEM_POLICIES.items()):
         if tenancy.TABLE_CLASS.get(table) not in (tenancy.ORG, tenancy.SYSTEM):
             raise ValueError(f"store/rls.py names {table} which tenancy.py does not classify ORG or SYSTEM")
+    for table, spec in OWNED_EXCEPTIONS.items():
+        if tenancy.TABLE_CLASS.get(table) != tenancy.OWNED or not spec[4].strip():
+            raise ValueError(f"store/rls.py OWNED_EXCEPTIONS names {table}: it must be OWNED and carry a reason")
     parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE)]
     for kind, title in ((tenancy.OWNED, "OWNED: one rep's work; the owner writes, the owner's managers read"),
                         (tenancy.ORG, "ORG: the shared directory"),

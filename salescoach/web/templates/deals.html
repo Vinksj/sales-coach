@@ -1,10 +1,19 @@
 {% extends "base.html" %}
+{% import "manager_macros.html" as mm %}
 {% block title %}Deals{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div class="eyebrow">Deals</div>
-  <h1>{{ deals|length }} deal{{ '' if deals|length == 1 else 's' }}</h1>
+  <div class="eyebrow">Deals{% if readonly %} · {{ owner_name }}{% endif %}</div>
+  <h1>{{ deals|length }}{% if status == 'active' %} open{% elif status %} {{ status }}{% endif %} deal{{ '' if deals|length == 1 else 's' }}</h1>
+  {% if reps %}
+  <form method="get" action="/deals" class="filters card">
+    <label>Rep<select name="rep"><option value="{{ me }}">You</option>{% for r in reps %}<option value="{{ r.id }}"{% if rep == r.id %} selected{% endif %}>{{ r.name or r.email or r.id }}</option>{% endfor %}</select></label>
+    <label>Status<select name="status"><option value="">Any</option>{% for s in ('active', 'paused', 'won', 'lost') %}<option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+    <div class="filters-go"><button class="btn btn-primary btn-sm">Filter</button> <a href="/deals" class="meta">Reset</a></div>
+  </form>
+  {% endif %}
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'deals') }}{% endif %}
 
 <div class="today-grid">
   <div>
@@ -29,6 +38,7 @@
     <p class="empty">No deals yet. Create the first one.</p>
     {% endif %}
   </div>
+  {% if not readonly %}
   <aside>
     <form method="post" action="/deals" class="card stack">
       <div class="eyebrow">New deal</div>
@@ -39,6 +49,7 @@
       <button class="btn btn-primary">Create deal</button>
     </form>
   </aside>
+  {% endif %}
 </div>
 <link rel="stylesheet" href="/static/intel.css">
 <script src="/static/intel.js" defer></script>

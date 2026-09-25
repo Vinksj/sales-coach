@@ -5,7 +5,7 @@ patched to read (the login mechanism itself is tests/isolation/test_actor_gate.p
 tests/test_google_auth.py; this
 file is about what a route does once it knows who is asking). Rep A owns a call, a deal, a loop,
 a follow-up email, a nudge, a reply, a prep brief, a learned pattern, a proposal, a calendar
-meeting, an agent run, a memory conflict, a live-coach nudge, a recorder connection and a bus event; B asks for each of
+meeting, an agent run, a memory conflict, a live-coach nudge, a recorder connection, a comment and a bus event; B asks for each of
 them through every route that takes their id, with GET and with the route's methods and a minimal
 valid form body. A 200 would be a leak, a 403 would confirm the object exists, a 500 is a route
 that trips over a missing row instead of saying 404: only 404 passes.
@@ -123,7 +123,7 @@ def objects(db, two_reps):
         own = factories.Owner(db, A)
         made = {t: factories.insert(db, t, A, own) for t in
                 ("calls", "deals", "loops", "emails", "email_replies", "prep_briefs", "learned_patterns",
-                 "learning_proposals", "calendar_meetings", "agent_runs", "memory_conflicts", "nudges")}
+                 "learning_proposals", "calendar_meetings", "agent_runs", "memory_conflicts", "nudges", "comments")}
         nudge_email = factories.insert(db, "emails", A, own)
         db.execute("UPDATE emails SET kind='nudge' WHERE id=?", (nudge_email["id"],))
         db.execute("UPDATE learning_proposals SET status='open' WHERE id=?", (made["learning_proposals"]["id"],))
@@ -140,6 +140,7 @@ def objects(db, two_reps):
         "email_id": made["emails"]["id"], "nudge_email_id": nudge_email["id"], "reply_id": made["email_replies"]["id"],
         "proposal_id": made["learning_proposals"]["id"], "run_id": made["agent_runs"]["id"],
         "conflict_id": made["memory_conflicts"]["id"], "nudge_id": made["nudges"]["id"], "person_id": person,
+        "comment_id": made["comments"]["id"],
         "meeting_event_id": made["calendar_meetings"]["event_id"], "wf_event_id": wf_event,
         "connection_id": connection_id,
         "element": "metrics", "risk_type": "budget", "decision": "accept",

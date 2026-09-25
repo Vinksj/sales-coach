@@ -194,9 +194,11 @@ def coach_nudges(request: Request, call_id: str, session: str | None = None):
 def coach_dismiss(request: Request, call_id: str, nudge_id: int):
     conn = _db(request)
     try:
-        row = conn.execute("SELECT id FROM nudges WHERE id=? AND call_id=?", (nudge_id, call_id)).fetchone()
+        row = conn.execute("SELECT id, owner_id FROM nudges WHERE id=? AND call_id=?", (nudge_id, call_id)).fetchone()
         if row is None:
             raise HTTPException(404, "no such nudge")
+        from ..manager import access
+        access.guard(conn, row, "this nudge")                 # a manager reads a rep's nudges, never dismisses them
         conn.execute("UPDATE nudges SET dismissed=1 WHERE id=?", (nudge_id,))
         conn.commit()
     finally:
@@ -248,6 +250,8 @@ def coach_replay(request: Request, call_id: str, speed: float = Form(20.0), slow
         call = repo.get_call(conn, call_id)
         if call is None:
             raise HTTPException(404, "no such call")
+        from ..manager import access
+        access.guard(conn, call, "this call")                 # a replay writes nudges as the call's owner
         has_turns = conn.execute("SELECT 1 FROM turns WHERE call_id=? LIMIT 1", (call_id,)).fetchone() is not None
     finally:
         conn.close()

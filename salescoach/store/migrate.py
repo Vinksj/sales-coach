@@ -720,7 +720,57 @@ def _sources(conn):
         raise
 
 
+# ---- 11 (2026-09-25, Phase 7: the manager product) ------------------------------------------------
+# comments (OWNED by the rep whose object is commented on, written by its author: the rep or a manager
+# of the rep's team) and access_log (SYSTEM, insert-only: who opened someone else's call or deal page).
+# Nothing is rebuilt. The Postgres side is store/pg/0007_manager.sql. (10 is Phase 4's recorder step.)
+MANAGER_TABLES_V11 = """
+CREATE TABLE IF NOT EXISTS comments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  author_id   TEXT NOT NULL,
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('call','deal','email','loop','coaching')),
+  entity_id   TEXT NOT NULL,
+  turn_idx    INTEGER,
+  body        TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_comments_owner_id ON comments(owner_id);
+CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS access_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  viewer_id     TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  entity_type   TEXT NOT NULL CHECK(entity_type IN ('call','deal')),
+  entity_id     TEXT NOT NULL,
+  viewed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_entity ON access_log(entity_type, entity_id, viewed_at);
+"""
+
+
+def _manager(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 11:     # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        for statement in MANAGER_TABLES_V11.split(";"):   # one by one: executescript would commit first
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 11")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 MIGRATIONS[10] = _sources
+MIGRATIONS[11] = _manager
 
 
 def run(conn):

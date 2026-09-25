@@ -166,6 +166,11 @@ def insert(conn, table: str, owner_id: str, owner: Owner) -> dict:
     values = {c.name: _value(table, c, owner, owner_id) for c in cols}
     if table == "learned_patterns":
         values["id"] = f"lp:seller:u:{owner_id}:{uniq('k')}"
+    if table == "comments":
+        # A comment is on one of the owner's objects (the insert policy checks the object's owner) and, in
+        # the plain case the matrix exercises, written by the owner: the rep on their own call.
+        values["author_id"] = owner_id
+        values["entity_id"] = owner.parent("calls")["node_id"]
     names = ", ".join(values)
     marks = ", ".join("?" for _ in values)
     cur = conn.execute(f"INSERT INTO {table}({names}) VALUES ({marks})", tuple(values.values()))

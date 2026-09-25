@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
+{% import "manager_macros.html" as mm %}
 {% block title %}Nudge{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/automation.css">
@@ -9,6 +10,7 @@
   <h1>{{ e.subject or 'Nudge' }}</h1>
   <div class="meta">{{ e.status|human }} · drafted {{ e.created_at|dt }}{% if e.run_id %} · <a class="why" href="/runs/{{ e.run_id }}">Why this wording?</a>{% endif %}</div>
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'nudge') }}{% endif %}
 
 {# `loop` is Jinja's own loop variable, so the commitment is `lp` here. #}
 {% for lp in info.loops %}
@@ -30,11 +32,11 @@
   </div>
   {% elif e.status == 'saved_to_gmail' %}
   <div class="callout"><div class="eyebrow">Saved to Gmail Drafts</div><p>Send it from Gmail, then tell the coach so the loop's follow-up count moves.</p><pre class="email-body">{{ e.body }}</pre>
-    <div class="actions"><form method="post" action="/nudges/{{ e.id }}/mark-sent"><button class="btn btn-secondary" data-confirm="Mark this nudge as sent? Only do this once you have actually sent it from Gmail.">I sent it from Gmail</button></form></div>
+    <div class="actions">{% if not readonly %}<form method="post" action="/nudges/{{ e.id }}/mark-sent"><button class="btn btn-secondary" data-confirm="Mark this nudge as sent? Only do this once you have actually sent it from Gmail.">I sent it from Gmail</button></form>{% endif %}</div>
   </div>
   {% elif e.status == 'sending' %}
   <div class="callout callout-err"><div class="eyebrow">Send did not finish</div><p>Check Gmail Sent before doing anything else; it is never resent automatically.</p><pre class="email-body">{{ e.body }}</pre>
-    {% if (e.error or '').startswith('delivery unknown') %}
+    {% if (e.error or '').startswith('delivery unknown') and not readonly %}
     <p class="meta">{{ e.error }}</p>
     <div class="actions"><form method="post" action="/nudges/{{ e.id }}/not-sent"><button class="btn btn-secondary" data-confirm="Only press this after checking Gmail Sent: is this nudge NOT there? It can then be sent again.">It was not sent</button></form></div>
     {% endif %}
@@ -48,7 +50,7 @@
   {% if email.blocks or email.warns or tone %}
   <ul class="plain issues">
     {% for i in email.blocks %}<li><span class="tag tag-block">blocks send</span> {{ i.detail }}
-      {% if i.kind == 'slots' %}<button class="btn btn-sm btn-secondary" type="submit" form="nudge-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots">Fill times from calendar</button>{% endif %}</li>{% endfor %}
+      {% if i.kind == 'slots' and not readonly %}<button class="btn btn-sm btn-secondary" type="submit" form="nudge-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots">Fill times from calendar</button>{% endif %}</li>{% endfor %}
     {% for i in email.warns %}<li><span class="tag">check</span> {{ i.detail }}</li>{% endfor %}
     {% for i in tone %}<li><span class="tag">tone</span> {{ i.detail }}</li>{% endfor %}
   </ul>
@@ -57,6 +59,13 @@
   {% elif fill and fill.status == 'filled' %}<p class="meta auto-slot-note">Times calendar-verified {{ fill.verified_at|dt }} ({{ fill.calendar_source }}).</p>{% endif %}
   {% if email.user_added %}<p class="warn-line">Added by you, not on this deal: {{ email.user_added|join(', ') }}</p>{% endif %}
 
+  {% if readonly %}
+  <div class="card">
+    <p>To {{ email.to|join(', ') or 'nobody yet' }}{% if email.cc %} · Cc {{ email.cc|join(', ') }}{% endif %}</p>
+    <div class="h3">{{ e.subject or '' }}</div>
+    <pre class="email-body">{{ e.body or '' }}</pre>
+  </div>
+  {% else %}
   <form method="post" action="/nudges/{{ e.id }}/save" class="email-form card" id="nudge-form-{{ e.id }}">
     <div class="form-grid-2">
       <label>To<input name="to" value="{{ email.to|join(', ') }}" autocomplete="off"></label>
@@ -72,11 +81,14 @@
       <button class="btn btn-quiet" type="submit" formaction="/nudges/{{ e.id }}/discard" data-confirm="Discard this nudge?">Discard</button>
     </div>
   </form>
+  {% endif %}
   {% if verdict %}
   <p class="meta">Auto-send would {% if verdict.ok %}{% if verdict.dry_run %}only log this (dry run){% else %}send this{% endif %}{% else %}not send this: {{ verdict.fails|join('; ') }}{% endif %}.</p>
   {% endif %}
   {% endif %}
 </section>
+
+{{ mm.thread(email_comments, 'email', e.id, here) }}
 
 <section class="section" id="why">
   <div class="section-head"><h2>Why this nudge</h2><span class="purpose">Every decision on this loop, oldest first.</span></div>

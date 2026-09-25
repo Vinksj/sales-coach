@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "manager_macros.html" as mm %}
 {% block title %}Coach{% endblock %}
 
 {% macro pattern(p) %}
@@ -33,13 +34,14 @@
 
 {% block content %}
 <div class="page-head">
-  <div class="eyebrow">Coach</div>
-  <h1>How you sell</h1>
-  <div class="meta">Counted from what the analyst saw on each call. Frequency is calls with the pattern out of the last calls analysed.</div>
+  <div class="eyebrow">Coach{% if readonly %} · {{ owner_name }}{% endif %}</div>
+  <h1>{% if readonly %}How {{ owner_name }} sells{% else %}How you sell{% endif %}</h1>
+  <div class="meta">Counted from what the analyst saw on each call. Frequency is calls with the pattern out of the last calls analysed.{% if readonly %} <a href="/learning?rep={{ owner_id }}">{{ owner_name }}'s Learning page</a> has the coaching notes.{% endif %}</div>
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'Coach page') }}{% endif %}
 
 <link rel="stylesheet" href="/static/intel.css">
-<section class="section" id="coach-intel" data-intel-src="/coach/intel">
+<section class="section" id="coach-intel" data-intel-src="/coach/intel{% if readonly %}?rep={{ owner_id }}{% endif %}">
   <p class="meta">Loading the longitudinal report...</p>
 </section>
 <script src="/static/intel.js" defer></script>

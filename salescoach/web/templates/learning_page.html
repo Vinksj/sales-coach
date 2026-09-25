@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Learning{% endblock %}
 
+{% import "manager_macros.html" as mm %}
 {% macro verdict_form(p, action, label, cls='') -%}
-<form method="post" action="/learning/patterns"><input type="hidden" name="id" value="{{ p.id }}"><input type="hidden" name="action" value="{{ action }}"><button class="btn btn-sm {{ cls }}">{{ label }}</button></form>
+{% if not readonly %}<form method="post" action="/learning/patterns"><input type="hidden" name="id" value="{{ p.id }}"><input type="hidden" name="action" value="{{ action }}"><button class="btn btn-sm {{ cls }}">{{ label }}</button></form>{% endif %}
 {%- endmacro %}
 
 {% macro belief(p, fam) %}
@@ -49,7 +50,7 @@
       {{ verdict_form(p, 'confirm', 'Confirm', 'btn-secondary') }}
       {{ verdict_form(p, 'wrong', 'Wrong') }}
       {{ verdict_form(p, 'retire', 'Retire') }}
-      {% if fam.merge_targets|length > 1 %}
+      {% if fam.merge_targets|length > 1 and not readonly %}
       <form method="post" action="/learning/patterns"><input type="hidden" name="id" value="{{ p.id }}"><input type="hidden" name="action" value="merge">
         <select name="target" aria-label="Merge into"><option value="">Merge into…</option>{% for t in fam.merge_targets if t.id != p.id %}<option value="{{ t.id }}">{{ t.key }}</option>{% endfor %}</select>
         <button class="btn btn-sm btn-quiet">Merge</button></form>
@@ -63,12 +64,22 @@
 <link rel="stylesheet" href="/static/intel.css">
 <link rel="stylesheet" href="/static/learning.css">
 <div class="page-head">
-  <div class="eyebrow">Learning</div>
-  <h1>What the coach believes</h1>
+  <div class="eyebrow">Learning{% if readonly %} · {{ owner_name }}{% endif %}</div>
+  <h1>{% if readonly %}What the coach believes about {{ owner_name }}{% else %}What the coach believes{% endif %}</h1>
   <div class="meta">Every number here is counted in code from calls, emails and nudges in the store. Labels, never percentages, and always n. Your verdicts outrank every recompute. Active patterns feed the prompts marked "Used in" below: at most 3 per prompt, as a rule or a tag name with a coarse count, never text from a call or an email.</div>
   <div class="meta">Feeds: {% for f in feeds %}<span class="vtag">{{ f.label }} {{ 'on' if f.on else 'off' }}</span>{% endfor %} <span class="muted">(config/learning.yaml, feedback)</span></div>
-  <div class="actions"><form method="post" action="/learning/recompute"><button class="btn btn-sm">Recompute now</button></form></div>
+  {% if not readonly %}<div class="actions"><form method="post" action="/learning/recompute"><button class="btn btn-sm">Recompute now</button></form></div>{% endif %}
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'Learning page') }}{% endif %}
+
+{% if coaching or readonly %}
+<section class="section coaching" id="coaching">
+  <div class="section-head"><h2>Coaching notes</h2><span class="purpose">{% if readonly %}Notes for {{ owner_name }}, shown on their Learning page. Only people read them: no agent or prompt ever does.{% else %}From your manager. Only people read these: no agent or prompt ever does.{% endif %}</span></div>
+  {% if coaching %}<ul class="plain comment-list">{% for c in coaching %}{{ mm.comment(c, here ~ '#coaching') }}{% endfor %}</ul>
+  {% elif readonly %}<p class="empty">No coaching notes yet.</p>{% endif %}
+  {% if readonly %}{{ mm.comment_form('coaching', subject, here ~ '#coaching', 'A coaching note for ' ~ owner_name) }}{% endif %}
+</section>
+{% endif %}
 
 <details class="card digest" id="digest">
   <summary><span class="strong">What changed in the last {{ digest.days }} days</span> <span class="meta">{% if digest.empty %}nothing{% else %}{{ digest.new_active|length }} new active · {{ digest.returned|length }} returned · {{ digest.dormant|length }} dormant · {{ digest.open_proposals|length }} open proposal{{ '' if digest.open_proposals|length == 1 else 's' }} · {{ digest.deals|length }} deal{{ '' if digest.deals|length == 1 else 's' }} closed{% endif %}</span></summary>
@@ -83,10 +94,12 @@
   {% for pr in proposals %}
   <div class="card proposal" id="proposal-{{ pr.id }}">
     <div><div class="eyebrow">{{ 'Tag merge' if pr.kind == 'merge' else 'Live nudge weight' }}</div><p>{{ pr.summary }}</p></div>
+    {% if not readonly %}
     <div class="actions">
       <form method="post" action="/learning/proposals/{{ pr.id }}/accept"><button class="btn btn-sm btn-primary">Accept</button></form>
       <form method="post" action="/learning/proposals/{{ pr.id }}/dismiss"><button class="btn btn-sm">Dismiss</button></form>
     </div>
+    {% endif %}
   </div>
   {% else %}<p class="empty">No open proposals.</p>{% endfor %}
   {% if decided %}

@@ -1,12 +1,15 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
+{% import "manager_macros.html" as mm %}
 {% block title %}{{ deal.name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <div class="eyebrow">Deal · {{ deal.account_name or 'no account' }}{% if domains %} · {{ domains|join(', ') }}{% endif %}</div>
   <h1>{{ deal.name }}</h1>
-  <div class="meta">{{ deal.status }}{% if deal.stage %} · {{ deal.stage }}{% endif %}{% if deal.close_target %} · close target {{ deal.close_target|day }}{% endif %} · <a href="/deals/{{ deal.node_id }}/prep">Prep for the next call</a></div>
+  <div class="meta">{{ deal.status }}{% if deal.stage %} · {{ deal.stage }}{% endif %}{% if deal.close_target %} · close target {{ deal.close_target|day }}{% endif %} · <a href="/deals/{{ deal.node_id }}/prep">{% if readonly %}Prep briefs{% else %}Prep for the next call{% endif %}</a>{% if readonly %} · {{ owner_name }}'s deal{% endif %}</div>
+  {{ mm.viewed_by(viewed_by) }}
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'deal') }}{% endif %}
 
 <link rel="stylesheet" href="/static/intel.css">
 <section class="section" id="intel" data-intel-src="/deals/{{ deal.node_id }}/intel">
@@ -30,7 +33,7 @@
   <div class="card">
     <div class="label">Open loops</div>
     <div class="stat stat-sm">{{ loops|length }}</div>
-    <p class="meta"><a href="/loops?deal={{ deal.node_id }}">Filter Open Loops to this deal</a></p>
+    <p class="meta"><a href="/loops?deal={{ deal.node_id }}{% if readonly %}&amp;rep={{ owner_id }}{% endif %}">Filter Open Loops to this deal</a></p>
   </div>
 </section>
 
@@ -46,7 +49,7 @@
       <td>{{ l.description }}<div class="meta">{{ l.status }} · {{ m.conf(l.confidence) }}{% if l.review_state == 'proposed' %} · <span class="accent">unconfirmed</span>{% endif %}{% if l.call_id %} · <a href="/calls/{{ l.call_id }}#loop-{{ l.node_id }}">{{ l.call_title or 'call' }}</a>{% endif %}</div></td>
       <td>{{ l.owner }}{% if l.owner_name %}<div class="meta">{{ l.owner_name }}</div>{% endif %}</td>
       <td>{{ m.prio(l.priority) }}</td>
-      <td>{{ m.loop_quick(l, here) }}</td>
+      <td>{% if not readonly %}{{ m.loop_quick(l, here) }}{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>
@@ -65,6 +68,7 @@
         {% else %}<li class="muted">Nobody yet.</li>{% endfor %}
       </ul>
     </div>
+    {% if not readonly %}
     <form method="post" action="/deals/{{ deal.node_id }}/people" class="card edit-form">
       <div class="label">Add a stakeholder</div>
       <label>Existing person<select name="person_id"><option value="">Choose, or create below</option>{% for p in people %}<option value="{{ p.node_id }}">{{ p.name }}{% if p.email %} · {{ p.email }}{% endif %}</option>{% endfor %}</select></label>
@@ -76,6 +80,7 @@
       </div>
       <button class="btn btn-primary btn-sm">Add</button>
     </form>
+    {% endif %}
   </div>
 </section>
 
@@ -144,5 +149,6 @@
     {% else %}<li class="muted">No calls yet.</li>{% endfor %}
   </ol>
 </section>
+{{ mm.thread(deal_comments, 'deal', deal.node_id, here) }}
 <script src="/static/intel.js" defer></script>
 {% endblock %}

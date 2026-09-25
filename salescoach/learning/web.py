@@ -19,6 +19,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .. import identity
+from ..manager import access, comments
 from ..store import stores
 from . import cfg, ensure_columns, feedback, outcomes, patterns, weekly
 
@@ -53,22 +55,25 @@ def _deal_or_404(conn, deal_id):
     row = conn.execute("SELECT * FROM deals WHERE node_id=?", (deal_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "deal not found")
-    return row
+    return access.guard(conn, row, "this deal")          # a write on a deal the actor only reads: 403
 
 
 # ---- what the coach believes ------------------------------------------------------------------
 
 def outcomes_panel(conn) -> dict:
+    """The coached seller's own deals (identity.subject_id: the acting user, or the rep a manager reads)."""
+    owner = identity.subject_id(conn)
     by_status = [dict(r) for r in conn.execute(
-        "SELECT status, COALESCE(NULLIF(stage, ''), 'no stage') AS stage, COUNT(*) AS n FROM deals "
-        "GROUP BY status, COALESCE(NULLIF(stage, ''), 'no stage') ORDER BY status, stage")]
-    totals = {r["status"]: r["n"] for r in conn.execute("SELECT status, COUNT(*) AS n FROM deals GROUP BY status")}
+        "SELECT status, COALESCE(NULLIF(stage, ''), 'no stage') AS stage, COUNT(*) AS n FROM deals WHERE owner_id=? "
+        "GROUP BY status, COALESCE(NULLIF(stage, ''), 'no stage') ORDER BY status, stage", (owner,))]
+    totals = {r["status"]: r["n"] for r in conn.execute("SELECT status, COUNT(*) AS n FROM deals WHERE owner_id=? "
+                                                        "GROUP BY status", (owner,))}
     closed = []
     reasons = outcomes.lost_reasons()
     for d in conn.execute("SELECT d.node_id, d.name, d.status, d.stage, d.value, d.currency, d.lost_reason, "
                           "(SELECT MAX(changed_at) FROM deal_stage_history h WHERE h.deal_id=d.node_id "
-                          " AND h.to_status=d.status) AS closed_at FROM deals d WHERE d.status IN ('won','lost') "
-                          "ORDER BY closed_at DESC, d.name"):
+                          " AND h.to_status=d.status) AS closed_at FROM deals d WHERE d.owner_id=? AND d.status IN ('won','lost') "
+                          "ORDER BY closed_at DESC, d.name", (owner,)):
         code, text = outcomes.lost_reason_parts(d["lost_reason"])
         closed.append({**dict(d), "reason_label": reasons.get(code, code), "reason_text": text})
     lost_by_reason: dict[str, int] = {}
@@ -88,22 +93,33 @@ def feeds_context(conn) -> dict:
             "fed_families": sorted({f for t in feedback.TARGETS for f in families.get(t) or []})}
 
 
-def page_context(conn) -> dict:
+def page_context(conn, readonly: bool = False) -> dict:
+    """Everything /learning shows, for the page's subject (identity.subject_id). A manager reading a rep's
+    page (readonly) sees no bookkeeping of the acting user's own (last run, last error)."""
     return {"families": patterns.beliefs(conn), "proposals": patterns.open_proposals(conn),
             "decided": patterns.decided_proposals(conn, limit=20), "digest": weekly.last_days(conn, 7),
             **feeds_context(conn),
             "series": patterns.series(conn), "outcomes": outcomes_panel(conn),
-            "last_run": stores.get_user_state(conn, "learning:last_run"),
-            "last_error": stores.get_user_state(conn, "learning:last_error"),
+            "last_run": None if readonly else stores.get_user_state(conn, "learning:last_run"),
+            "last_error": None if readonly else stores.get_user_state(conn, "learning:last_error"),
             "rate_min_n": int(cfg("followup")["rate_min_n"]),
             "reply_days": int(cfg("followup")["reply_business_days"]),
             "meeting_days": int(cfg("followup")["meeting_within_days"])}
 
 
 @router.get("/learning", response_class=HTMLResponse)
-def learning_page(request: Request):
+def learning_page(request: Request, rep: str = ""):
+    """The acting user's own page, or (?rep=<id>) the page of a rep they manage, read only, with the
+    coaching notes their managers left. Coaching notes are comments (manager/comments.py): no prompt reads them."""
     with _db(request) as conn:
-        return _web().render(request, conn, "learning_page.html", **page_context(conn))
+        try:
+            with access.viewing(conn, rep or None) as subject:
+                owner = access.page_owner(conn, subject)
+                return _web().render(request, conn, "learning_page.html", **page_context(conn, owner["readonly"]),
+                                     **owner, subject=subject, coaching=comments.coaching_notes(conn, subject),
+                                     here="/learning" + (f"?rep={subject}" if owner["readonly"] else ""))
+        except LookupError:
+            raise HTTPException(404, "Not found")
 
 
 @router.post("/learning/recompute")
@@ -119,6 +135,10 @@ def learning_recompute(request: Request):
 @router.post("/learning/patterns")
 def pattern_action(request: Request, id: str = Form(...), action: str = Form(...), target: str = Form("")):
     with _db(request) as conn:
+        for pid in (id, target):                  # a pattern of someone else's the acting user can read: 403
+            if pid:
+                access.guard(conn, conn.execute("SELECT owner_id FROM learned_patterns WHERE id=?", (pid,)).fetchone(),
+                             "this pattern")
         try:
             if action in ACTIONS:
                 patterns.set_user_state(conn, id, ACTIONS[action], by=ACTOR)
@@ -152,6 +172,8 @@ def proposal_decide(request: Request, proposal_id: int, decision: str):
     if decision not in ("accept", "dismiss"):
         raise HTTPException(404, "unknown decision")
     with _db(request) as conn:
+        access.guard(conn, conn.execute("SELECT owner_id FROM learning_proposals WHERE id=?", (proposal_id,)).fetchone(),
+                     "this proposal")
         try:
             result = patterns.resolve_proposal(conn, proposal_id, accept=decision == "accept", by=ACTOR)
         except KeyError:
@@ -173,7 +195,8 @@ def outcome_context(conn, deal_id) -> dict:
     code, text = outcomes.lost_reason_parts(deal["lost_reason"])
     stages = list(cfg("deal").get("stages") or [])
     return {"deal": deal, "stages": stages, "statuses": outcomes.STATUSES, "lost_reasons": outcomes.lost_reasons(),
-            "reason_code": code, "reason_text": text, "history": outcomes.stage_history(conn, deal_id)}
+            "reason_code": code, "reason_text": text, "history": outcomes.stage_history(conn, deal_id),
+            **access.page_owner(conn, deal["owner_id"])}
 
 
 @router.get("/deals/{deal_id}/outcome", response_class=HTMLResponse)

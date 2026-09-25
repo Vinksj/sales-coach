@@ -24,8 +24,8 @@
   </span>
 </div>
 <div class="intel-actions">
-  {% if anchor %}<form method="post" action="{{ here }}/strategy"><button class="btn btn-sm{% if not strategy_row %} btn-primary{% endif %}">{% if strategy_row %}Re-run strategy{% else %}Run strategy{% endif %}</button></form>{% endif %}
-  <a class="btn btn-sm" href="{{ here }}/prep">Prep for the next call</a>
+  {% if anchor and not readonly %}<form method="post" action="{{ here }}/strategy"><button class="btn btn-sm{% if not strategy_row %} btn-primary{% endif %}">{% if strategy_row %}Re-run strategy{% else %}Run strategy{% endif %}</button></form>{% endif %}
+  <a class="btn btn-sm" href="{{ here }}/prep">{% if readonly %}Prep briefs{% else %}Prep for the next call{% endif %}</a>
 </div>
 {% if failed %}<div class="callout callout-err"><div class="label">{% if failed.rate_limited %}The model quota ran out during the last strategy run{% else %}The last strategy run failed{% endif %}</div>{% if failed.rate_limited %}<p class="meta">Nothing was changed. A queued run retries on its own once the quota is back.</p>{% endif %}<p class="meta">{{ failed_row.created_at|dt }}: {{ failed.failed }}</p>{% if strategy_row %}<p class="meta">Showing the previous successful run.</p>{% endif %}</div>{% endif %}
 
@@ -64,10 +64,12 @@
       <div><span class="strong">{{ c.what }}</span> · {{ c.field_label }}</div>
       <div>On record: <span class="strong">{{ c.existing_value }}</span> <span class="meta">({{ c.existing_confidence }})</span> · Proposed: <span class="strong">{{ c.proposed_value }}</span> <span class="meta">({{ c.proposed_confidence }})</span></div>
       {% if c.reason %}<p class="meta">{{ c.reason }}</p>{% endif %}
+      {% if not readonly %}
       <div class="quick">
         <form method="post" action="/conflicts/{{ c.id }}/resolve"><input type="hidden" name="next" value="{{ here }}#intel"><input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept proposed</button></form>
         <form method="post" action="/conflicts/{{ c.id }}/resolve"><input type="hidden" name="next" value="{{ here }}#intel"><input type="hidden" name="accept" value="0"><button class="btn btn-sm">Keep current</button></form>
       </div>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -106,6 +108,7 @@
       {% if s.concerns %}<div class="label">Worries</div><ul class="plain dash">{% for x in s.concerns %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
       {{ ev(s.evidence) }}
       {% else %}<p class="meta">Not on the map yet. The strategist maps people it hears about on calls; you can set it yourself.</p>{% endif %}
+      {% if not readonly %}
       <details class="edit"><summary class="meta">Edit</summary>
         <form method="post" action="{{ here }}/stakeholders/{{ s.person_id }}" class="edit-form">
           <div class="form-grid">
@@ -121,6 +124,7 @@
           <button class="btn btn-sm btn-primary">Save</button>
         </form>
       </details>
+      {% endif %}
     </article>
     {% else %}<p class="empty">Nobody on this deal yet.</p>{% endfor %}
   </div>
@@ -136,6 +140,7 @@
       {% if m.gap %}<p class="meta">Gap: {{ m.gap }}</p>{% endif %}
       {% if m.next_question %}<p class="suggested">"{{ m.next_question }}"</p>{% endif %}
       {{ ev(m.evidence) }}
+      {% if not readonly %}
       <details class="edit"><summary class="meta">Edit</summary>
         <form method="post" action="{{ here }}/meddpicc/{{ m.element }}" class="edit-form">
           <label>Status<select name="status">{% for o in meddpicc_status %}<option value="{{ o }}"{% if o == m.status %} selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
@@ -145,6 +150,7 @@
           <button class="btn btn-sm btn-primary">Save</button>
         </form>
       </details>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
@@ -160,14 +166,14 @@
     {{ ev(r.evidence) }}
     <div class="quick">
       {% if r.source == 'rule' %}<span class="meta">Raised from the data, not by the model.</span>{% endif %}
-      <form method="post" action="{{ here }}/risks/{{ r.type }}/status"><input type="hidden" name="status" value="dismissed"><button class="btn btn-sm btn-quiet" data-confirm="Dismiss this risk? The strategist will not reopen it.">Dismiss</button></form>
+      {% if not readonly %}<form method="post" action="{{ here }}/risks/{{ r.type }}/status"><input type="hidden" name="status" value="dismissed"><button class="btn btn-sm btn-quiet" data-confirm="Dismiss this risk? The strategist will not reopen it.">Dismiss</button></form>{% endif %}
     </div>
   </div>
   {% else %}<p class="empty">{% if strategy_row %}No open risks.{% else %}No risks recorded yet.{% endif %}</p>{% endfor %}
   {% if closed_risks %}
   <details><summary class="meta">{{ closed_risks|length }} cleared or dismissed</summary>
     <ul class="plain">{% for r in closed_risks %}<li>{{ r.type|human }} <span class="meta">{{ r.status }}{% if 'status' in r.user_set %} by you{% endif %}</span>
-      <form method="post" action="{{ here }}/risks/{{ r.type }}/status" class="inline"><input type="hidden" name="status" value="open"><button class="btn btn-sm btn-quiet">Reopen</button></form></li>{% endfor %}</ul>
+      {% if not readonly %}<form method="post" action="{{ here }}/risks/{{ r.type }}/status" class="inline"><input type="hidden" name="status" value="open"><button class="btn btn-sm btn-quiet">Reopen</button></form>{% endif %}</li>{% endfor %}</ul>
   </details>
   {% endif %}
 </section>

@@ -52,12 +52,20 @@ def test_every_table_has_a_policy_set():
 
 def test_owned_policies_fail_closed_by_construction():
     """Every OWNED policy goes through app_visible_owners() (reads) or app_can_write() (writes), both of
-    which are empty / false for an unset app.user_id; nothing OWNED is ever `true`."""
+    which are empty / false for an unset app.user_id; nothing OWNED is ever `true`. The documented
+    exceptions (rls.OWNED_EXCEPTIONS: comments, written by their author) still bind every write to the
+    acting user and to the owners that user may read."""
     for table in tenancy.tables_of(tenancy.OWNED):
         select, insert, update, delete = rls.policies_for(table)
         assert "app_visible_owners()" in select
         for expr in (insert, update, delete):
-            assert "app_can_write(owner_id)" in expr and "true" not in expr.split()
+            assert "true" not in expr.split()
+            if table in rls.OWNED_EXCEPTIONS:
+                assert "app_actor_id()" in expr and "app_visible_owners()" in expr, (table, expr)
+            else:
+                assert "app_can_write(owner_id)" in expr
+    assert set(rls.OWNED_EXCEPTIONS) == {"comments"}
+    assert all(len(spec[4]) > 100 for spec in rls.OWNED_EXCEPTIONS.values())      # the reason is written down
 
 
 @pytest.mark.postgres_only

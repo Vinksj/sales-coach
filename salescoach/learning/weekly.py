@@ -68,7 +68,7 @@ def _pattern_changes(conn, since: datetime) -> dict:
 
 def _outcomes_moved(conn, since: datetime) -> list[dict]:
     moved = {k: {"kind": k, "yes": 0, "no": 0, "pending": 0} for k in outcomes.KINDS}
-    for r in conn.execute("SELECT kind, value, computed_at FROM derived_outcomes"):
+    for r in conn.execute("SELECT kind, value, computed_at FROM derived_outcomes WHERE owner_id=?", (patterns._owner(conn),)):
         if r["kind"] in moved and _in_window(r["computed_at"], since):
             moved[r["kind"]][{1: "yes", 0: "no"}.get(r["value"], "pending")] += 1
     totals = {c["kind"]: c for c in outcomes.counts(conn)}
@@ -78,7 +78,8 @@ def _outcomes_moved(conn, since: datetime) -> list[dict]:
 def _deals_closed(conn, since: datetime) -> list[dict]:
     reasons, out = outcomes.lost_reasons(), []
     for h in conn.execute("SELECT h.*, d.name FROM deal_stage_history h LEFT JOIN deals d ON d.node_id=h.deal_id "
-                          "WHERE h.to_status IN ('won','lost') AND h.from_status IS NOT h.to_status ORDER BY h.id"):
+                          "WHERE h.owner_id=? AND h.to_status IN ('won','lost') AND h.from_status IS NOT h.to_status "
+                          "ORDER BY h.id", (patterns._owner(conn),)):
         if not _in_window(h["changed_at"], since):
             continue
         code, text = outcomes.lost_reason_parts(h["lost_reason"])

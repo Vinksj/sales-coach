@@ -355,3 +355,29 @@ select[multiple] { padding: 6px; }
 .usage-numbers dd { margin: 0; font-size: 22px; font-weight: 600; }
 .usage-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .usage-table th, .usage-table td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+
+/* ---- manager review (Phase 7): read-only banner, comments, team table ---------------------- */
+.readonly-banner { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 10px 16px; margin: -8px 0 20px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--grey); border-radius: 0 9px 9px 0; }
+.readonly-banner .eyebrow { margin: 0; color: var(--muted); }
+.viewed-by { margin-top: 6px; }
+.comment-list { margin: 8px 0 12px; }
+.comment { background: var(--bg); border: 1px solid var(--line); border-left: 3px solid var(--accent-line); border-radius: 0 9px 9px 0;
+  padding: 10px 14px; margin-bottom: 8px; }
+.comment-resolved { border-left-color: var(--line); }
+.comment-resolved .comment-body { color: var(--muted); }
+.comment-head { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.comment-body { white-space: pre-wrap; word-break: break-word; margin: 4px 0 6px; }
+.comment-form { margin-top: 8px; max-width: 720px; }
+.comment-form textarea { min-height: 3.2em; }
+.turn-comments { margin: 8px 0 4px; }
+.turn-comment { margin-top: 4px; }
+.turn-comment > summary { cursor: pointer; display: inline-block; }
+.team-table th[scope="row"] { font-weight: 400; text-align: left; vertical-align: top; }
+.team-table caption { caption-side: bottom; text-align: left; padding-top: 10px; }
+.team-table td a, .calls-table td a { text-underline-offset: 3px; }
+@media (max-width: 900px) {
+  .team-table, .calls-table { font-size: 14px; }
+  .team-table th, .team-table td { padding: 8px 6px; }
+  .readonly-banner { margin-top: 0; }
+}

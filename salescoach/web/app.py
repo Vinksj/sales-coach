@@ -44,6 +44,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import config, hosted, identity, ops, repo, seller
 from ..execution import policy, tokens
+from ..manager import access, comments, views
 from ..memory import patterns
 from ..orchestrator import bus, context, review, workflow
 from ..schemas.events import Event
@@ -374,8 +375,52 @@ class ActorGate:
             if not auth.is_open(scope["method"].upper(), scope.get("path") or "/"):
                 await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
                 return
-        with identity.activate(actor):
+        # A non-GET request is a write: every object a route looks up to change is checked against the
+        # acting user there (manager/access.guard, in the *_or_404 helpers), so a manager reading a rep's
+        # call gets a 403 on its buttons instead of a silent no-op.
+        with identity.activate(actor), access.write_request(scope["method"].upper() not in SAFE_METHODS):
             await self.app(scope, receive, send)
+
+
+class WriteGuard:
+    """A write request whose path names an object (a POST under /calls/<id>/, /deals/<id>/, /loops/<id>/,
+    /emails/<id>/, ...) is refused with 403 before its route runs when the acting user can read the object
+    but does not own it: a manager reviewing a rep's call can press none of its buttons, including buttons
+    a later phase adds (manager/access.WRITE_PATHS). Inside the ActorGate, so the actor is known."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"].upper() not in SAFE_METHODS:
+            actor = identity.current_actor(required=False)
+            path = scope.get("path") or ""
+            if actor is not None and any(p.match(path) for p, _, _ in access.WRITE_PATHS):
+                db_path = getattr(scope.get("app"), "state", None)
+                db_path = getattr(db_path, "db_path", None)
+
+                def check():
+                    with identity.activate(actor):
+                        conn = stores.sales(db_path)
+                        try:
+                            access.refuse_write(conn, path)
+                        finally:
+                            conn.close()
+                try:
+                    from starlette.concurrency import run_in_threadpool
+                    await run_in_threadpool(check)
+                except access.ReadOnly as exc:
+                    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+                    if "text/html" in headers.get("accept", ""):
+                        body = (f'<!doctype html><meta charset="utf-8"><title>403</title>'
+                                f'<link rel="stylesheet" href="/static/app.css"><main class="wrap"><div class="page-head">'
+                                f'<div class="eyebrow">403</div><h1>{html.escape(str(exc))}</h1>'
+                                f'<p><a href="/">Back to Today</a></p></div></main>')
+                        await HTMLResponse(body, status_code=403)(scope, receive, send)
+                    else:
+                        await PlainTextResponse(str(exc), status_code=403)(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
 
 
 # ---- plumbing -----------------------------------------------------------------
@@ -485,6 +530,7 @@ def _chrome(request: Request, conn) -> dict:
         "flash_err": request.query_params.get("err"),
         "today": today_str(),
         "step_names": workflow.STEP_NAMES,
+        "nav_manages": access.manages_team(conn),
     }
 
 
@@ -516,10 +562,12 @@ def _redirect(url: str, msg=None, err=None, anchor=None):
 
 
 def _one(conn, sql, params, what):
+    """The row, or 404. In a write request, a row the acting user can read but does not own is ReadOnly
+    (403): a manager reads a rep's call and cannot press its buttons (manager/access.py)."""
     row = conn.execute(sql, params).fetchone()
     if row is None:
         raise HTTPException(404, f"{what} not found")
-    return row
+    return access.guard(conn, row, what)
 
 
 def _call_or_404(conn, call_id):
@@ -540,9 +588,10 @@ def _deal_or_404(conn, deal_id):
 
 
 def _deals(conn):
+    """The acting user's own deals (a manager's pickers never offer a rep's deal: it could not be linked)."""
     return conn.execute("SELECT d.node_id, d.name, d.status, a.name AS account_name FROM deals d "
-                        "LEFT JOIN accounts a ON a.node_id=d.account_id "
-                        "ORDER BY d.status='active' DESC, d.name").fetchall()
+                        "LEFT JOIN accounts a ON a.node_id=d.account_id WHERE d.owner_id=? "
+                        "ORDER BY d.status='active' DESC, d.name", (access.actor_id(conn),)).fetchall()
 
 
 def _people(conn):
@@ -777,6 +826,11 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
     return HTMLResponse(body, status_code=exc.status_code)
 
 
+async def _read_only(request: Request, exc: access.ReadOnly):
+    """A write on something the acting user may read but does not own: 403, nothing changed."""
+    return await _http_error(request, StarletteHTTPException(403, str(exc)))
+
+
 def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live_factory=_UNSET,
                hub=_UNSET, trusted_origins=None, role: str = "all", heartbeats: bool = False) -> FastAPI:
     """The web app. Tests pass start_worker=False and inject gmail_factory / live_factory / hub.
@@ -806,6 +860,7 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.login_limiter = hosted.LoginLimiter()
     from . import auth
     app.add_middleware(FirstRunGate)
+    app.add_middleware(WriteGuard)                  # inside the ActorGate: needs the actor; before any route
     app.add_middleware(ActorGate)                   # outside the gate: "is this USER set up" needs to know who
     app.add_middleware(auth.AuthGate)               # inert without SALESCOACH_PASSWORD; else a session before any page
     app.add_middleware(SameOriginGuard)             # added last = outermost: the gate never sees a foreign request
@@ -824,6 +879,7 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.plugin_errors = dict(plugins.errors)
     workflow.ensure_plugins()
     app.add_exception_handler(StarletteHTTPException, _http_error)
+    app.add_exception_handler(access.ReadOnly, _read_only)
     return app
 
 
@@ -869,9 +925,12 @@ def health(request: Request):
 def today_page(request: Request):
     today = today_str()
     with _db(request) as conn:
+        # Today is the acting user's own work. A manager can READ their team's calls and loops (row-level
+        # security), and reviews them on /team and /calls; they are not the manager's to-do list.
+        me = access.actor_id(conn)
         calls = conn.execute(
             "SELECT c.*, d.name AS deal_name FROM calls c LEFT JOIN deals d ON d.node_id=c.deal_id "
-            "ORDER BY c.started_at DESC LIMIT 300").fetchall()
+            "WHERE c.owner_id=? ORDER BY c.started_at DESC LIMIT 300", (me,)).fetchall()
         awaiting, processing, failed, live_calls, held = [], [], [], [], []
         for c in calls:
             cid = c["node_id"]
@@ -899,18 +958,22 @@ def today_page(request: Request):
         due = conn.execute(
             "SELECT l.*, d.name AS deal_name, c.title AS call_title FROM loops l "
             "LEFT JOIN deals d ON d.node_id=l.deal_id LEFT JOIN calls c ON c.node_id=l.call_id "
-            "WHERE l.status IN ('open','waiting') AND l.review_state!='rejected' "
+            "WHERE l.owner_id=? AND l.status IN ('open','waiting') AND l.review_state!='rejected' "
             "AND ((l.due_date IS NOT NULL AND l.due_date<=?) OR (l.next_check_at IS NOT NULL AND l.next_check_at<=?)) "
             f"ORDER BY COALESCE(l.due_date, l.next_check_at), {PRIORITY_ORDER.format(col='l.priority')}",
-            (today, today)).fetchall()
+            (me, today, today)).fetchall()
         failed_ids = {f["call"]["node_id"] for f in failed}
+        # The bus is one shared table (store/rls.py): in cloud mode only the acting user's own failed events are
+        # theirs to see. A local install has one user, and events from before the owner column have none.
+        mine = "AND owner=? " if identity.cloud() else ""
         failed_jobs = [e for e in conn.execute(
-            "SELECT * FROM wf_events WHERE status='failed' ORDER BY id DESC LIMIT 20").fetchall()
+            f"SELECT * FROM wf_events WHERE status='failed' {mine}ORDER BY id DESC LIMIT 20",
+            (me,) if mine else ()).fetchall()
             if e["entity_id"] not in failed_ids]
         return render(request, conn, "today.html", awaiting=awaiting, processing=processing, failed=failed,
                       live_calls=live_calls, held=held, due=due, failed_jobs=failed_jobs,
                       priority=patterns.active_priority(conn), deals=_deals(conn), people=_people(conn),
-                      today_label=fmt_day(today))
+                      today_label=fmt_day(today), comment_inbox=comments.inbox(conn))
 
 
 @router.post("/events/{event_id}/retry")
@@ -1182,11 +1245,22 @@ def _call_context(conn, call) -> dict:
     }
 
 
+def _review_context(conn, kind: str, entity_id: str, owner_id) -> dict:
+    """What every review page adds (Phase 7): whether the viewer may change it (the read-only rule,
+    manager/access.py), whose it is, and who else has opened it. Opening someone else's page logs a view."""
+    views.log_view(conn, kind, entity_id, owner_id)
+    return {**access.page_owner(conn, owner_id), "viewed_by": views.viewed_by(conn, kind, entity_id)}
+
+
 @router.get("/calls/{call_id}", response_class=HTMLResponse)
 def call_page(request: Request, call_id: str):
     with _db(request) as conn:
         call = _call_or_404(conn, call_id)
-        return render(request, conn, "call.html", **_call_context(conn, call))
+        ctx = _call_context(conn, call)
+        ctx.update(_review_context(conn, "call", call_id, call["owner_id"]),
+                   call_comments=comments.for_call(conn, call_id),
+                   email_comments=comments.thread(conn, "email", ctx["email"]["row"]["id"]) if ctx["email"] else [])
+        return render(request, conn, "call.html", **ctx)
 
 
 @router.post("/calls/{call_id}/retry")
@@ -1446,6 +1520,8 @@ def call_add_loop(request: Request, call_id: str, description: str = Form(""), o
 @router.post("/conflicts/{conflict_id}/resolve")
 def conflict_resolve(request: Request, conflict_id: int, accept: str = Form(...), next_url: str = Form("", alias="next")):
     with _db(request) as conn:
+        access.guard(conn, conn.execute("SELECT owner_id FROM memory_conflicts WHERE id=?", (conflict_id,)).fetchone(),
+                     "this proposal")
         ok = review.resolve_proposal(conn, conflict_id, accept == "1")
         conn.commit()
     back = _clean_next(next_url, "/")
@@ -1458,7 +1534,7 @@ def conflict_resolve(request: Request, conflict_id: int, accept: str = Form(...)
 def loops_page(request: Request):
     qp = request.query_params
     f = {"deal": qp.get("deal", ""), "owner": qp.get("owner", ""), "priority": qp.get("priority", ""),
-         "status": qp.get("status", "open"), "due": qp.get("due", "any")}
+         "status": qp.get("status", "open"), "due": qp.get("due", "any"), "rep": qp.get("rep", "")}
     today = today_str()
     where, params = ["1=1"], []
     if f["deal"]:
@@ -1488,6 +1564,11 @@ def loops_page(request: Request):
     else:
         f["due"] = "any"
     with _db(request) as conn:
+        # Whose loops: the acting user's own, or (rep=<id>) those of a rep they manage, read only (/team links here).
+        me = access.actor_id(conn)
+        f["rep"] = f["rep"] if f["rep"] in access.visible_owner_ids(conn) else me
+        where.append("l.owner_id=?")
+        params.append(f["rep"])
         rows = conn.execute(
             "SELECT l.*, d.name AS deal_name, c.title AS call_title, c.started_at AS call_started FROM loops l "
             "LEFT JOIN deals d ON d.node_id=l.deal_id LEFT JOIN calls c ON c.node_id=l.call_id "
@@ -1495,7 +1576,11 @@ def loops_page(request: Request):
             f"ORDER BY l.due_date IS NULL, l.due_date, {PRIORITY_ORDER.format(col='l.priority')}, l.created_at",
             params).fetchall()
         here = request.url.path + (("?" + request.url.query) if request.url.query else "")
-        return render(request, conn, "loops.html", loops=rows, f=f, deals=_deals(conn), owners=OWNERS,
+        reps = access.managed_reps(conn)
+        deals = _deals(conn) if f["rep"] == me else conn.execute(
+            "SELECT node_id, name FROM deals WHERE owner_id=? ORDER BY name", (f["rep"],)).fetchall()
+        return render(request, conn, "loops.html", loops=rows, f=f, deals=deals, owners=OWNERS, reps=reps, me=me,
+                      **access.page_owner(conn, f["rep"]),
                       priorities=PRIORITIES, here=_clean_next(here, "/loops"),
                       overdue=sum(1 for r in rows if r["due_date"] and r["due_date"] < today
                                   and r["status"] in ("open", "waiting")),
@@ -1636,8 +1721,13 @@ def email_mark_sent(request: Request, email_id: int):
 # ---- deals --------------------------------------------------------------------
 
 @router.get("/deals", response_class=HTMLResponse)
-def deals_page(request: Request):
+def deals_page(request: Request, rep: str = "", status: str = ""):
+    """The acting user's deals, or (rep=<id>) those of a rep they manage, read only; status=active for the
+    open ones (the /team "open deals" number)."""
     with _db(request) as conn:
+        me = access.actor_id(conn)
+        rep = rep if rep in access.visible_owner_ids(conn) else me
+        status = status if status in ("active", "paused", "won", "lost") else ""
         rows = conn.execute(
             "SELECT d.*, a.name AS account_name, a.domains, "
             "(SELECT COUNT(*) FROM loops l WHERE l.deal_id=d.node_id AND l.status IN ('open','waiting') "
@@ -1646,9 +1736,12 @@ def deals_page(request: Request):
             " AND l.review_state!='rejected' AND l.due_date<?) AS overdue, "
             "(SELECT COUNT(*) FROM calls c WHERE c.deal_id=d.node_id) AS n_calls, "
             "(SELECT MAX(started_at) FROM calls c WHERE c.deal_id=d.node_id) AS last_call "
-            "FROM deals d LEFT JOIN accounts a ON a.node_id=d.account_id "
-            "ORDER BY d.status='active' DESC, last_call DESC, d.name", (today_str(),)).fetchall()
-        return render(request, conn, "deals.html", deals=rows)
+            "FROM deals d LEFT JOIN accounts a ON a.node_id=d.account_id WHERE d.owner_id=? "
+            + ("AND d.status=? " if status else "")
+            + "ORDER BY d.status='active' DESC, last_call DESC, d.name",
+            (today_str(), rep, *((status,) if status else ()))).fetchall()
+        return render(request, conn, "deals.html", deals=rows, rep=rep, status=status, reps=access.managed_reps(conn),
+                      me=me, **access.page_owner(conn, rep))
 
 
 @router.post("/deals")
@@ -1706,7 +1799,9 @@ def deal_page(request: Request, deal_id: str):
         return render(request, conn, "deal.html", deal=deal, domains=fromjson(deal["domains"], []) or [],
                       stakeholders=repo.deal_people(conn, deal_id), loops=loops, calls=calls, claims=claims,
                       gaps=latest_gaps, gaps_call=gaps_call, subjects=subjects, reconciliations=reconciliations,
-                      people=_people(conn), here=f"/deals/{deal_id}")
+                      people=_people(conn), here=f"/deals/{deal_id}",
+                      deal_comments=comments.thread(conn, "deal", deal_id),
+                      **_review_context(conn, "deal", deal_id, deal["owner_id"]))
 
 
 @router.post("/deals/{deal_id}/people")
@@ -1727,38 +1822,48 @@ def deal_add_person(request: Request, deal_id: str, person_id: str = Form(""), n
 # ---- coach --------------------------------------------------------------------
 
 @router.get("/coach", response_class=HTMLResponse)
-def coach_page(request: Request):
+def coach_page(request: Request, rep: str = ""):
+    """The acting user's coaching, or (?rep=<id>) a rep's they manage, read only."""
     with _db(request) as conn:
-        priority = patterns.active_priority(conn)
-        rows = conn.execute(
-            "SELECT * FROM seller_patterns WHERE owner_id=? AND status!='retired' ORDER BY status='active' DESC, frequency DESC, "
-            "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, calls_seen DESC",
-            (identity.actor_of(conn).user_id,)).fetchall()
-        titles = {r["node_id"]: r for r in conn.execute("SELECT node_id, title, started_at FROM calls")}
-        items = []
-        for r in rows:
-            p = dict(r)
-            p["examples_list"] = fromjson(p["examples"], []) or []
-            p["contexts_list"] = fromjson(p["contexts"], []) or []
-            p["is_priority"] = priority is not None and priority["tag"] == p["tag"]
-            items.append(p)
-        insights, seen = [], set()
-        for a in conn.execute("SELECT a.call_id, a.json, a.created_at FROM artifacts a WHERE a.kind='analysis' "
-                              "ORDER BY a.id DESC"):
-            if a["call_id"] in seen:
-                continue
-            seen.add(a["call_id"])
-            data = fromjson(a["json"], {}) or {}
-            if data.get("coaching_insight"):
-                insights.append({"call": titles.get(a["call_id"]), "call_id": a["call_id"],
-                                 "insight": data["coaching_insight"], "verdict": data.get("verdict"),
-                                 "missed": data.get("biggest_missed_opportunity")})
-            if len(insights) >= 5:
-                break
-        return render(request, conn, "coach.html", priority=next((p for p in items if p["is_priority"]), None),
-                      weaknesses=[p for p in items if p["polarity"] == "weakness"],
-                      strengths=[p for p in items if p["polarity"] == "strength"],
-                      insights=insights, titles=titles)
+        try:
+            with access.viewing(conn, rep or None) as subject:
+                return _coach_page(request, conn, subject)
+        except LookupError:
+            raise HTTPException(404, "Not found")
+
+
+def _coach_page(request: Request, conn, subject: str):
+    """Coach page of `subject` (identity.viewing is set by the caller)."""
+    priority = patterns.active_priority(conn)
+    rows = conn.execute(
+        "SELECT * FROM seller_patterns WHERE owner_id=? AND status!='retired' ORDER BY status='active' DESC, frequency DESC, "
+        "CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, calls_seen DESC",
+        (subject,)).fetchall()
+    titles = {r["node_id"]: r for r in conn.execute("SELECT node_id, title, started_at FROM calls")}
+    items = []
+    for r in rows:
+        p = dict(r)
+        p["examples_list"] = fromjson(p["examples"], []) or []
+        p["contexts_list"] = fromjson(p["contexts"], []) or []
+        p["is_priority"] = priority is not None and priority["tag"] == p["tag"]
+        items.append(p)
+    insights, seen = [], set()
+    for a in conn.execute("SELECT a.call_id, a.json, a.created_at FROM artifacts a WHERE a.owner_id=? "
+                          "AND a.kind='analysis' ORDER BY a.id DESC", (subject,)):
+        if a["call_id"] in seen:
+            continue
+        seen.add(a["call_id"])
+        data = fromjson(a["json"], {}) or {}
+        if data.get("coaching_insight"):
+            insights.append({"call": titles.get(a["call_id"]), "call_id": a["call_id"],
+                             "insight": data["coaching_insight"], "verdict": data.get("verdict"),
+                             "missed": data.get("biggest_missed_opportunity")})
+        if len(insights) >= 5:
+            break
+    return render(request, conn, "coach.html", priority=next((p for p in items if p["is_priority"]), None),
+                  weaknesses=[p for p in items if p["polarity"] == "weakness"],
+                  strengths=[p for p in items if p["polarity"] == "strength"],
+                  insights=insights, titles=titles, subject=subject, **access.page_owner(conn, subject))
 
 
 # ---- import -------------------------------------------------------------------
