@@ -42,19 +42,27 @@
 </section>
 
 {% import "automation_meetings.html" as cal %}
+{% set acal = auto.calendar %}
+{% set cal_unlinked = acal.in_cloud and acal.link and acal.link.status != 'connected' %}
 <section class="section" id="upcoming-calls">
-  <div class="section-head"><h2>Upcoming calls</h2><span class="purpose">Every meeting on your calendar. Choose which to record; armed ones start by themselves.</span>
-    <form method="post" action="/calendar/refresh" class="inline-form"><input type="hidden" name="next" value="/"><button class="btn btn-sm"{% if auto.calendar.refresh_pending %} disabled{% endif %}>{% if auto.calendar.refresh_pending %}Reading calendar…{% else %}Refresh calendar{% endif %}</button></form>
+  <div class="section-head"><h2>Upcoming calls</h2><span class="purpose">{% if acal.in_cloud %}Every meeting on your own Google Calendar. Deal meetings get a prep brief; the calls themselves come from your recorder.{% else %}Every meeting on your calendar. Choose which to record; armed ones start by themselves.{% endif %}</span>
+    {% if not cal_unlinked %}<form method="post" action="/calendar/refresh" class="inline-form"><input type="hidden" name="next" value="/"><button class="btn btn-sm"{% if acal.refresh_pending %} disabled{% endif %}>{% if acal.refresh_pending %}Reading calendar…{% else %}Refresh calendar{% endif %}</button></form>{% endif %}
     <a class="btn btn-sm btn-quiet" href="/calendar">All meetings →</a></div>
-  {% if auto.upcoming %}
+  {% if cal_unlinked %}
+  {% with link=acal.link, connect_url=acal.connect_url %}{% include "automation_calendar_connect.html" %}{% endwith %}
+  {% elif auto.upcoming %}
   <div class="table-wrap"><table class="table">
-    <thead><tr><th>When</th><th>Meeting</th><th>Deal</th><th>Record</th></tr></thead>
-    <tbody>{{ cal.meeting_rows(auto.upcoming, auto.calendar.live, "/") }}</tbody>
+    {{ cal.meeting_head(acal.recording) }}
+    <tbody>{{ cal.meeting_rows(auto.upcoming, acal.live, "/", acal.recording) }}</tbody>
   </table></div>
   {% else %}
-  <p class="empty">{% if auto.calendar.last_sync %}No meetings on your calendar for the next week.{% elif auto.calendar.unavailable %}The calendar could not be read: {{ auto.calendar.unavailable.why }}{% else %}The calendar has not been read yet; it is read within two minutes of the server starting, or press Refresh.{% endif %}</p>
+  <p class="empty">{% if acal.problem %}The calendar could not be read: {{ acal.problem.why }}{% elif acal.last_sync %}No meetings on your calendar for the next week.{% elif acal.unavailable and not acal.in_cloud %}The calendar could not be read: {{ acal.unavailable.why }}{% else %}The calendar has not been read yet; it is read within two minutes of the server starting, or press Refresh.{% endif %}</p>
   {% endif %}
-  <p class="meta">{% if auto.calendar.last_sync %}Calendar read {{ auto.calendar.last_sync.at|dt }} (read-only).{% endif %}
-    A recording starts {{ auto.calendar.record_cfg.get('lead_minutes', 1) }} min before the meeting and stops {{ auto.calendar.record_cfg.get('grace_minutes', 15) }} min after its end time unless you stop it first.</p>
+  {% if acal.in_cloud %}
+  <p class="meta">{% if acal.last_sync %}Calendar read {{ acal.last_sync.at|dt }} (read-only).{% endif %}{% if acal.problem and auto.upcoming %} <span class="accent">The last read failed: {{ acal.problem.why }}</span>{% endif %}</p>
+  {% else %}
+  <p class="meta">{% if acal.last_sync %}Calendar read {{ acal.last_sync.at|dt }} (read-only).{% endif %}
+    A recording starts {{ acal.record_cfg.get('lead_minutes', 1) }} min before the meeting and stops {{ acal.record_cfg.get('grace_minutes', 15) }} min after its end time unless you stop it first.</p>
+  {% endif %}
 </section>
 {% endif %}
