@@ -446,6 +446,20 @@ replaced. Admin writes (`adminui/ops.py`) land in `events` with `actor_user_id`.
 `sessions`, `invites` and `oauth_tokens` are SYSTEM in `store/tenancy.py`. See
 [deploy-cloud.md](deploy-cloud.md).
 
+**Managers (Phase 7).** A manager reads their team's rows through the same policies and writes none;
+the app adds the read-only rule on top (`manager/access.py`). Every non-GET request runs inside
+`access.write_request()` (the `ActorGate`), and every `*_or_404` helper passes its row through
+`access.guard()`, which raises `ReadOnly` (403) when the acting user can read the row but does not own
+it: the refusal comes before anything is written or queued, instead of a policy's silent no-op. The bus
+(`orchestrator/bus.publish`) refuses an interactive publish on someone else's object, since `wf_events`
+is the one table every connection writes and the worker handles an event as its owner. Pages decide
+read-only rendering from the object's `owner_id` (`access.page_owner`); the Coach and Learning pages
+of a rep are rendered inside `identity.viewing(rep)`, which changes whose rows the own-work reads
+select (`identity.subject_id`) and nothing else. `comments` is the one OWNED table a non-owner inserts
+into (`store/rls.OWNED_EXCEPTIONS`, with its reason); `access_log` is SYSTEM and insert-only. Comments,
+coaching notes and the team roll-up are never read by a prompt-building module
+(`tests/test_manager.py`). See [manager.md](manager.md).
+
 ## Prompts
 
 Every prompt is a Markdown file beside its agent, with `{{variables}}` filled by

@@ -343,6 +343,8 @@ and services are replaced by fakes.
 - [docs/sources.md](docs/sources.md): getting transcripts in from any recorder
 - [docs/learning.md](docs/learning.md): what is learned, thresholds, how to correct it
 - [docs/architecture.md](docs/architecture.md): pipeline, event bus, plugins, stores, safety checks
+- [docs/deploy-cloud.md](docs/deploy-cloud.md): running it for a team (cloud mode, Postgres, Google sign-in)
+- [docs/manager.md](docs/manager.md): what a manager sees and can do, what they cannot, and what reps should know
 - [docs/design-setup-and-learning.md](docs/design-setup-and-learning.md): the design note behind the generalisation
 - [docs/review-2026-09-12.md](docs/review-2026-09-12.md): two safety reviews and their fixes
 - [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
