@@ -27,7 +27,6 @@ import logging
 import threading
 import queue
 import re
-import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
@@ -428,6 +427,71 @@ class WriteGuard:
                         await PlainTextResponse(str(exc), status_code=403)(scope, receive, send)
                     return
         await self.app(scope, receive, send)
+
+
+UPLOAD_LIMITS_MB = {"/import/audio": ("SALESCOACH_MAX_AUDIO_MB", 500),
+                    "/import/file": ("SALESCOACH_MAX_IMPORT_MB", 20), "/import/text": ("SALESCOACH_MAX_IMPORT_MB", 20)}
+
+
+def upload_limit(path: str):
+    """The byte cap of an upload route (env SALESCOACH_MAX_AUDIO_MB, default 500; SALESCOACH_MAX_IMPORT_MB,
+    default 20, for a transcript file or pasted text), or None for any other path."""
+    import os
+    if path not in UPLOAD_LIMITS_MB:
+        return None
+    env, default = UPLOAD_LIMITS_MB[path]
+    try:
+        mb = float(os.environ.get(env) or default)
+    except ValueError:
+        mb = default
+    return int(mb * 1024 * 1024)
+
+
+class UploadLimit:
+    """An upload bigger than its route's cap is refused (413) before any of it is parsed or written to disk:
+    by its declared Content-Length, and by counting what actually arrives (a body with no length, or more
+    than it declared, is cut off and refused the same way)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        limit = upload_limit(scope.get("path") or "") if scope["type"] == "http" and scope["method"] == "POST" else None
+        if limit is None:
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        declared = headers.get("content-length", "")
+        too_big = PlainTextResponse(f"Too large: the limit for this upload is {limit // (1024 * 1024)} MB.",
+                                    status_code=413)
+        if declared.isdigit() and int(declared) > limit:
+            await too_big(scope, receive, send)
+            return
+        seen = {"n": 0, "over": False}
+
+        async def counted():
+            message = await receive()
+            if message["type"] == "http.request":
+                seen["n"] += len(message.get("body", b""))
+                if seen["n"] > limit:
+                    seen["over"] = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        started = {"sent": False}
+
+        async def watch(message):
+            if message["type"] == "http.response.start":
+                started["sent"] = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted, watch)
+        except Exception:
+            if not seen["over"]:
+                raise
+        if seen["over"] and not started["sent"]:
+            await too_big(scope, receive, send)
 
 
 class ReadLog:
@@ -912,6 +976,7 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.sse_keepalive_s = KEEPALIVE_S
     app.state.login_limiter = hosted.LoginLimiter()
     from . import auth
+    app.add_middleware(UploadLimit)                 # innermost: an oversized upload is refused before it is parsed
     app.add_middleware(FirstRunGate)
     app.add_middleware(ReadLog)                     # inside the ActorGate: needs the actor; logs a read of others' work
     app.add_middleware(WriteGuard)                  # inside the ActorGate: needs the actor; before any route
@@ -1990,20 +2055,33 @@ def import_audio_post(request: Request, file: UploadFile = File(...), title: str
         with _db(request) as conn:
             if repo.own_deal(conn, deal_id) is None:              # unknown, or someone else's: not found
                 raise HTTPException(404, "deal not found")
+    from ..sources.audio_file import SUFFIXES
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SUFFIXES:           # the content decides the format (audio_file.sniff_format); this is the form's
+        return _redirect("/import", err=f"Audio import takes {', '.join(s.lstrip('.') for s in SUFFIXES)} "
+                                        "recordings; this file is none of those.")
     inbox = Path(config.DATA_DIR) / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
-    suffix = re.sub(r"[^a-z0-9.]", "", Path(file.filename or "").suffix.lower())[:10] or ".audio"
     dest = inbox / f"upload-{uuid.uuid4().hex[:12]}{suffix}"
-    with dest.open("wb") as fh:
-        shutil.copyfileobj(file.file, fh)
-    with _db(request) as conn:
-        try:
-            call_id = import_audio(conn, str(dest), title.strip() or (file.filename or "Imported recording"),
-                                   deal_id=deal_id or None, lang_mode=lang_mode if lang_mode in LANGS else "auto",
-                                   layout=layout if layout in AUDIO_LAYOUTS else "stereo_me_left")
-            for pid in dict.fromkeys([repo.ensure_me(conn), *[p for p in participants if p]]):
-                repo.add_participant(conn, call_id, pid)
-            conn.commit()
-        except Exception as exc:
-            return _redirect("/import", err=f"Audio import failed: {type(exc).__name__}: {exc}")
+    limit = upload_limit("/import/audio")
+    try:
+        with dest.open("wb") as fh:
+            copied = 0
+            for chunk in iter(lambda: file.file.read(1 << 20), b""):
+                copied += len(chunk)
+                if limit is not None and copied > limit:
+                    return _redirect("/import", err=f"Too large: the limit for a recording is {limit // (1024 * 1024)} MB.")
+                fh.write(chunk)
+        with _db(request) as conn:
+            try:
+                call_id = import_audio(conn, str(dest), title.strip() or (file.filename or "Imported recording"),
+                                       deal_id=deal_id or None, lang_mode=lang_mode if lang_mode in LANGS else "auto",
+                                       layout=layout if layout in AUDIO_LAYOUTS else "stereo_me_left")
+                for pid in dict.fromkeys([repo.ensure_me(conn), *[p for p in participants if p]]):
+                    repo.add_participant(conn, call_id, pid)
+                conn.commit()
+            except Exception as exc:
+                return _redirect("/import", err=f"Audio import failed: {type(exc).__name__}: {exc}")
+    finally:
+        dest.unlink(missing_ok=True)     # converted into the call's own folder, or refused: the upload is not kept
     return _redirect(f"/calls/{call_id}", msg="Recording imported. Transcription runs when the worker is free.")

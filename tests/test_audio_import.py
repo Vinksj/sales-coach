@@ -78,3 +78,39 @@ def test_stereo_layout_rejects_mono(conn, tmp_path):
         import_audio(conn, wav, "wrong layout")
     assert conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
     assert not list(config.calls_dir().glob(".import-*"))
+
+
+# ---- security review: only real recordings reach ffmpeg, and only as themselves ----------------------------
+
+def test_a_playlist_naming_another_calls_audio_is_refused_before_ffmpeg(conn, tmp_path, monkeypatch):
+    """An HLS playlist (or a concat list) makes a demuxer open OTHER local files: an upload naming
+    ../calls/<id>/them.flac imported that call's audio as the uploader's. The content is sniffed first."""
+    from salescoach.sources import audio_file
+    wav = tmp_path / "secret.wav"
+    sf.write(wav, np.stack([_tone(2.0, 300, 0.3), _tone(2.0, 700, 0.3)], axis=1), SRC_RATE)
+    victim = import_audio(conn, wav, "someone's call")
+    ran = []
+    monkeypatch.setattr(audio_file, "_ffmpeg", lambda args: ran.append(args))
+    monkeypatch.setattr(audio_file.subprocess, "run", lambda *a, **k: ran.append(a))
+    for name, body in (("notes.m3u8", f"#EXTM3U\n#EXTINF:2,\n../calls/{victim}/them.flac\n#EXT-X-ENDLIST\n"),
+                       ("list.wav", f"ffconcat version 1.0\nfile '../calls/{victim}/them.flac'\n"),
+                       ("empty.mp3", "")):
+        path = tmp_path / name
+        path.write_text(body)
+        with pytest.raises(ValueError, match="not a recording"):
+            import_audio(conn, path, "harmless", layout="mono_them")
+    assert ran == [] and conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 1
+
+
+def test_ffmpeg_is_told_the_format_and_may_open_only_the_file(conn, tmp_path, monkeypatch):
+    from salescoach.sources import audio_file
+    wav = tmp_path / "call.wav"
+    sf.write(wav, np.stack([_tone(1.0, 440, 0.3), _tone(1.0, 880, 0.3)], axis=1), SRC_RATE)
+    seen = []
+    real_run = audio_file.subprocess.run
+    monkeypatch.setattr(audio_file.subprocess, "run", lambda cmd, **k: (seen.append(cmd), real_run(cmd, **k))[1])
+    import_audio(conn, wav, "ok")
+    assert len(seen) == 2                                             # ffprobe, then ffmpeg
+    for cmd in seen:
+        i = cmd.index("-i")
+        assert cmd[i - 4:i] == ["-protocol_whitelist", "file", "-f", "wav"] and cmd[i + 1] == f"file:{wav}"
