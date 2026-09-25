@@ -28,6 +28,12 @@ Decisions worth a line:
     in, who may sign in, a user's Google grant), never a rep's work; store/rls.py polices each.
   * org_settings (Phase 6) is SYSTEM: the org's settings overlay, one row per settings file; raw_payloads
     is OWNED: what one user's source delivered (top-level: no parent, no trigger).
+  * comments (Phase 7) are OWNED by the rep whose object is commented on, whoever wrote them, so a
+    rep reads every comment on their work and their managers read the same thread; top-level (the
+    owner is named by the app from the object, and the insert policy checks it against the object).
+    Its write policies are the one OWNED exception (store/rls.OWNED_EXCEPTIONS says why).
+  * access_log (Phase 7) is SYSTEM: bookkeeping about who looked at what, keyed on owner_user_id
+    (whose object was viewed), insert-only.
 """
 
 OWNED = "OWNED"
@@ -65,6 +71,8 @@ TABLE_CLASS = {
     "nudges": OWNED, "coach_state": OWNED,
     # -- Phase 6: the org settings overlay is machinery; a raw payload is what one user's source delivered
     "org_settings": SYSTEM, "raw_payloads": OWNED,
+    # -- Phase 7: a comment is the commented rep's (written by them or their manager); who-viewed-what is machinery
+    "comments": OWNED, "access_log": SYSTEM,
 }
 
 # Tables that exist on one backend only, and why.

@@ -584,3 +584,37 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   updated_at        TEXT,
   PRIMARY KEY (user_id, provider)
 );
+
+-- ---- Manager review (Phase 7; salescoach/manager) ---------------------------------------------------
+-- A comment on one rep's call, deal, email or loop, or a coaching note on the rep themselves. OWNED by
+-- the rep whose object it is (owner_id), written by author_id: the rep on their own work, or a manager of
+-- the rep's team (store/rls.py says why this is the one OWNED table a non-owner inserts into). turn_idx
+-- anchors a call comment to one transcript turn. Read by people only: no prompt ever reads this table
+-- (tests/test_manager.py greps the prompt-building modules).
+CREATE TABLE IF NOT EXISTS comments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id    TEXT NOT NULL DEFAULT 'local',
+  author_id   TEXT NOT NULL,
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('call','deal','email','loop','coaching')),
+  entity_id   TEXT NOT NULL,                  -- a node id; an emails.id as text; the rep's user id (coaching)
+  turn_idx    INTEGER,
+  body        TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_comments_owner_id ON comments(owner_id);
+CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);
+
+-- Who opened someone else's call or deal page, and when: insert-only. owner_user_id is whose object
+-- it was (not owner_id: this is SYSTEM bookkeeping about people, never a rep's work). The owner sees
+-- "Viewed by" from it; their managers may read it too; nobody updates or deletes a row.
+CREATE TABLE IF NOT EXISTS access_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  viewer_id     TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  entity_type   TEXT NOT NULL CHECK(entity_type IN ('call','deal')),
+  entity_id     TEXT NOT NULL,
+  viewed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_access_log_entity ON access_log(entity_type, entity_id, viewed_at);

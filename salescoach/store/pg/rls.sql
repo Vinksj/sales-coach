@@ -132,6 +132,39 @@ END $$;
 DROP TRIGGER IF EXISTS trg_users_guard ON users;
 CREATE TRIGGER trg_users_guard BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION app_users_guard();
 
+-- Whose object an (entity_type, entity_id) names (Phase 7: comments and access_log), readable by the policies
+-- whoever asks: a call, deal or loop node's owner, an email's owner, or, for a coaching note, the user it is
+-- about. An owner id, never content (like app_owner_of); NULL for anything that does not exist.
+-- (Parameters are prefixed: nodes has a column named `kind`, which would shadow a parameter of that name.)
+CREATE OR REPLACE FUNCTION app_entity_owner(p_type text, p_id text) RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT CASE
+    WHEN p_type IN ('call', 'deal', 'loop') THEN (SELECT n.owner_id FROM nodes n WHERE n.id = p_id AND n.type = p_type)
+    WHEN p_type = 'email' THEN (SELECT e.owner_id FROM emails e
+                                WHERE e.id = CASE WHEN p_id ~ '^[0-9]{1,9}$' THEN p_id::integer END)
+    WHEN p_type = 'coaching' THEN (SELECT u.id FROM users u WHERE u.id = p_id)
+  END
+$$;
+
+-- A comment's thread, author and time never change; only its author edits the text; a resolve is signed by
+-- whoever resolved it. The policies say WHO may update a comment (its rep or its author); this says WHAT.
+CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF session_user = 'salescoach_app' AND (
+       NEW.id IS DISTINCT FROM OLD.id OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.author_id IS DISTINCT FROM OLD.author_id OR NEW.entity_type IS DISTINCT FROM OLD.entity_type
+       OR NEW.entity_id IS DISTINCT FROM OLD.entity_id OR NEW.turn_idx IS DISTINCT FROM OLD.turn_idx
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (NEW.body IS DISTINCT FROM OLD.body AND OLD.author_id IS DISTINCT FROM app_actor_id())
+       OR (NEW.resolved_by IS DISTINCT FROM OLD.resolved_by AND NEW.resolved_by IS DISTINCT FROM app_actor_id()
+           AND NEW.resolved_by IS NOT NULL)) THEN
+    RAISE EXCEPTION 'a comment keeps its thread, author and time; only its author edits it; a resolve is signed by who resolved it'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_comments_guard ON comments;
+CREATE TRIGGER trg_comments_guard BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION app_comments_guard();
+
 -- ---- OWNED: one rep's work; the owner writes, the owner's managers read --------------------------------
 -- agent_runs: OWNED
 ALTER TABLE agent_runs ENABLE ROW LEVEL SECURITY;
@@ -210,6 +243,13 @@ CREATE POLICY coach_state_select ON coach_state FOR SELECT USING (owner_id = ANY
 CREATE POLICY coach_state_insert ON coach_state FOR INSERT WITH CHECK (app_can_write(owner_id));
 CREATE POLICY coach_state_update ON coach_state FOR UPDATE USING (app_can_write(owner_id)) WITH CHECK (app_can_write(owner_id));
 CREATE POLICY coach_state_delete ON coach_state FOR DELETE USING (app_can_write(owner_id));
+-- comments: OWNED
+ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE comments FORCE ROW LEVEL SECURITY;
+CREATE POLICY comments_select ON comments FOR SELECT USING (owner_id = ANY (app_visible_owners()));
+CREATE POLICY comments_insert ON comments FOR INSERT WITH CHECK (author_id = app_actor_id() AND app_mode_ok() AND owner_id = ANY (app_visible_owners()) AND owner_id = app_entity_owner(entity_type, entity_id) AND (entity_type <> 'coaching' OR owner_id <> author_id));
+CREATE POLICY comments_update ON comments FOR UPDATE USING (app_can_write(owner_id) OR (author_id = app_actor_id() AND app_mode_ok() AND owner_id = ANY (app_visible_owners()))) WITH CHECK (app_can_write(owner_id) OR (author_id = app_actor_id() AND app_mode_ok() AND owner_id = ANY (app_visible_owners())));
+CREATE POLICY comments_delete ON comments FOR DELETE USING (author_id = app_actor_id() AND app_mode_ok() AND owner_id = ANY (app_visible_owners()));
 -- deal_health: OWNED
 ALTER TABLE deal_health ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deal_health FORCE ROW LEVEL SECURITY;
@@ -487,6 +527,11 @@ CREATE POLICY users_update ON users FOR UPDATE USING (app_actor_role() = 'admin'
 CREATE POLICY users_delete ON users FOR DELETE USING (app_actor_role() = 'admin');
 
 -- ---- SYSTEM: the machinery -----------------------------------------------------------------------------
+-- access_log: SYSTEM
+ALTER TABLE access_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE access_log NO FORCE ROW LEVEL SECURITY;
+CREATE POLICY access_log_select ON access_log FOR SELECT USING (owner_user_id = ANY (app_visible_owners()));
+CREATE POLICY access_log_insert ON access_log FOR INSERT WITH CHECK (viewer_id = app_actor_id() AND app_mode_ok() AND owner_user_id = ANY (app_visible_owners()) AND owner_user_id = app_entity_owner(entity_type, entity_id));
 -- invites: SYSTEM
 ALTER TABLE invites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invites NO FORCE ROW LEVEL SECURITY;
