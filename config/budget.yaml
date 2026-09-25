@@ -1,7 +1,10 @@
 # Daily model-spend caps, USD (salescoach/budget.py). null or 0 = no cap. The environment
 # (LLM_BUDGET_USER_USD_DAY, LLM_BUDGET_ORG_USD_DAY) wins over this file; in cloud mode the org's
-# copy of this file lives in the org_settings table. "Today" is the acting user's calendar day.
+# copy of this file lives in the org_settings table. "Today" starts at midnight in llm.timezone for everyone
+# in a hosted (cloud) install (default UTC; a rep's own profile timezone never moves it); a local install
+# uses its one user's timezone.
 # When a cap is reached the worker defers the event (no attempt spent) and tries again later.
 llm:
   user_usd_day: null
   org_usd_day: null
+  timezone: null        # cloud mode: e.g. Asia/Kolkata; null = UTC

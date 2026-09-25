@@ -5,8 +5,10 @@ Two optional caps, in USD per day, checked by agents/base.Agent.run BEFORE a pro
   LLM_BUDGET_ORG_USD_DAY    everyone's spend today
 Each comes from the environment first, else from the `budget` settings (config/budget.yaml, which the
 org_settings overlay replaces in cloud mode): {llm: {user_usd_day: 5, org_usd_day: 50}}. Unset or 0 =
-no cap. "Today" is the acting owner's calendar day (seller.zone()), applied to both sums, so a cap
-resets at the rep's midnight, not at UTC's.
+no cap. "Today" is ONE day for everybody (budget_zone()): in cloud mode the org's `llm.timezone` from the
+budget settings (default UTC), never the acting rep's own profile timezone, which the rep edits themselves:
+moving it to a zone whose day just began used to restart both sums, so a capped rep got a fresh user AND org
+cap every hour or so. A local install has one user, whose zone is the org's: seller.zone() as before.
 
 Spend is SUM(agent_runs.cost_usd) over runs started today. cost_usd is what the provider reported
 (providers/pricing.py for the HTTP providers, the CLI's own figure for claude_code); an unpriced
@@ -20,6 +22,7 @@ again after RATE_LIMIT_DEFER_S, by when the day may have turned.
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import config, identity, seller
 
@@ -48,16 +51,28 @@ def caps() -> dict:
             "org": _positive(os.environ.get(ORG_ENV)) or _positive(settings.get("org_usd_day"))}
 
 
+def budget_zone():
+    """The zone whose midnight starts the budget day, for every user and both caps: the org's (cloud: the
+    budget settings' llm.timezone, default UTC; local: the one user's, seller.zone())."""
+    if not identity.cloud():
+        return seller.zone()
+    name = ((config.load("budget") or {}).get("llm") or {}).get("timezone") or "UTC"
+    try:
+        return ZoneInfo(str(name))
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
+
+
 def day_start_utc(zone=None) -> str:
-    """The start of today in `zone` (the acting owner's, by default), as the UTC ISO text agent_runs
+    """The start of today in `zone` (budget_zone(), by default), as the UTC ISO text agent_runs
     compares with (store.engine.now() writes '+00:00' timestamps at second precision)."""
-    zone = zone or seller.zone()
+    zone = zone or budget_zone()
     local_midnight = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     return local_midnight.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 def day_end_utc(zone=None) -> str:
-    zone = zone or seller.zone()
+    zone = zone or budget_zone()
     local_midnight = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     return (local_midnight + timedelta(days=1)).astimezone(timezone.utc).isoformat(timespec="seconds")
 
@@ -125,6 +140,8 @@ def usage_today(conn, mine_only: bool = False) -> dict:
     org_total = spent_today(conn, None, since) if conn.dialect == "postgres" else sum(e["spent"] for e in per_user)
     mine = next((e for e in per_user if e["user_id"] == me), None) or {"user_id": me, "spent": 0.0, "runs": 0,
                                                                         "unpriced": 0, "deferred": 0}
-    return {"since": since, "until": until, "tz": seller.tz_label(), "caps": limits, "org": org_total,
+    zone = budget_zone()
+    tz = seller.tz_label() if not identity.cloud() else (datetime.now(zone).tzname() or str(zone))
+    return {"since": since, "until": until, "tz": tz, "caps": limits, "org": org_total,
             "mine": mine, "users": [] if mine_only else per_user,
             "unpriced": sum(e["unpriced"] for e in per_user)}
