@@ -554,6 +554,70 @@ def _identity(conn):
 MIGRATIONS[7] = _identity
 
 
+# ---- 8 (2026-09-25, Phase 3: Google sign-in): sessions, invites, encrypted OAuth grants, audit actor ----
+# Mirrors store/pg/0004_auth.sql. The three tables are the tail of schema-sales.sql verbatim; the
+# events column records which users row made an admin change (engine._emit leaves it NULL).
+AUTH_TABLES_V8 = """
+CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id),
+  created_at   TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  revoked_at   TEXT,
+  ip           TEXT,
+  user_agent   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS invites (
+  email       TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  invited_by  TEXT,
+  created_at  TEXT NOT NULL,
+  accepted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  user_id           TEXT NOT NULL REFERENCES users(id),
+  provider          TEXT NOT NULL DEFAULT 'google',
+  scopes            TEXT NOT NULL DEFAULT '[]',
+  refresh_token_enc TEXT,
+  access_token_enc  TEXT,
+  key_id            TEXT NOT NULL,
+  expires_at        TEXT,
+  email             TEXT,
+  status            TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','needs_reconsent','revoked')),
+  last_error        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT,
+  PRIMARY KEY (user_id, provider)
+);
+"""
+
+
+def _auth(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 8:      # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "events" in tables and "actor_user_id" not in _columns(conn, "events"):
+            conn.execute("ALTER TABLE events ADD COLUMN actor_user_id TEXT")
+        for statement in AUTH_TABLES_V8.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 8")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[8] = _auth
+
+
 def run(conn):
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for target in sorted(MIGRATIONS):

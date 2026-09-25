@@ -41,7 +41,7 @@ needs a host that runs a container continuously with a volume attached.
 | The `claude_code` provider (a Claude subscription through the CLI) | **no** | the CLI is not in the container |
 | Granola, the calendar | **no** | both read through the Claude CLI |
 | Ollama | **no** | unless you run one the container can reach and set its base URL |
-| Gmail: Send, Save to Drafts, reply polling | **not yet** | it needs a sign-in stored on the machine; a hosted install shows "Not available". Copy each draft into your own mail, then mark the call as sent in the app. An in-app Google OAuth flow is the missing piece. |
+| Gmail: Send, Save to Drafts, reply polling | cloud mode only | a single-seller hosted install shows "Not available" (it needs a sign-in stored on the machine); copy each draft into your own mail, then mark the call as sent. In cloud mode each rep connects their own Gmail with Google OAuth: [deploy-cloud.md](deploy-cloud.md). |
 
 The setup wizard's last step says the same, row by row, on a hosted install.
 

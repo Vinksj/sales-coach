@@ -3,6 +3,22 @@
    install. The password is never written back into the form, whatever the outcome. #}
 {% block title %}Log in{% endblock %}
 {% block content %}
+{% if google %}
+<div class="page-head">
+  <div class="eyebrow">{{ brand() or 'Sales coach' }}</div>
+  <h1>Sign in</h1>
+  <div class="meta">Use your work Google account. Only people your admin has invited can sign in; a session lasts thirty days from its last use.</div>
+</div>
+{% if error %}<div class="flash flash-err" role="alert" id="login-error">{{ error }}</div>{% endif %}
+<div class="card" id="login-form" style="max-width: 420px">
+  {% if google_ready %}
+  <a class="btn btn-primary" id="google-signin" href="/auth/google{% if next and next != '/' %}?next={{ next|urlencode }}{% endif %}">Sign in with Google</a>
+  {% else %}
+  <p class="meta">Google sign-in is not configured on this install yet. Whoever runs it sets GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_ALLOWED_DOMAINS.</p>
+  {% endif %}
+</div>
+<p class="meta">Not on the list? Ask your admin for an invite. Nothing is sent from here; an invite is your address on the admin's list.</p>
+{% else %}
 <div class="page-head">
   <div class="eyebrow">Hosted install</div>
   <h1>Log in</h1>
@@ -19,4 +35,5 @@
   </div>
 </form>
 <p class="meta">Forgotten it? Whoever runs this install sets it (the SALESCOACH_PASSWORD secret) and can change it; changing it logs every browser out.</p>
+{% endif %}
 {% endblock %}

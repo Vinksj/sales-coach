@@ -46,6 +46,7 @@ TABLE_CLASS = {
     # -- machinery
     "wf_events": SYSTEM, "state": SYSTEM, "user_state": SYSTEM, "user_speaker_labels": SYSTEM,
     "schema_migrations": SYSTEM,
+    "sessions": SYSTEM, "invites": SYSTEM, "oauth_tokens": SYSTEM,    # Phase 3: about a user, never a rep's work
     # -- execution plugin
     "followup_decisions": OWNED, "email_replies": OWNED, "reply_proposals": OWNED,
     "calendar_cache": OWNED, "calendar_meetings": OWNED, "slot_fills": OWNED, "autosend_log": OWNED,

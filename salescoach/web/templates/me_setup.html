@@ -46,4 +46,55 @@
 
   <div class="actions"><button type="submit" class="btn primary">Save</button></div>
 </form>
+
+{% if grant is defined %}
+<section class="card" id="google-connections">
+  <div class="eyebrow">Google</div>
+  {% set st = grant.status %}
+  <div class="status-head">
+    <h2>Gmail and Calendar</h2>
+    {% if st == 'active' %}<span class="pill pill-good"><i></i>Connected as {{ grant.email }}</span>
+    {% elif st == 'needs_reconsent' %}<span class="pill pill-alert"><i></i>Needs reconnect</span>
+    {% elif st == 'revoked' %}<span class="pill pill-alert"><i></i>Revoked</span>
+    {% else %}<span class="pill pill-muted"><i></i>Not connected</span>{% endif %}
+  </div>
+  <p class="meta">The coach sends follow-ups from your own mailbox and reads replies to them (Gmail), and lists your meetings (Calendar). Each is a separate consent; you can take either back here at any time. Nothing is sent without your pressing Send.</p>
+  {% if not google_ready %}
+  <p class="meta">Not available yet on this install: {{ google_problems|join('; ') }}. Ask whoever runs it.</p>
+  {% else %}
+  {% if st == 'needs_reconsent' %}<p class="meta">Google stopped accepting the link{% if grant.last_error %} ({{ grant.last_error }}){% endif %}. That happens after a password change, six months without use, or when an admin restricts the app. Reconnect to carry on; nothing else is lost.</p>{% endif %}
+  {% if st == 'revoked' %}<p class="meta">An admin disabled this account's Google access. Connect again if you have been re-enabled.</p>{% endif %}
+  <div class="status-list">
+    {% for key, label, have in features %}
+    <div class="status-row status-{{ 'ok' if (have and st == 'active') else 'off' }}" id="conn-{{ key }}">
+      <div class="status-head">
+        <h3>{{ label }}</h3>
+        {% if have and st == 'active' %}<span class="pill pill-good"><i></i>Connected</span>
+        {% elif have %}<span class="pill pill-alert"><i></i>{{ 'Needs reconnect' if st == 'needs_reconsent' else 'Revoked' }}</span>
+        {% else %}<span class="pill pill-muted"><i></i>Not connected</span>{% endif %}
+      </div>
+      <p class="meta">{% if key == 'gmail' %}Send and save drafts as you, and read replies to the emails the coach sent. Asks for gmail.compose and gmail.readonly, nothing wider.{% else %}Read-only: your meetings with their guests, for the Today page and the follow-ups. Asks for calendar.readonly.{% endif %}</p>
+      <div class="actions">
+        <a class="btn btn-sm {% if have and st == 'active' %}btn-quiet{% else %}btn-primary{% endif %}" href="/auth/connect/google?feature={{ key }}">{% if have and st == 'active' %}Connect again{% elif have %}Reconnect{% else %}Connect {{ label }}{% endif %}</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if st != 'not_connected' %}
+  <form method="post" action="/me/connections/google/disconnect" class="actions">
+    <button type="submit" class="btn btn-sm btn-secondary">Disconnect Google</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="card" id="sessions">
+  <div class="eyebrow">Signed-in browsers</div>
+  <p class="meta">{{ sessions_live }} browser{{ '' if sessions_live == 1 else 's' }} signed in as you. A session lasts thirty days from its last use; signing out everywhere ends all of them, this one included.</p>
+  <form method="post" action="/logout" class="actions">
+    <input type="hidden" name="everywhere" value="1">
+    <button type="submit" class="btn btn-sm btn-secondary">Log out everywhere</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

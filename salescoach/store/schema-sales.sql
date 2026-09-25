@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS events (
   before    TEXT,
   after     TEXT,
   source_id TEXT,
-  owner_id TEXT NOT NULL DEFAULT 'local'
+  owner_id TEXT NOT NULL DEFAULT 'local',
+  actor_user_id TEXT                        -- the users row that made an admin change (Phase 3 audit)
 );
 CREATE INDEX IF NOT EXISTS idx_events_owner_id ON events(owner_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts);
@@ -510,4 +511,47 @@ CREATE TABLE IF NOT EXISTS user_speaker_labels (
   label      TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY (user_id, label_norm)
+);
+
+-- ---- Sign-in, sessions and OAuth grants (Phase 3; salescoach/sessions.py, execution/tokens.py) ----
+-- A browser holds a signed random session id; everything else about the session is here, so an
+-- admin can end it (disable the user, "log out everywhere") and it stops at the next request.
+CREATE TABLE IF NOT EXISTS sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id),
+  created_at   TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,                 -- slides forward on use (sessions.SLIDING_DAYS)
+  revoked_at   TEXT,
+  ip           TEXT,
+  user_agent   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- An invite is an allow-list entry: the admin typed an address; the app sends nothing. The users
+-- row it creates carries status 'invited' until that address signs in with Google.
+CREATE TABLE IF NOT EXISTS invites (
+  email       TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  invited_by  TEXT,
+  created_at  TEXT NOT NULL,
+  accepted_at TEXT
+);
+
+-- One live grant per (user, provider). Tokens are AES-256-GCM ciphertext under the key ring in
+-- SALESCOACH_TOKEN_KEYS (execution/tokens.py); key_id says which key, so the ring can rotate.
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  user_id           TEXT NOT NULL REFERENCES users(id),
+  provider          TEXT NOT NULL DEFAULT 'google',
+  scopes            TEXT NOT NULL DEFAULT '[]',   -- json: every scope Google has granted so far
+  refresh_token_enc TEXT,
+  access_token_enc  TEXT,
+  key_id            TEXT NOT NULL,
+  expires_at        TEXT,                        -- of the cached access token
+  email             TEXT,                        -- the Google account that consented
+  status            TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','needs_reconsent','revoked')),
+  last_error        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT,
+  PRIMARY KEY (user_id, provider)
 );

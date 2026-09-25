@@ -48,6 +48,19 @@ def _loopback(host: str) -> bool:
         return False
 
 
+def cloud_problems() -> list:
+    """What a cloud install cannot start without: the session secret, the Google client, the token keys."""
+    from . import googleauth, hosted
+    from .execution import tokens
+    out = []
+    if not os.environ.get(hosted.SESSION_SECRET_ENV):
+        out.append(f"{hosted.SESSION_SECRET_ENV} is not set (a long random string; it signs the session cookie)")
+    out.extend(googleauth.problems())
+    if not tokens.keys_configured():
+        out.append(f"{tokens.KEYS_ENV} is not set (make one with `salescoach tokens new-key`)")
+    return out
+
+
 def cmd_serve(args):
     from . import hosted, identity
     raw_mode = (os.environ.get(identity.MODE_ENV) or "local").strip().lower()
@@ -58,6 +71,11 @@ def cmd_serve(args):
         from .store import db, stores
         if not db.is_postgres_url(str(stores.db_path())):
             print(stores.CLOUD_NEEDS_POSTGRES, file=sys.stderr)
+            return 2
+        missing = cloud_problems()
+        if missing:
+            print("refusing to start in cloud mode:\n  " + "\n  ".join(missing) + "\n(see docs/deploy-cloud.md)",
+                  file=sys.stderr)
             return 2
     if not _loopback(args.host) and not hosted.auth_enabled() and not args.allow_unauthenticated:
         print(UNAUTHENTICATED_BIND.format(host=args.host), file=sys.stderr)

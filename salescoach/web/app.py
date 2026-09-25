@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import config, hosted, identity, repo, seller
-from ..execution import policy
+from ..execution import policy, tokens
 from ..memory import patterns
 from ..orchestrator import bus, context, review, workflow
 from ..schemas.events import Event
@@ -200,8 +200,10 @@ templates.env.filters.update(dt=fmt_dt, day=fmt_day, mmss=mmss, fromjson=fromjso
                              who=seller.display)
 # Called from templates on every render, so a saved profile shows at once: {{ brand() }}, {{ tz_label() }}.
 templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, languages=seller.languages,
-                             settings_problems=config.user_problems, auth_on=hosted.auth_enabled, hosted=hosted.is_hosted,
-                             me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None))
+                             settings_problems=config.user_problems, auth_on=lambda: hosted.auth_enabled() or identity.cloud(),
+                             hosted=hosted.is_hosted, cloud=identity.cloud,
+                             me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None),
+                             me_role=lambda: getattr(identity.current_actor(required=False), "role", None))
 
 
 # ---- same-origin guard --------------------------------------------------------
@@ -325,7 +327,8 @@ class FirstRunGate:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"].upper() in ("GET", "HEAD"):
             path = scope.get("path") or "/"
-            exempt = (path in ("/setup", "/health", "/login", "/me/setup") or path.startswith(("/setup/", "/static/"))
+            exempt = (path in ("/setup", "/health", "/login", "/me/setup")
+                      or path.startswith(("/setup/", "/static/", "/auth/", "/admin"))
                       or _NOT_A_PAGE.search(path))
             if not exempt:
                 if not seller.org_configured():
@@ -340,13 +343,9 @@ class FirstRunGate:
 class ActorGate:
     """Binds the acting user for the request (identity.activate), so every route handler, Jinja
     filter and store connection opened inside runs as that user. Local mode: the local user, always.
-    Cloud mode: the user named by the login cookie (hosted.verify_session), looked up in `users`.
-    The order matters and is pinned by tests/isolation/test_actor_gate.py: a request with no valid
-    session is answered (401, or a redirect to /login for a page) BEFORE any store is opened; a
-    session naming a user who is not `active` gets 403 and the session counts for nothing; open paths
-    (auth.is_open: /login, /logout, /health, /static, the webhook) pass with no actor and must mark
-    any store they open conn.as_system(). Phase 3 replaces the cookie with Google sign-in and
-    server-side sessions; the binding and the order stay."""
+    Cloud mode: the Actor the AuthGate resolved from the server-side session (web/auth.py) and left
+    in scope["state"]; the gate already refused every non-open request without one, so a request
+    that reaches here with no actor is an open path (login, the Google callback, static files)."""
 
     def __init__(self, app):
         self.app = app
@@ -355,67 +354,14 @@ class ActorGate:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not identity.cloud():
-            with identity.activate(identity.LOCAL_ACTOR):
-                await self.app(scope, receive, send)
-            return
-        from . import auth
-        method, path = scope["method"].upper(), scope.get("path") or "/"
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-        session = self._session(headers)
-        if not session:
-            if auth.is_open(method, path):
-                with identity.activate(None):
-                    await self.app(scope, receive, send)
+        actor = identity.LOCAL_ACTOR if not identity.cloud() else scope.get("state", {}).get("actor")
+        if actor is None and identity.cloud():
+            from . import auth
+            if not auth.is_open(scope["method"].upper(), scope.get("path") or "/"):
+                await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
                 return
-            await self._refused(scope, receive, send, method, path, headers)
-            return
-        row = self._user_row(scope, session)
-        if row is None:                                    # a session for a user who no longer exists
-            if auth.is_open(method, path):
-                with identity.activate(None):
-                    await self.app(scope, receive, send)
-                return
-            await self._refused(scope, receive, send, method, path, headers)
-            return
-        if row["status"] != "active":
-            await JSONResponse({"error": "this user is not active"}, status_code=403)(scope, receive, send)
-            return
-        from .. import users
-        actor = identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row))
         with identity.activate(actor):
             await self.app(scope, receive, send)
-
-    @staticmethod
-    def _session(headers):
-        """The login session the request carries, without touching the store. None = no valid session."""
-        from . import auth
-        return hosted.verify_session(auth._cookie(headers))
-
-    @staticmethod
-    def _user_row(scope, session):
-        from .. import users
-        try:
-            with identity.activate(None):
-                conn = stores.sales(scope["app"].state.db_path)
-            try:
-                with conn.as_system():                     # the lookup that decides WHO is bound: nobody is yet
-                    return users.get(conn, session["user"]) or users.by_email(conn, session["user"])
-            finally:
-                conn.close()
-        except Exception:
-            return None
-
-    @staticmethod
-    async def _refused(scope, receive, send, method, path, headers):
-        from . import auth
-        if auth._wants_page(method, path, headers):
-            query = scope.get("query_string") or b""
-            nxt = path + (("?" + query.decode("latin-1")) if query else "")
-            target = auth.LOGIN + "?" + urlencode({"next": nxt}) if nxt != "/" else auth.LOGIN
-            await RedirectResponse(target, status_code=303)(scope, receive, send)
-        else:
-            await JSONResponse({"error": "no active user for this session"}, status_code=401)(scope, receive, send)
 
 
 # ---- plumbing -----------------------------------------------------------------
@@ -447,10 +393,21 @@ def _default_hub():
     return hub_module.hub
 
 
-def _default_gmail_factory():
-    from ..execution.gmail import GmailProvider
-    alias = (config.load("policy").get("email") or {}).get("account", "work")
-    return GmailProvider(alias)
+def _default_gmail_factory(conn):
+    """The acting user's mailbox (execution/gmail.provider_for): their own grant in cloud mode, the
+    machine-local alias on a local install."""
+    from ..execution import gmail
+    return gmail.provider_for(conn)
+
+
+def gmail_for(request: Request, conn):
+    """app.state.gmail_factory, called the way it wants: with the connection (the default) or with
+    nothing (a test's stand-in)."""
+    from ..execution import gmail
+    return gmail.call_factory(request.app.state.gmail_factory, conn)
+
+
+NOT_CONNECTED = "Gmail is not connected for you. Connect it on your profile page (You), then try again."
 
 
 def _audio_importer():
@@ -1521,10 +1478,13 @@ def _approve(request: Request, email_id: int, mode: str, to, cc, subject, body):
         user_added = [a for a in addresses if a.lower() not in allowed]
         what = "Send" if mode == "send" else "Save to Gmail Drafts"
         try:
-            gmail = request.app.state.gmail_factory()
+            gmail = gmail_for(request, conn)
             result = policy.approve_and_send(conn, email_id, gmail, mode=mode, user_added=user_added)
         except policy.SendRefused as exc:
             return _redirect(back, err=f"{what} refused: {exc}", anchor="email")
+        except tokens.TokenError as exc:
+            return _redirect(back, err=f"{what} refused: {exc if isinstance(exc, tokens.NeedsReconsent) else NOT_CONNECTED}",
+                             anchor="email")
         except Exception as exc:
             return _redirect(back, err=f"{what} failed: {type(exc).__name__}: {exc}", anchor="email")
         if result.get("duplicate"):

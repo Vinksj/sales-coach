@@ -257,7 +257,7 @@ def test_nudge_send_goes_out_once_and_counts(client, db, world, gmail):
     link_nudge(db, loop, eid, world.deal)
     msg, err = _flash(_post(client, f"/nudges/{eid}/send"))
     assert msg == "Sent." and not err and len(gmail.sent) == 1
-    assert db.execute("SELECT approved_by FROM emails WHERE id=?", (eid,)).fetchone()[0] == "user:ui"
+    assert db.execute("SELECT approved_by FROM emails WHERE id=?", (eid,)).fetchone()[0] == "user:local"   # user:<actor id>
     worker.drain(db)
     assert loop_row(db, loop)["follow_up_count"] == 1
     msg, _ = _flash(_post(client, f"/nudges/{eid}/send"))

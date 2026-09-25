@@ -159,8 +159,37 @@ def _hosted_connections() -> list[dict]:
     ]
 
 
+def _cloud_google_rows() -> list[dict]:
+    """Cloud: Gmail and Calendar are each rep's own connection (on /me/setup); what the org can check
+    here is whether Google is set up at all: the client, the allowed domains, the token keys."""
+    from .. import googleauth
+    from ..execution import tokens
+    problems = googleauth.problems()
+    keys = tokens.keys_configured()
+    ok = not problems and keys
+    domains = ", ".join(googleauth.allowed_domains()) or "none"
+    detail = (f"Google sign-in is configured for {domains}; each person connects their own Gmail and Calendar "
+              "from their profile page (You)." if ok else
+              "Not ready: " + "; ".join(problems + ([f"{tokens.KEYS_ENV} is not set"] if not keys else [])) + ".")
+    fix = "" if ok else ("Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_ALLOWED_DOMAINS and SALESCOACH_TOKEN_KEYS "
+                         "on the host (docs/deploy-cloud.md), then restart.")
+    return [
+        {"key": "gmail", "title": "Gmail: sending and reading replies", "ok": ok, "optional": False,
+         "status": "Ready for each person to connect" if ok else "Not configured",
+         "enables": "Each rep sends follow-ups from their own mailbox and the coach reads replies to them. "
+                    "Scopes asked for: gmail.compose and gmail.readonly, per person, on their profile page.",
+         "detail": detail, "fix": fix},
+        {"key": "calendar", "title": "Calendar", "ok": ok, "optional": True,
+         "status": "Ready for each person to connect" if ok else "Not configured",
+         "enables": "Each rep's meetings, read-only (calendar.readonly), for the Today page and the follow-ups.",
+         "detail": detail, "fix": fix},
+    ]
+
+
 def connections(conn, live: dict | None = None) -> list[dict]:
     """Read-only status rows: {key, title, ok, optional, status, enables, detail, fix}."""
+    if hosted.is_cloud():
+        return _cloud_google_rows() + [r for r in _hosted_connections() if r["key"] not in ("gmail", "calendar")]
     if hosted.is_hosted():
         return _hosted_connections()
     rows = []

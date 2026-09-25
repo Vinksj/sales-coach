@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .. import config, seller
+from .. import config, identity, seller
 from ..execution import policy
 from ..store.stores import now
 from ..validators import evidence, gates
@@ -201,6 +201,10 @@ def _log(conn, email_id, pol, outcome, reasons, dry_run, always=False, at=None):
 
 def run_once(conn, gmail_factory=None, now_dt: datetime | None = None) -> dict:
     """One pass over drafted nudges and follow-ups. A no-op unless auto-send is enabled."""
+    if identity.cloud():
+        # Plan, "Not in v1": no auto-send in a cloud install, whatever the config says. policy.approve_and_send
+        # refuses a service-mode actor in cloud too, so this is the first of two locks.
+        return {"skipped": "auto-send is off in a cloud install"}
     # Every log row carries the evaluation time, so the daily cap counts the same clock it checks.
     now_dt = (now_dt or common.now_ist()).astimezone(common.IST)
     log = functools.partial(_log, at=now_dt.astimezone(timezone.utc).isoformat(timespec="seconds"))

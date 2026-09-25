@@ -138,6 +138,8 @@ def _mark_sent(conn, row, mode, result):
                  "sent_at=?, error=NULL, updated_at=? WHERE id=?",
            (status, result.get("message_id"), result.get("thread_id"), result.get("draft_id"),
             now() if mode == "send" else None, now(), row["id"]))
+    if result.get("rfc822_id"):               # the Message-ID Gmail kept (it may have replaced ours): thread on this
+        _write(conn, "UPDATE emails SET rfc822_message_id=? WHERE id=?", (result["rfc822_id"], row["id"]))
     if (row["draft_body"] or "") != (row["body"] or ""):
         _write(conn, "INSERT INTO email_edits(email_id,draft_body,final_body,created_at) VALUES (?,?,?,?)",
                (row["id"], row["draft_body"], row["body"], now()))
@@ -168,13 +170,19 @@ def mark_sent_manually(conn, email_id: int, by: str = "user:ui") -> bool:
 
 def _recover(conn, row, gmail):
     """An earlier attempt's outcome is unknown: look for its copy where that attempt would have put it
-    (Sent for a send, Drafts for a save to Gmail Drafts)."""
+    (Sent for a send, Drafts for a save to Gmail Drafts). By the X-Salescoach-Key header when the
+    provider can (Gmail may replace a Message-ID; research notes), else by the Message-ID."""
     attempted = row["attempt_mode"] or "send"
+    by_key = getattr(gmail, "find_sent_by_key" if attempted == "send" else "find_draft_by_key", None)
     finder = getattr(gmail, "find_sent" if attempted == "send" else "find_draft", None)
-    if not finder or not row["rfc822_message_id"]:
-        return None
     try:
-        found = finder(row["rfc822_message_id"])
+        if by_key and row["idempotency_key"]:
+            found = by_key(row["idempotency_key"], to=json.loads(row["to_addrs"] or "[]"), subject=row["subject"],
+                           since=row["approved_at"])
+        elif finder and row["rfc822_message_id"]:
+            found = finder(row["rfc822_message_id"])
+        else:
+            return None
     except Exception:
         return None
     if not found:
@@ -182,11 +190,14 @@ def _recover(conn, row, gmail):
     return {"status": _mark_sent(conn, row, attempted, found), "duplicate": False, "recovered": True, **found}
 
 
-def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by: str = "user:ui",
+def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by: str = None,
                      user_added=()) -> dict:
-    """Send (mode='send') or save to Gmail Drafts (mode='draft') one approved email, exactly once."""
+    """Send (mode='send') or save to Gmail Drafts (mode='draft') one approved email, exactly once.
+    approved_by defaults to user:<the acting user's id>."""
     if mode not in ("send", "draft"):
         raise ValueError(mode)
+    if approved_by is None:
+        approved_by = f"user:{identity.actor_of(conn).user_id}"
     if conn.in_transaction:
         conn.commit()
     try:
@@ -239,7 +250,7 @@ def approve_and_send(conn, email_id: int, gmail, mode: str = "send", approved_by
     row = conn.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
     from .gmail import OutgoingEmail
     msg = OutgoingEmail(to=to, cc=json.loads(row["cc_addrs"] or "[]"), subject=row["subject"], body=row["body"],
-                        from_name=_from_name(), message_id=rfc822)
+                        from_name=_from_name(), message_id=rfc822, key=key)
     try:
         result = gmail.send(msg) if mode == "send" else gmail.save_draft(msg)
     except Exception as exc:

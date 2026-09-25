@@ -19,7 +19,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 
 from .. import identity
-from ..execution import policy
+from ..execution import policy, tokens
 from ..orchestrator import bus, review
 from ..schemas.events import Event
 from ..store import stores
@@ -314,10 +314,12 @@ def _approve_nudge(request: Request, email_id: int, mode: str, to, cc, subject, 
         addresses = (core.fromjson(row["to_addrs"], []) or []) + (core.fromjson(row["cc_addrs"], []) or [])
         user_added = [a for a in addresses if a.lower() not in allowed]
         try:
-            result = policy.approve_and_send(conn, email_id, request.app.state.gmail_factory(), mode=mode,
+            result = policy.approve_and_send(conn, email_id, core.gmail_for(request, conn), mode=mode,
                                              user_added=user_added)
         except policy.SendRefused as exc:
             return core._redirect(back, err=f"{what} refused: {exc}")
+        except tokens.TokenError as exc:
+            return core._redirect(back, err=f"{what} refused: {exc if isinstance(exc, tokens.NeedsReconsent) else core.NOT_CONNECTED}")
         except Exception as exc:
             return core._redirect(back, err=f"{what} failed: {type(exc).__name__}: {exc}")
     if result.get("duplicate"):
@@ -411,7 +413,7 @@ def replies_poll(request: Request):
     from . import replies
     with core._db(request) as conn:
         try:
-            result = replies.poll(conn, request.app.state.gmail_factory())
+            result = replies.poll(conn, core.gmail_for(request, conn))
         except Exception as exc:
             return core._redirect("/replies", err=f"Could not read Gmail: {type(exc).__name__}: {exc}")
     errors = f" {len(result['errors'])} thread(s) could not be read." if result["errors"] else ""

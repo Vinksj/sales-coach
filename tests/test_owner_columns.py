@@ -325,7 +325,7 @@ def test_migration_7_carries_a_version_6_database_forward(tmp_path, monkeypatch,
     monkeypatch.delenv("SALESCOACH_NO_PLUGINS", raising=False)
     conn = stores.sales(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 8
         for table in sorted(tenancy.tables_of(tenancy.OWNED)):
             assert "owner_id" in conn.columns(table), table
             others = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_id IS NOT 'local'").fetchone()[0]
@@ -364,7 +364,7 @@ def test_migration_7_carries_a_version_6_database_forward(tmp_path, monkeypatch,
     finally:
         conn.close()
     again = stores.sales(path)                                        # idempotent: a second open changes nothing
-    assert again.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert again.execute("PRAGMA user_version").fetchone()[0] == 8
     again.close()
 
 

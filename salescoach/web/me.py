@@ -10,11 +10,25 @@ The FirstRunGate sends a user here when the org is set up but they are not (web/
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import config, identity, repo, seller, users
+from .. import config, googleauth, identity, repo, seller, sessions, users
+from ..execution import tokens
 from ..setupui import forms
 
 router = APIRouter()
 PATH = "/me/setup"
+DISCONNECT = "/me/connections/google/disconnect"
+
+
+def _connections(conn, actor) -> dict:
+    """The Google card's facts for a cloud user: org-level readiness and this user's grant."""
+    if not identity.cloud():
+        return {}
+    status = tokens.status_of(conn, actor.user_id)
+    return {"google_ready": googleauth.configured() and tokens.keys_configured(),
+            "google_problems": googleauth.problems() + ([f"{tokens.KEYS_ENV} is not set"] if not tokens.keys_configured() else []),
+            "grant": status, "features": [(key, googleauth.FEATURE_LABELS[key], key in status["features"])
+                                          for key in googleauth.FEATURE_SCOPES],
+            "sessions_live": len(sessions.live_for(conn, actor.user_id))}
 
 
 def _web():
@@ -27,7 +41,7 @@ def _page(request: Request, values: dict, style: str, errors=None, status: int =
     with webapp._db(request) as conn:
         response = webapp.render(request, conn, "me_setup.html", p=values, style=style, errors=errors or {},
                                  timezones=forms.timezones(), default_timezone=seller.DEFAULT_TIMEZONE,
-                                 configured=seller.user_configured())
+                                 configured=seller.user_configured(), **_connections(conn, identity.current_actor()))
     response.status_code = status
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -71,3 +85,21 @@ def me_save(request: Request, name: str = Form(""), emails: str = Form(""), role
         repo.sync_me(conn)
         conn.commit()
     return webapp._redirect(PATH, msg="Profile saved.")
+
+
+@router.post(DISCONNECT)
+def google_disconnect(request: Request):
+    """Revoke the grant at Google (best effort) and forget it here. The row goes whatever Google said."""
+    actor = identity.current_actor()
+    if actor.is_local or not identity.cloud():
+        return RedirectResponse("/setup/connections", status_code=303)
+    webapp = _web()
+    with webapp._db(request) as conn:
+        outcome = tokens.disconnect(conn, actor.user_id)
+        if outcome["had"]:
+            users.audit(conn, "google.disconnect", {"revoked_at_google": outcome["revoked"]})
+        conn.commit()
+    if not outcome["had"]:
+        return webapp._redirect(PATH, msg="Google was not connected.")
+    note = "" if outcome["revoked"] else " Google did not confirm the revocation; remove the coach under your Google account's third-party access too."
+    return webapp._redirect(PATH, msg="Google disconnected." + note)
