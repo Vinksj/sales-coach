@@ -256,8 +256,12 @@ def a_objects(db, org):
         db.commit()
         wf_event = db.execute("SELECT id FROM wf_events WHERE dedupe_key='mgr:1'").fetchone()[0]
         person = own.node("person")
+        connection_id = "rc-" + "b" * 32                  # A's recorder connection (Phase 4), a real-shaped id
+        db.execute("INSERT INTO source_connections(id,owner_id,kind,secret_enc,key_id,created_at) "
+                   "VALUES (?,?,?,?,?,?)", (connection_id, A, "fireflies", "Y2lwaGVy", "k1", "2026-09-24T00:00:00+00:00"))
         db.commit()
     return {
+        "connection_id": connection_id,
         "call_id": made["calls"]["node_id"], "deal_id": made["deals"]["node_id"], "loop_id": made["loops"]["node_id"],
         "email_id": made["emails"]["id"], "nudge_email_id": nudge_email["id"], "reply_id": made["email_replies"]["id"],
         "proposal_id": made["learning_proposals"]["id"], "run_id": made["agent_runs"]["id"],
