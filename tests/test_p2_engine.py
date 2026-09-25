@@ -177,11 +177,21 @@ def test_invalid_slow_answer_is_logged_not_fatal(db, call, fake_llm):
     assert db.execute("SELECT status FROM agent_runs WHERE agent='live_coach'").fetchone()["status"] == "invalid"
 
 
+SAFETY_S = 30           # only a failing run ever waits this long; a passing one never reaches it
+
+
 def test_fast_path_never_waits_for_the_slow_pass(db, call, fake_llm):
-    gate = threading.Event()
+    """Every pump returns while the slow pass is still inside its model call, which returns only when the test
+    releases it (after the last pump): a pump that waited for the pass could not return before it, so it would
+    sit out SAFETY_S and the pass would be seen to have returned. No wall-clock bound, so load cannot fail it."""
+    gate, entered, returned = threading.Event(), threading.Event(), threading.Event()
+    slow_thread = []
 
     def blocked(system, prompt):
-        gate.wait(3)
+        slow_thread.append(threading.current_thread())
+        entered.set()
+        gate.wait(SAFETY_S)
+        returned.set()
         return slow_output(interventions=[])
     fake_llm.responses["SlowPassOutput"] = blocked
     hub = Hub()
@@ -194,16 +204,18 @@ def test_fast_path_never_waits_for_the_slow_pass(db, call, fake_llm):
         for s in QUIET:
             clock.advance(s["t_end"])
             hub.publish(f"call:{call}", s)
-            started = time.perf_counter()
             engine.pump()
-            assert time.perf_counter() - started < 0.05
+            assert not returned.is_set()                   # the pass is still blocked: this pump did not wait
         assert engine._slow_running
+        assert entered.wait(SAFETY_S)                      # the pass is inside the model call now ...
+        engine.pump()                                      # ... and a pump still returns without it
+        assert not returned.is_set() and engine._slow_running
     finally:
         gate.set()
-    deadline = time.time() + 3
-    while engine._slow_running and time.time() < deadline:
-        engine.pump()
-        time.sleep(0.01)
+    for thread in slow_thread:
+        thread.join(SAFETY_S)                              # the pass has posted its result to the queue
+    engine.pump()
+    assert not engine._slow_running
     assert engine.stats["slow_passes"] == 1
     engine.finalize()
 

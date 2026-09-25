@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import date
 
-from .. import config, identity, repo
+from .. import budget, config, identity, repo
 from ..agents.actions import ActionAgent
 from ..agents.base import record_items
 from ..agents.call_analyst import CallAnalystAgent
@@ -498,7 +498,9 @@ def run_pipeline(conn, call_id, from_step=None, force=False, until=None):
                 _claim_for_jarvis(conn)
         except Exception as exc:
             conn.rollback()
-            repo.update_call(conn, call_id, wf_error=f"{name}: {type(exc).__name__}: {exc}"[:2000], actor=ACTOR)
+            over = budget.deferred_by(exc)            # a daily cap: waiting, not failed (budget.is_waiting)
+            error = f"{name}: {budget.WAIT_MARK}: {over}" if over else f"{name}: {type(exc).__name__}: {exc}"
+            repo.update_call(conn, call_id, wf_error=error[:2000], actor=ACTOR)
             conn.commit()
             raise
         if until and name == until:
@@ -548,9 +550,9 @@ def owner_of_event(conn, event: Event) -> str:
         return str(owner)
     if not identity.cloud():
         return identity.LOCAL_USER
-    stored = conn.execute("SELECT owner FROM wf_events WHERE event_id=?", (event.event_id,)).fetchone()
-    if stored is not None and stored["owner"]:
-        return stored["owner"]              # what bus.publish resolved (the publisher's actor)
+    stored = bus.stored_owner(conn, event.event_id)
+    if stored:
+        return stored                       # what bus.publish resolved (the publisher's actor)
     raise UnknownOwner(f"{event.type} {event.entity_id!r}: no owner (nodes.owner_id, user:<id> or payload.owner_id)")
 
 

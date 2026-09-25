@@ -20,6 +20,7 @@ raises AgentFailed(rate_limited=True): the worker defers the event without spend
 again after RATE_LIMIT_DEFER_S, by when the day may have turned.
 """
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -34,6 +35,30 @@ class BudgetExceeded(RuntimeError):
     def __init__(self, scope: str, cap: float, spent: float):
         self.scope, self.cap, self.spent = scope, cap, spent
         super().__init__(f"the {scope} model budget for today is used up: {spent:.2f} of {cap:.2f} USD")
+
+
+# A call whose pipeline step was deferred by a cap is WAITING, not failed: the worker puts the event back without
+# spending an attempt and it resumes by itself. workflow.run_pipeline records it as "<step>: budget_deferred: <why>"
+# in calls.wf_error (no exception class), which the pages show as waiting (is_waiting), never under Failed.
+WAIT_MARK = "budget_deferred"
+WAITING_TEXT = "Waiting for tomorrow's model budget; it resumes by itself."
+_WAITING = re.compile(r"^[\w-]+: " + WAIT_MARK + ": ")
+
+
+def deferred_by(exc) -> Optional[BudgetExceeded]:
+    """The BudgetExceeded behind an exception (agents/base raises AgentFailed from it), if any."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, BudgetExceeded):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def is_waiting(wf_error) -> bool:
+    """calls.wf_error says the pipeline is waiting for the model budget, not failed."""
+    return bool(wf_error) and bool(_WAITING.match(str(wf_error)))
 
 
 def _positive(value) -> Optional[float]:

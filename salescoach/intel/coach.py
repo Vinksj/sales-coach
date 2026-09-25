@@ -82,8 +82,12 @@ def _nudges(conn):
         where.append("shown=1")
     if "mode" in cols:
         where.append("mode='live'")
+    params = []
+    if "owner_id" in cols:                              # the coached seller's own (see build())
+        where.append("owner_id=?")
+        params.append(_owner(conn))
     sql = "SELECT * FROM nudges" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT 50"
-    rows = [dict(r) for r in conn.execute(sql)]
+    rows = [dict(r) for r in conn.execute(sql, params)]
     outcome = next((c for c in ("outcome", "adherence", "followed", "acted_on", "result", "status") if c in cols), None)
     text = next((c for c in ("text", "message", "nudge", "prompt", "body", "suggestion") if c in cols), None)
     counts = dict(Counter(str(r[outcome]) for r in rows if r.get(outcome) not in (None, ""))) if outcome else {}
@@ -94,22 +98,28 @@ def _nudges(conn):
 
 
 def build(conn) -> dict:
+    """Everything the report is made of, and only the coached seller's own rows (_owner: the acting user). Every
+    read names the owner, not only the row-level policies: a manager's interactive session may READ the team's
+    observations, analyses and nudges, and a report about the manager must never be built from them."""
     c = _cfg()
+    owner = _owner(conn)
     calls = analysed_calls(conn)
     gone = patterns.suppressed_tags(conn)              # the user's verdicts on the learning page hold here too
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM seller_patterns WHERE owner_id=? AND status!='retired' ORDER BY polarity, frequency DESC, "
-        "calls_seen DESC", (_owner(conn),)) if r["tag"] not in gone]
+        "calls_seen DESC", (owner,)) if r["tag"] not in gone]
     snapshot = {p["tag"]: {k: p[k] for k in ("name", "polarity", "frequency", "calls_seen", "calls_window", "trend",
                                              "severity", "status", "recommended_intervention")} for p in rows}
     label, detail = trajectory(rows)
     titles = {x["node_id"]: x for x in calls}
     obs = [dict(r) for r in conn.execute(
         "SELECT o.*, c.title, c.started_at FROM seller_observations o JOIN calls c ON c.node_id=o.call_id "
-        "ORDER BY c.started_at DESC, o.id DESC LIMIT ?", (int(c.get("observations_shown", 40)) + len(gone) * 5,))
+        "WHERE o.owner_id=? AND c.owner_id=? ORDER BY c.started_at DESC, o.id DESC LIMIT ?",
+        (owner, owner, int(c.get("observations_shown", 40)) + len(gone) * 5))
            if r["tag"] not in gone][:int(c.get("observations_shown", 40))]
     insights, seen = [], set()
-    for a in conn.execute("SELECT call_id, json FROM artifacts WHERE kind='analysis' ORDER BY id DESC"):
+    for a in conn.execute("SELECT call_id, json FROM artifacts WHERE kind='analysis' AND owner_id=? ORDER BY id DESC",
+                          (owner,)):
         if a["call_id"] in seen or a["call_id"] not in titles:
             continue
         seen.add(a["call_id"])

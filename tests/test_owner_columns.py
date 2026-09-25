@@ -134,14 +134,14 @@ def test_learned_pattern_ids_carry_the_owner(db):
     assert owners <= {"u-alpha", "u-beta"}
 
 
-def test_two_users_dedupe_keys_in_the_same_second_both_publish(db):
+def test_two_users_dedupe_keys_in_the_same_second_both_publish(db, bus_rows):
     with _as(db, A):
         first = calendar.request_refresh(db)
     with _as(db, B):
         second = calendar.request_refresh(db)
     assert first and second
-    rows = db.execute("SELECT entity_id, dedupe_key FROM wf_events WHERE type='CALENDAR_REFRESH_REQUESTED' "
-                      "ORDER BY id").fetchall()
+    rows = bus_rows.execute("SELECT entity_id, dedupe_key FROM wf_events WHERE type='CALENDAR_REFRESH_REQUESTED' "
+                            "ORDER BY id").fetchall()
     assert [r["entity_id"] for r in rows] == ["user:u-alpha", "user:u-beta"]
     assert rows[0]["dedupe_key"].startswith("CAL_REFRESH:u-alpha:") and rows[1]["dedupe_key"].startswith("CAL_REFRESH:u-beta:")
     with _as(db, A):
@@ -386,5 +386,6 @@ def test_bus_events_carry_no_owner_column_but_the_worker_resolves_one(db, dialec
     assert workflow.owner_of_event(db, Event(type="FOLLOW_UP_RUN", entity_id="user:u-alpha")) == "u-alpha"
     assert workflow.owner_of_event(db, Event(type="X", payload={"owner_id": "u-gamma"})) == "u-gamma"
     assert workflow.owner_of_event(db, Event(type="X")) == "local"                 # local mode: the local user
-    assert bus.publish(db, Event(type="X", entity_id="user:u-alpha", dedupe_key="X:u-alpha:1"))
-    assert json.loads(db.execute("SELECT payload FROM wf_events WHERE dedupe_key='X:u-alpha:1'").fetchone()[0]) == {}
+    with _as(db, A):                   # Postgres: a session files an event only as its owner (store/rls.py)
+        assert bus.publish(db, Event(type="X", entity_id="user:u-alpha", dedupe_key="X:u-alpha:1"))
+        assert json.loads(db.execute("SELECT payload FROM wf_events WHERE dedupe_key='X:u-alpha:1'").fetchone()[0]) == {}

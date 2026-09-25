@@ -10,6 +10,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -305,8 +306,9 @@ def test_core_email_routes_refuse_a_nudge(client, db, gmail, action):
 def test_worker_thread_survives_an_exception_from_claim_next(db, monkeypatch):
     bus.publish(db, Event(type="CALL_STARTED", entity_id="c1", dedupe_key="CALL_STARTED:c1"))
     db.commit()
-    real = bus.claim_next
+    real, real_complete = bus.claim_next, bus.complete
     calls = {"n": 0}
+    completed = threading.Event()
 
     def flaky(conn):
         calls["n"] += 1
@@ -314,19 +316,24 @@ def test_worker_thread_survives_an_exception_from_claim_next(db, monkeypatch):
             raise sqlite3.OperationalError("database is locked")
         return real(conn)
 
+    def complete(conn, event_id):
+        real_complete(conn, event_id)
+        completed.set()
+
     monkeypatch.setattr(bus, "claim_next", flaky)
+    monkeypatch.setattr(bus, "complete", complete)
     w = worker.Worker(poll_s=0.05, db_path=stores.db_path())
     w.start()
     try:
-        deadline = time.time() + 3
-        while time.time() < deadline and db.execute("SELECT status FROM wf_events").fetchone()[0] == "pending":
-            time.sleep(0.05)
+        # Signalled by the settle itself, not polled against a deadline: a loaded machine only makes it later.
+        # The timeout is a safety net for a broken worker, never reached by a working one.
+        assert completed.wait(60)
         assert w.is_alive()
         assert calls["n"] >= 2
         assert db.execute("SELECT status FROM wf_events").fetchone()[0] == "done"
     finally:
         w.stop()
-        w.join(timeout=2)
+        w.join(timeout=10)
 
 
 def test_settle_failure_rolls_back_the_failed_attempts_partial_writes(db, monkeypatch):

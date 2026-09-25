@@ -116,7 +116,7 @@ def test_health_command_reads_the_heartbeat_for_a_worker(db, capsys):
 
 # ---- worker ---------------------------------------------------------------------------------------------
 
-def test_run_worker_runs_n_loops_and_beats(db, fast, monkeypatch, dialect):
+def test_run_worker_runs_n_loops_and_beats(db, fast, monkeypatch, dialect, bus_rows):
     seen, lock = [], threading.Lock()
 
     def handler(conn, ev):
@@ -127,10 +127,11 @@ def test_run_worker_runs_n_loops_and_beats(db, fast, monkeypatch, dialect):
     if dialect == "postgres":                                 # two users: two owners can run at once
         from salescoach import users
         owners = [users.create(db, f"{n}@tessel.test", n)["id"] for n in ("Asha", "Bala")]
+        db.commit()
     else:
         owners = ["local"]                                    # SQLite holds one user; the loops serialise on it
     for i in range(4):
-        _publish(db, owners[i % len(owners)])
+        _publish(bus_rows, owners[i % len(owners)])
     stop = threading.Event()
     handle = ops.run_worker(n=2, stop=stop, block=False)
     try:
@@ -149,7 +150,7 @@ def test_run_worker_runs_n_loops_and_beats(db, fast, monkeypatch, dialect):
         w.join(timeout=5)
         assert not w.is_alive()
     handle["heartbeat"].join(timeout=5)
-    assert db.execute("SELECT COUNT(*) FROM wf_events WHERE status='done'").fetchone()[0] == 4
+    assert bus_rows.execute("SELECT COUNT(*) FROM wf_events WHERE status='done'").fetchone()[0] == 4
 
 
 # ---- scheduler and the leader election -------------------------------------------------------------------

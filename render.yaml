@@ -1,17 +1,32 @@
-# Render blueprint for a hosted Sales Coach. Two shapes, one image (the Dockerfile):
+# Render blueprint for the TEAM install (SALESCOACH_MODE=cloud, docs/deploy-cloud.md): three services from the
+# one Dockerfile, `salescoach serve --role web|worker|scheduler`, and one managed Postgres on the private network.
 #
-#   * A team install (SALESCOACH_MODE=cloud): three services from the same image, told apart by
-#     SALESCOACH_ROLE, and one managed Postgres on the private network. `web` can scale out; `worker`
-#     can scale out (each instance runs WORKER_CONCURRENCY loops and the bus is fair across users);
-#     `scheduler` may run more than once (a Postgres advisory lock elects one leader) but one is enough.
-#     Run `salescoach migrate` (DATABASE_MIGRATE_URL, the owner role) before the first deploy and after
-#     every upgrade: the app refuses to serve a schema at the wrong version. docs/deploy-cloud.md.
-#   * The single-seller install of docs/deploy.md: keep only the `web` service, drop the worker, the
-#     scheduler and the database, set SALESCOACH_ROLE=all and mount a disk at /data.
+#   web        the app; scales out. Its pre-deploy command runs `salescoach migrate` as the OWNER role
+#              (DATABASE_MIGRATE_URL), so the schema and the row-level policies are this build's before the new
+#              version serves; the web process itself unsets that URL before it starts (a serving process never
+#              holds the owner role, docs/deploy-cloud.md "Environment").
+#   worker     WORKER_CONCURRENCY worker loops per instance; scales out (the bus is fair across users).
+#   scheduler  the duties, under a Postgres advisory-lock leader election; one is enough.
+# The worker and the scheduler refuse to serve a schema at the wrong version, so on an upgrade they wait for the
+# web service's migrate (they restart until it has run); deploy the scheduler last (docs/deploy-cloud.md).
 #
-# Render sets PORT itself; the web container listens on it. Secrets are `sync: false` ("ask me at
-# deploy time, never store the value in this file"). Values marked fromDatabase / fromService are
-# filled in by Render.
+# Before the first deploy, on the new database, as its owner (the `fromDatabase` connection string): create the
+# app role (docs/deploy-cloud.md "Launch checklist", docs/deploy.md "SQLite or Postgres"):
+#   CREATE ROLE salescoach_app LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+#   GRANT CONNECT ON DATABASE <db> TO salescoach_app;
+# and give DATABASE_URL that role's URL in all three services. The owner role must be able to bypass row-level
+# security (BYPASSRLS; docs/architecture.md "Isolation"): check your plan allows it.
+#
+# Secrets are `sync: false`: Render asks for them when the Blueprint is created and never stores a value in this
+# file. Every variable `salescoach serve` checks at a cloud start (cli.cloud_problems: the session secret for web,
+# the Google client, the allowed domains and the token keys for every role) is declared for the roles that need
+# it; tests/test_render_blueprint.py fails when one is missing or when docs/deploy-cloud.md's table and this file
+# disagree. Render sets PORT; the web container listens on it.
+#
+# The single-seller install of docs/deploy.md (one container, SQLite on a disk, a password) is not a separate
+# blueprint: keep only the web service, delete `databases`, the worker, the scheduler, the preDeployCommand and
+# dockerCommand, drop every variable below but the model key and SALESCOACH_PUBLIC_URL, set SALESCOACH_ROLE=all,
+# add SALESCOACH_PASSWORD (sync: false; optionally WEBHOOK_SECRET) and a persistent disk mounted at /data.
 databases:
   - name: salescoach-db
     plan: basic-1gb                       # pick a plan with point-in-time recovery for a client's pipeline
@@ -25,27 +40,41 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     autoDeploy: false
+    preDeployCommand: salescoach migrate
+    dockerCommand: sh -c 'unset DATABASE_MIGRATE_URL; exec salescoach serve --role web --host 0.0.0.0 --port "${PORT:-8140}"'
     envVars:
-      - key: SALESCOACH_ROLE
+      - key: SALESCOACH_ROLE              # also what `salescoach health` (the image's HEALTHCHECK) follows
         value: web
       - key: SALESCOACH_MODE
         value: cloud
-      - key: DATABASE_URL
+      - key: DATABASE_URL                 # the APP role (salescoach_app), never the owner
+        sync: false
+      - key: DATABASE_MIGRATE_URL         # the OWNER role: the pre-deploy `salescoach migrate` only
         fromDatabase: {name: salescoach-db, property: connectionString}
-      - key: SALESCOACH_PUBLIC_URL      # https://<service>.onrender.com, or your own domain
+      - key: SALESCOACH_PUBLIC_URL        # https://<service>.onrender.com or your own domain; OAuth redirects hang off it
         sync: false
-      - key: SALESCOACH_SESSION_SECRET
-        generateValue: true
-      - key: SALESCOACH_PASSWORD        # until Google sign-in (Phase 3) replaces the shared password
+      - key: SALESCOACH_SESSION_SECRET    # a long random string; signs the session cookie
         sync: false
-      - key: ANTHROPIC_API_KEY          # or OPENAI_API_KEY / XAI_API_KEY for another provider
+      - key: GOOGLE_CLIENT_ID             # the customer's Internal OAuth client (Workspace admin checklist)
         sync: false
-      - key: LLM_BUDGET_ORG_USD_DAY     # optional daily caps; the worker defers work past them
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ALLOWED_DOMAINS       # comma list of Workspace domains whose members may sign in
+        sync: false
+      - key: SALESCOACH_BOOTSTRAP_ADMIN   # the first admin's address; used once
+        sync: false
+      - key: SALESCOACH_TOKEN_KEYS        # kid:base64,... (`salescoach tokens new-key`); the same ring on all three
+        sync: false
+      - key: ANTHROPIC_API_KEY            # or OPENAI_API_KEY / XAI_API_KEY for another provider
+        sync: false
+      - key: LLM_BUDGET_ORG_USD_DAY       # daily model-spend caps (the Usage panel reads them here)
         sync: false
       - key: LLM_BUDGET_USER_USD_DAY
         sync: false
-      - key: WEBHOOK_SECRET             # optional: switches the transcript webhook on
-        sync: false
+      - key: SALESCOACH_DATA
+        value: /data
+      - key: SALESCOACH_RUNTIME
+        value: /data/runtime
 
   - type: worker
     name: salescoach-worker
@@ -53,21 +82,34 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     autoDeploy: false
+    dockerCommand: salescoach serve --role worker
     envVars:
       - key: SALESCOACH_ROLE
         value: worker
-      - key: WORKER_CONCURRENCY
-        value: "2"
       - key: SALESCOACH_MODE
         value: cloud
-      - key: DATABASE_URL
-        fromDatabase: {name: salescoach-db, property: connectionString}
+      - key: WORKER_CONCURRENCY           # loops per instance; SALESCOACH_PG_POOL_SIZE (default 16) >= this + 2
+        value: "2"
+      - key: DATABASE_URL                 # the APP role
+        sync: false
+      - key: GOOGLE_CLIENT_ID             # a worker refreshes the reps' Google grants
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ALLOWED_DOMAINS
+        sync: false
+      - key: SALESCOACH_TOKEN_KEYS
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: LLM_BUDGET_ORG_USD_DAY
+      - key: LLM_BUDGET_ORG_USD_DAY       # the worker defers work past these
         sync: false
       - key: LLM_BUDGET_USER_USD_DAY
         sync: false
+      - key: SALESCOACH_DATA
+        value: /data
+      - key: SALESCOACH_RUNTIME
+        value: /data/runtime
 
   - type: worker
     name: salescoach-scheduler
@@ -75,12 +117,29 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     autoDeploy: false
+    dockerCommand: salescoach serve --role scheduler
     envVars:
       - key: SALESCOACH_ROLE
         value: scheduler
       - key: SALESCOACH_MODE
         value: cloud
-      - key: DATABASE_URL
-        fromDatabase: {name: salescoach-db, property: connectionString}
-      - key: ANTHROPIC_API_KEY
+      - key: DATABASE_URL                 # the APP role
         sync: false
+      - key: GOOGLE_CLIENT_ID             # the duties read each rep's Gmail and Calendar through their grant
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ALLOWED_DOMAINS
+        sync: false
+      - key: SALESCOACH_TOKEN_KEYS
+        sync: false
+      - key: ANTHROPIC_API_KEY            # the follow-up duty drafts
+        sync: false
+      - key: LLM_BUDGET_ORG_USD_DAY
+        sync: false
+      - key: LLM_BUDGET_USER_USD_DAY
+        sync: false
+      - key: SALESCOACH_DATA
+        value: /data
+      - key: SALESCOACH_RUNTIME
+        value: /data/runtime

@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 
-from .. import config, hosted, providers, seller, sources
+from .. import config, hosted, identity, providers, seller, sources
 from ..intel import methodology
 from ..store.stores import get_state, get_user_state
 from . import words
@@ -299,7 +299,15 @@ def steps(conn, live: dict | None = None, rows: list | None = None) -> list[dict
         add("model", "attention", "Not tested yet" if p["usable"] else "Needs a provider")
 
     s = sources_state(conn)
-    if s["chosen"] or s["extra"]:
+    if identity.cloud():
+        # Cloud: the step is the org's allow-list of recorders each rep may connect (setup_sources_cloud.html).
+        from ..sources import connections
+        allowed = [r["label"] for r in connections.catalog() if r["allowed"]]
+        if connections.allowed_is_default():
+            add("sources", "default", "All recorders allowed")
+        else:
+            add("sources", "done", ("Allowed: " + ", ".join(allowed)) if allowed else "No recorders allowed")
+    elif s["chosen"] or s["extra"]:
         add("sources", "done", ", ".join(d["label"] for d in s["extra"]) or "Upload and folder")
     else:
         add("sources", "default", "Default: upload and folder")

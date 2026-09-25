@@ -85,6 +85,7 @@ def write_seller(folder, profile=None) -> Path:
 os.environ["SALESCOACH_SETTINGS"] = str(write_seller(Path(tempfile.mkdtemp(prefix="salescoach-test-settings-"))))
 
 from salescoach import config, providers  # noqa: E402
+import pg_schemas  # noqa: E402
 from salescoach.store import db as _dbmod  # noqa: E402
 
 _dbmod.ASSERT_ACTOR = True
@@ -118,6 +119,10 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(no_pg)
 
 
+# This session's schema prefix (tests/pg_schemas.py): another session sharing the database never drops ours.
+SCHEMA_PREFIX = pg_schemas.session_prefix()
+
+
 def pytest_sessionstart(session):
     global APP_URL
     if PG_URL:
@@ -129,6 +134,7 @@ def pytest_sessionfinish(session, exitstatus):
     if PG_URL:
         from salescoach.store import stores
         stores.close_pools()
+        _drop_leftover_schemas()                  # our own, should a test have left one behind
 
 
 def _pg_admin():
@@ -168,12 +174,20 @@ def _ensure_app_role() -> str:
 
 
 def _drop_leftover_schemas():
+    """This session's own schemas, and other sessions' only when they are stale (tests/pg_schemas.py): two
+    sessions on one database must not drop each other's schemas mid-run."""
     conn = _pg_admin()
     try:
         names = [r[0] for r in conn.execute(
-            "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sc_test_%'").fetchall()]
-        for name in names:
-            conn.execute(f'DROP SCHEMA "{name}" CASCADE')
+            "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sc\\_test\\_%'").fetchall()]
+        others = conn.execute("SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
+                              "AND pid <> pg_backend_pid() AND backend_type = 'client backend'").fetchone()[0]
+        for name in pg_schemas.to_drop(names, SCHEMA_PREFIX, others_connected=others > 0):
+            conn.execute("SET lock_timeout = '5s'")
+            try:
+                conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+            except Exception as exc:                # busy: the next session's sweep gets it
+                warnings.warn(f"could not drop test schema {name}: {exc}")
     finally:
         conn.close()
 
@@ -231,7 +245,7 @@ def store_backend(monkeypatch):
         # test itself); a second caller gets the same schema, never a second one.
         with lock:
             if "schema" not in made:
-                name = f"sc_test_{uuid.uuid4().hex[:12]}"
+                name = f"{SCHEMA_PREFIX}{uuid.uuid4().hex[:12]}"
                 _create_test_schema(name)
                 stores._pg_schema = made["schema"] = name
             return made["schema"]
@@ -259,6 +273,16 @@ def pg_owner():
     conn.execute(f'SET search_path TO "{schema}"')
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def bus_rows(db, request):
+    """The connection a test files and inspects OTHER owners' bus events on. On Postgres the owner role: a user
+    session (the local user's included) reads and writes only its own wf_events rows (store/rls.py), and these
+    tests queue work for many owners at once. On SQLite the test's own connection."""
+    if not PG_URL:
+        return db
+    return request.getfixturevalue("pg_owner")
 
 
 @pytest.fixture

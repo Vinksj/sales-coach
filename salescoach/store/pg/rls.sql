@@ -90,6 +90,144 @@ CREATE OR REPLACE FUNCTION app_owner_of(node text) RETURNS text LANGUAGE sql STA
   SELECT owner_id FROM nodes WHERE id = node
 $$;
 
+-- ---- the bus (wf_events) -------------------------------------------------------------------------------
+-- Whose work an event is, as the worker will resolve it when it handles the event (orchestrator/workflow
+-- .owner_of_event, bus.owner_for): a `user:<id>` entity names the user; else the owner of the call, deal or loop
+-- node the entity is; else payload.owner_id; NULL when none of those says (the publisher's own event then).
+CREATE OR REPLACE FUNCTION app_event_owner(p_entity text, p_payload text) RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT CASE WHEN p_entity LIKE 'user:%' THEN substr(p_entity, 6)
+              ELSE COALESCE(app_owner_of(p_entity), NULLIF(NULLIF(p_payload, '')::jsonb ->> 'owner_id', '')) END
+$$;
+
+-- A user session writes an event only as its owner, and only one whose entity and payload say the same owner:
+-- the worker runs an event AS the owner its entity names, so an event filed under A that names B's call would
+-- run B's pipeline on A's request. (NULL owner: nobody's, never a user session's.)
+CREATE OR REPLACE FUNCTION app_event_owner_ok(p_owner text, p_entity text, p_payload text) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT p_owner IS NOT NULL AND COALESCE(app_event_owner(p_entity, p_payload), p_owner) = p_owner
+$$;
+
+-- The machinery's door. The worker's claim loop and the settle calls (orchestrator/bus.py: claim_next, complete,
+-- fail, defer, recover_running) run with NOBODY bound, and see and change every owner's events through the
+-- functions below, never through the table (whose policies give a user session its own events only). A session
+-- with an actor bound, interactive or service, is refused: a request or a duty can never claim, settle or list
+-- another user's events. Each function returns ids, owners, counters: the event row itself only to the claimer
+-- that holds its owner's lock (app_bus_take).
+CREATE OR REPLACE FUNCTION app_bus_guard() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  IF app_actor_id() IS NOT NULL OR COALESCE(current_setting('app.mode', true), '') <> '' THEN
+    RAISE EXCEPTION 'the bus machinery runs with nobody bound (orchestrator/bus.py); a user session reads and writes only its own events'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END $$;
+
+-- This session holds the per-owner advisory lock orchestrator/bus.py takes before claiming one of that owner's
+-- events (pg_try_advisory_lock(hashtext('salescoach:owner:<schema>:<owner>')); advisory locks are database-wide,
+-- so the key names the schema): one running event per owner, in the database as well as in the claimer. Called
+-- from the functions below, whose search_path is pinned to this schema. A bigint advisory key shows in pg_locks as
+-- classid (high half) and objid (low half).
+CREATE OR REPLACE FUNCTION app_bus_owner_locked(p_owner text) RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks l
+                 WHERE l.locktype = 'advisory' AND l.pid = pg_backend_pid() AND l.granted AND l.objsubid = 1
+                   AND ((l.classid::bigint << 32) | l.objid::bigint)
+                       = hashtext('salescoach:owner:' || current_schema() || ':' || COALESCE(p_owner, ''))::bigint)
+$$;
+
+-- Claim candidates: one per owner (that owner's best claimable event: priority, then age), best first.
+CREATE OR REPLACE FUNCTION app_bus_candidates(p_max_attempts integer, p_now text, p_scan integer)
+RETURNS TABLE(ev_id integer, ev_owner text) LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  PERFORM app_bus_guard();
+  RETURN QUERY
+    SELECT b.id, b.owner FROM (
+      SELECT DISTINCT ON (e.owner) e.id, e.owner, e.priority FROM wf_events e
+      WHERE e.status = 'pending' AND e.attempts < p_max_attempts AND (e.not_before IS NULL OR e.not_before <= p_now)
+      ORDER BY e.owner, e.priority DESC, e.id) b
+    ORDER BY b.priority DESC, b.id LIMIT p_scan;
+END $$;
+
+-- Take one pending event: running, one attempt spent, the row returned. Only while holding its owner's lock.
+CREATE OR REPLACE FUNCTION app_bus_take(p_id integer, p_now text) RETURNS SETOF wf_events
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_owner text;
+BEGIN
+  PERFORM app_bus_guard();
+  SELECT e.owner INTO v_owner FROM wf_events e WHERE e.id = p_id;
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+  IF NOT app_bus_owner_locked(v_owner) THEN
+    RAISE EXCEPTION 'an event is claimed only under its owner''s lock (orchestrator/bus.py)' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN QUERY UPDATE wf_events SET status = 'running', attempts = attempts + 1, updated_at = p_now
+               WHERE id = p_id AND status = 'pending' RETURNING *;
+END $$;
+
+-- An event's owner, attempts and status (the settle paths; workflow.owner_of_event's last resort).
+CREATE OR REPLACE FUNCTION app_bus_peek(p_event_id text) RETURNS TABLE(ev_owner text, ev_attempts integer, ev_status text)
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  PERFORM app_bus_guard();
+  RETURN QUERY SELECT e.owner, e.attempts, e.status FROM wf_events e WHERE e.event_id = p_event_id;
+END $$;
+
+-- The running events (recover_running, at worker start): which may be orphans of a dead worker.
+CREATE OR REPLACE FUNCTION app_bus_running() RETURNS TABLE(ev_event_id text, ev_attempts integer, ev_owner text)
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  PERFORM app_bus_guard();
+  RETURN QUERY SELECT e.event_id, e.attempts, e.owner FROM wf_events e WHERE e.status = 'running' ORDER BY e.id;
+END $$;
+
+-- Settle an event: done, failed or back to pending (never running: only app_bus_take claims). A RUNNING event only
+-- under its owner's lock: another worker's live event is not this session's to settle. p_keep_error keeps an error
+-- already recorded; p_refund gives the attempt back (defer); p_only_running settles only a running event
+-- (recover_running). Returns how many rows changed.
+CREATE OR REPLACE FUNCTION app_bus_settle(p_event_id text, p_status text, p_error text, p_keep_error boolean,
+                                          p_refund boolean, p_not_before text, p_now text, p_only_running boolean)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_owner text;
+  v_status text;
+  n integer;
+BEGIN
+  PERFORM app_bus_guard();
+  IF p_status IS NULL OR p_status NOT IN ('done', 'failed', 'pending') THEN
+    RAISE EXCEPTION 'an event settles as done, failed or pending' USING ERRCODE = 'check_violation';
+  END IF;
+  SELECT e.owner, e.status INTO v_owner, v_status FROM wf_events e WHERE e.event_id = p_event_id;
+  IF NOT FOUND THEN
+    RETURN 0;
+  END IF;
+  IF v_status = 'running' AND NOT app_bus_owner_locked(v_owner) THEN
+    RAISE EXCEPTION 'an event is settled only under its owner''s lock (orchestrator/bus.py)' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  UPDATE wf_events SET status = p_status,
+         error = CASE WHEN p_keep_error THEN COALESCE(error, p_error) ELSE p_error END,
+         attempts = CASE WHEN p_refund THEN GREATEST(attempts - 1, 0) ELSE attempts END,
+         not_before = CASE WHEN p_status = 'done' THEN not_before ELSE p_not_before END,
+         updated_at = p_now
+  WHERE event_id = p_event_id AND status = v_status AND (NOT p_only_running OR status = 'running');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
+-- Queue depth per owner (`salescoach status`), numbers only: for the machinery (nobody bound) or an active admin.
+CREATE OR REPLACE FUNCTION app_bus_depth()
+RETURNS TABLE(ev_owner text, ev_pending bigint, ev_running bigint, ev_failed bigint, ev_oldest_pending text)
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF app_actor_role() IS DISTINCT FROM 'admin' THEN
+    PERFORM app_bus_guard();
+  END IF;
+  RETURN QUERY
+    SELECT e.owner, SUM(CASE WHEN e.status = 'pending' THEN 1 ELSE 0 END),
+           SUM(CASE WHEN e.status = 'running' THEN 1 ELSE 0 END),
+           SUM(CASE WHEN e.status = 'failed' THEN 1 ELSE 0 END),
+           MIN(CASE WHEN e.status = 'pending' THEN e.created_at END)
+    FROM wf_events e WHERE e.status IN ('pending', 'running', 'failed') GROUP BY e.owner ORDER BY e.owner;
+END $$;
+
 -- Whose recorder connection this is (Phase 4), readable with nobody bound: the push webhook
 -- (/import/webhook/{connection_id}, sources/connections.py) learns the owner before it can bind them, and
 -- the owner is the ONLY identity an import through it can take (the payload never names one). NULL for an
@@ -909,7 +1047,6 @@ CREATE POLICY user_state_delete ON user_state FOR DELETE USING (user_id = app_ac
 -- wf_events: SYSTEM
 ALTER TABLE wf_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE wf_events NO FORCE ROW LEVEL SECURITY;
-CREATE POLICY wf_events_select ON wf_events FOR SELECT USING (true);
-CREATE POLICY wf_events_insert ON wf_events FOR INSERT WITH CHECK (true);
-CREATE POLICY wf_events_update ON wf_events FOR UPDATE USING (true) WITH CHECK (true);
-CREATE POLICY wf_events_delete ON wf_events FOR DELETE USING (true);
+CREATE POLICY wf_events_select ON wf_events FOR SELECT USING (owner = app_actor_id() AND app_actor_active());
+CREATE POLICY wf_events_insert ON wf_events FOR INSERT WITH CHECK (app_can_write(owner) AND app_event_owner_ok(owner, entity_id, payload));
+CREATE POLICY wf_events_update ON wf_events FOR UPDATE USING (app_can_write(owner) AND app_event_owner_ok(owner, entity_id, payload)) WITH CHECK (app_can_write(owner) AND app_event_owner_ok(owner, entity_id, payload));

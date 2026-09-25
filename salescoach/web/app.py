@@ -41,7 +41,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .. import config, hosted, identity, ops, repo, seller
+from .. import budget, config, hosted, identity, ops, repo, seller
 from ..execution import policy, tokens
 from ..manager import access, comments, views
 from ..memory import patterns
@@ -202,6 +202,15 @@ def _consent_notice() -> str:
     return settings.consent_notice()
 
 
+def _jarvis_on() -> bool:
+    """The Jarvis bridge mirrors confirmed loops (a local install with Jarvis beside it; never in cloud mode)."""
+    from ..integrations import jarvis_bridge
+    try:
+        return jarvis_bridge.available()
+    except Exception:
+        return False
+
+
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters.update(dt=fmt_dt, day=fmt_day, mmss=mmss, fromjson=fromjson, pct=pct,
                              step_label=step_label, human=human, pretty=pretty_json,
@@ -212,7 +221,8 @@ templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, lan
                              hosted=hosted.is_hosted, cloud=identity.cloud,
                              me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None),
                              me_role=lambda: getattr(identity.current_actor(required=False), "role", None),
-                             consent_notice=_consent_notice)
+                             consent_notice=_consent_notice, jarvis_on=_jarvis_on,
+                             budget_waiting_text=budget.WAITING_TEXT)
 
 
 # ---- same-origin guard --------------------------------------------------------
@@ -632,8 +642,13 @@ def worker_on(app, conn=None) -> bool:
 
 
 def _chrome(request: Request, conn) -> dict:
+    # The viewer's own events (cloud mode): another rep's queue and failures are not this viewer's. On Postgres the
+    # wf_events policies say so too (store/rls.py); a local install has one user and events from before the owner
+    # column have none.
+    mine = "AND owner=? " if identity.cloud() else ""
     counts = {r["status"]: r["n"] for r in conn.execute(
-        "SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' GROUP BY status")}
+        f"SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' {mine}GROUP BY status",
+        (access.actor_id(conn),) if mine else ())}
     worker = request.app.state.worker
     current = getattr(worker, "current", None) if worker is not None else None
     if current is not None and identity.cloud():
@@ -758,11 +773,12 @@ def _failed_step(call) -> str:
 
 
 def _is_failed(call) -> bool:
-    return bool(call["wf_error"]) or call["wf_state"] == "capture_failed"
+    return (bool(call["wf_error"]) and not budget.is_waiting(call["wf_error"])) or call["wf_state"] == "capture_failed"
 
 
 def _is_processing(call) -> bool:
-    return call["wf_state"] in CHAIN and not call["wf_error"]
+    """On its way through the pipeline, including a step waiting for the daily model budget (budget.is_waiting)."""
+    return call["wf_state"] in CHAIN and (not call["wf_error"] or budget.is_waiting(call["wf_error"]))
 
 
 def _publish_process(conn, call_id, step, force=False) -> bool:
@@ -1067,7 +1083,8 @@ def today_page(request: Request):
             elif c["wf_state"] == "live":
                 live_calls.append(c)
             elif _is_processing(c):
-                processing.append({"call": c, "next": _next_step(c["wf_state"]), "job": _call_job(conn, cid)})
+                processing.append({"call": c, "next": _next_step(c["wf_state"]), "job": _call_job(conn, cid),
+                                   "budget_wait": budget.is_waiting(c["wf_error"])})
             elif c["wf_state"] in ("awaiting_review", "reviewed"):
                 email = _latest_email(conn, cid)
                 if c["wf_state"] == "reviewed" and not (email and email["status"] in
@@ -1335,7 +1352,8 @@ def _call_context(conn, call) -> dict:
     processing = _is_processing(call)
     job = _call_job(conn, cid)
     rerun = bool(job is not None and job["type"] == "PROCESS_CALL" and ready)
-    failed_step = _failed_step(call) if call["wf_error"] and state != "capture_failed" else None
+    budget_wait = budget.is_waiting(call["wf_error"])
+    failed_step = _failed_step(call) if call["wf_error"] and not budget_wait and state != "capture_failed" else None
     si = CHAIN.index(state) if state in CHAIN else (len(CHAIN) - 1 if ready else -1)
     steps = []
     for i, name in enumerate(CHAIN):
@@ -1363,7 +1381,7 @@ def _call_context(conn, call) -> dict:
         "email": _email_view(conn, email) if email else None, "email_skipped": email_skipped,
         "speaker_question": _speaker_question(conn, cid) if state in workflow.HOLD_STATES else None,
         "clusters": clusters, "ready": ready, "processing": processing, "rerun": rerun, "job": job,
-        "failed_step": failed_step, "steps": steps,
+        "failed_step": failed_step, "steps": steps, "budget_wait": budget_wait,
         "current_step": next((s for s in steps if s["status"] == "current"), None),
         "review_completed": conn.execute("SELECT 1 FROM wf_events WHERE type='REVIEW_COMPLETED' AND entity_id=?",
                                          (cid,)).fetchone() is not None,

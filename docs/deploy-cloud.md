@@ -218,7 +218,7 @@ redraft, a retry, a strategy, prep or coach-report request publish at 10; new ca
 daily duties at 0; history backfills at -10) and an `owner`. A
 claim takes the highest priority first, then the oldest id, and **skips events whose owner already has
 an event running**: on Postgres the claimer takes a session advisory lock on the owner
-(`pg_try_advisory_lock(hashtext('salescoach:owner:<id>'))`) before marking the row running and
+(`pg_try_advisory_lock(hashtext('salescoach:owner:<schema>:<id>'))`) before marking the row running and
 releases it when the event is settled, so two workers can never both run one owner's events, a rep's
 bulk import cannot take every worker while another rep waits, and an owner's events of equal priority
 are handled in id order. A deal has one owner, so a deal's events keep their order too (only an
@@ -246,8 +246,10 @@ and exits 1 when it is missing or stale. `salescoach status` prints the queue pe
 running, failed, the oldest pending event) under the recent calls.
 
 **Deploying the three.** `render.yaml` describes one web service and two background workers from the
-one Dockerfile plus a managed Postgres on the private network; each service sets `SALESCOACH_ROLE`
-and gets `DATABASE_URL` from the database. `fly.toml` declares process groups `web`, `worker` and
+one Dockerfile plus a managed Postgres on the private network; each service runs `salescoach serve
+--role <role>`, sets `SALESCOACH_ROLE` and takes `DATABASE_URL` (the app role, entered by hand once the
+role exists). The web service's pre-deploy command is `salescoach migrate`, with `DATABASE_MIGRATE_URL`
+from the database (its owner); the web process unsets that variable before it serves. `fly.toml` declares process groups `web`, `worker` and
 `scheduler` (and `app`, the single-seller role `all` with its volume): `fly scale count app=0 web=1
 worker=1 scheduler=1` for a team, `fly scale count worker=3` when the queue is long. Run `salescoach
 migrate` (with `DATABASE_MIGRATE_URL`, the owner role) before the first deploy and after every upgrade:

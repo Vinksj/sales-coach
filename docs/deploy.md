@@ -194,11 +194,12 @@ so, or check Railway's current volume-permission guidance.
 
 **Render.** `render.yaml` describes the team install (a web service, a worker and a scheduler
 from the one Dockerfile, plus a managed Postgres); for this page's single-seller install keep only
-the web service, set `SALESCOACH_ROLE=all`, drop the database and add a persistent disk at `/data`
-(a disk needs a paid instance type and pins the service to one instance, which is right for this
-app). Create a Blueprint from the repository, and fill in the secrets it asks for
-(`SALESCOACH_PASSWORD`, `SALESCOACH_PUBLIC_URL`, the model key, optionally `WEBHOOK_SECRET`).
-Render sets `PORT`; the container listens on it.
+the web service, set `SALESCOACH_ROLE=all`, drop the database, the pre-deploy command, the docker
+command and the cloud-only variables (the comment at the top of the file lists them), add
+`SALESCOACH_PASSWORD` as a secret and a persistent disk at `/data` (a disk needs a paid instance type
+and pins the service to one instance, which is right for this app). Create a Blueprint from the
+repository, and fill in the secrets it asks for (`SALESCOACH_PASSWORD`, `SALESCOACH_PUBLIC_URL`, the
+model key, optionally `WEBHOOK_SECRET`). Render sets `PORT`; the container listens on it.
 
 Anything else that runs a container with a persistent volume works the same way: mount the volume
 at `/data`, set the variables in the table, expose the container's port through the platform's
