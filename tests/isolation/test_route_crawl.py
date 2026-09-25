@@ -1,7 +1,8 @@
 """Every parameterised route, requested as rep B with rep A's ids, answers 404 (Postgres, cloud mode).
 
-The app is built in cloud mode; identity comes from a test header the ActorGate is patched to read
-(the login mechanism itself is tests/isolation/test_actor_gate.py and tests/test_hosted.py; this
+The app is built in cloud mode; identity comes from a test header the AuthGate's session lookup is
+patched to read (the login mechanism itself is tests/isolation/test_actor_gate.py and
+tests/test_google_auth.py; this
 file is about what a route does once it knows who is asking). Rep A owns a call, a deal, a loop,
 a follow-up email, a nudge, a reply, a prep brief, a learned pattern, a proposal, a calendar
 meeting, an agent run, a memory conflict, a live-coach nudge and a bus event; B asks for each of
@@ -19,21 +20,30 @@ from fastapi.testclient import TestClient
 from salescoach import identity, users
 from salescoach.orchestrator import bus
 from salescoach.schemas.events import Event
+from salescoach.store import stores
 from salescoach.web import app as app_module
 
 import factories
+from conftest import seed_org_settings
 
 pytestmark = pytest.mark.postgres_only
 
 ORIGIN = {"origin": "http://127.0.0.1:8140"}
 A, B = "u-a", "u-b"
 
-# Routes whose parameter is not one user's object: org configuration (admin pages, Phase 3 gates them).
+# Routes whose parameter is not one user's object: org configuration and the org directory, both
+# admin-only in cloud mode (setupui: 403 to anyone else; adminui._admin_only: 404 to anyone else).
 NOT_A_USERS_OBJECT = {
     "/setup/method/custom/{key}": "an org methodology definition",
     "/setup/method/custom/{editing}": "an org methodology definition",
     "/setup/method/custom/{key}/delete": "an org methodology definition",
     "/setup/sources/{kind}": "an org-level source connection (per user from Phase 4)",
+    "/admin/teams/{team_id}": "a team of the org directory (admin only)",
+    "/admin/teams/{team_id}/managers": "a team of the org directory (admin only)",
+    "/admin/users/{user_id}": "a person in the org directory (admin only)",
+    "/admin/users/{user_id}/disable": "a person in the org directory (admin only)",
+    "/admin/users/{user_id}/enable": "a person in the org directory (admin only)",
+    "/admin/users/{user_id}/logout": "a person in the org directory (admin only)",
 }
 
 # Minimal valid bodies for POST routes that validate their form before looking the object up.
@@ -75,8 +85,21 @@ def cloud(monkeypatch):
     for name in ("SALESCOACH_PASSWORD", "SALESCOACH_PASSWORD_HASH", "SALESCOACH_PUBLIC_URL"):
         monkeypatch.delenv(name, raising=False)
     # Identity from a header, so the crawl does not depend on the login mechanism of the day.
-    monkeypatch.setattr(app_module.ActorGate, "_session",
-                        staticmethod(lambda headers: {"user": headers["x-test-user"]} if headers.get("x-test-user") else None))
+    # The AuthGate (web/auth.py) resolves the actor; the header stands in for a live session of that rep.
+    from salescoach.web import auth
+    def from_header(scope, headers):
+        user_id = headers.get("x-test-user")
+        if not user_id:
+            return None
+        with identity.activate(None):
+            conn = stores.sales()
+        try:
+            with conn.as_system():                     # as the real gate: the users row becomes the actor
+                row = users.get(conn, user_id)
+        finally:
+            conn.close()
+        return (users.as_actor(row), None) if row else None
+    monkeypatch.setattr(auth, "_cloud_actor", from_header)
     return True
 
 
@@ -86,6 +109,7 @@ def two_reps(db):
     for uid, name in ((A, "Asha Rao"), (B, "Bala K")):
         users.create(db, f"{uid}@tessel.test", name, role="rep", user_id=uid)
     db.commit()
+    seed_org_settings(db)                          # cloud mode reads the org profile from org_settings
 
 
 @pytest.fixture

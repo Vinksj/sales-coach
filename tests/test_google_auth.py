@@ -26,6 +26,7 @@ from salescoach.execution import tokens
 from salescoach.store import stores
 from salescoach.web import auth
 from salescoach.web.app import create_app
+from conftest import seed_org_settings
 
 CLIENT_ID = "1234.apps.googleusercontent.com"
 DOMAIN = "tessel.test"
@@ -96,9 +97,12 @@ def fake(monkeypatch):
 
 
 @pytest.fixture
-def cloud(monkeypatch, tmp_path, fake):
-    """Cloud mode with an open store (the same isolation the `db` fixture gives, after the mode is set
-    so no local user is made) and nothing signed in."""
+def cloud(monkeypatch, tmp_path, fake, request):
+    """Cloud mode with a fresh store (the same isolation the `db` fixture gives, after the mode is set
+    so no local user is made) and nothing signed in. The connection handed to the test is the
+    OPERATOR's, for arranging and checking: on Postgres the owner role on the test's schema (every row,
+    row security bypassed, nobody bound: what `psql` as the owner sees). The app under test connects
+    as the app role and runs under every policy."""
     from salescoach import config
     monkeypatch.setenv(identity.MODE_ENV, "cloud")
     monkeypatch.setenv("SALESCOACH_SESSION_SECRET", "a long random string for the tests")
@@ -109,9 +113,15 @@ def cloud(monkeypatch, tmp_path, fake):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setattr(stores, "WORLD_DB", tmp_path / "absent-world.db")
-    conn = stores.sales()
-    yield conn
+    conn = stores.sales()                   # the app role: makes the test's schema
+    if conn.dialect != "postgres":
+        yield conn
+        conn.close()
+        return
     conn.close()
+    operator = request.getfixturevalue("pg_owner")
+    seed_org_settings(operator)            # the org is set up; who may sign in is what these tests are about
+    yield operator
 
 
 def client_for(**kw):

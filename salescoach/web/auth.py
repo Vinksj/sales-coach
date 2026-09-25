@@ -34,6 +34,7 @@ An unauthenticated request for a page is sent to /login?next=<same-app path>; an
 event streams, form posts) gets a 401 so a script never follows a redirect into an HTML page.
 """
 import re
+from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request
@@ -138,10 +139,11 @@ def _cloud_actor(scope, headers):
     except Exception:
         return None
     try:
-        live = sessions.resolve(conn, session_id)
-        if not live:
-            return None
-        row = users.get(conn, live["user_id"])
+        with conn.as_system():                   # the lookup that FINDS the actor: nobody is bound yet, on purpose
+            live = sessions.resolve(conn, session_id)
+            if not live:
+                return None
+            row = users.get(conn, live["user_id"])
         if not row or row["status"] != "active":
             return None
         return identity.Actor(row["id"], identity.INTERACTIVE, row["role"], users.profile_of(row)), session_id
@@ -300,29 +302,43 @@ def google_start(request: Request):
     return response
 
 
-def _bootstrap_admin(conn, ident: dict) -> dict:
+def _bootstrap_admin(conn, ident: dict) -> Optional[dict]:
     """The first admin, exactly once: a lock around check-then-insert, and the UNIQUE address as the
-    backstop, so two first callbacks racing end with one row and both signed in as it."""
-    conn.serialize("bootstrap-admin")
-    row = users.by_email(conn, ident["email"])
-    if row is not None:
-        conn.commit()
-        return row
-    try:
-        row = users.create(conn, ident["email"], ident["name"], role="admin", status="active", google_sub=ident["sub"])
-        with identity.as_actor(conn, users.as_actor(row)):
-            users.audit(conn, "user.bootstrap", {"email": ident["email"], "role": "admin"})
-        conn.commit()
-    except db.IntegrityError:
-        conn.rollback()
+    backstop, so two first callbacks racing end with one row and both signed in as it. Nobody is bound
+    (this is the sign-in): the users policy lets anyone insert only into an EMPTY directory
+    (app_users_empty(), store/rls.py), so the bootstrap address makes the first admin and nothing after
+    that; a directory that already has users answers None (the address needs an invite like anyone)."""
+    with conn.as_system():
+        conn.serialize("bootstrap-admin")
         row = users.by_email(conn, ident["email"])
+        if row is not None:
+            conn.commit()
+            return row
+        if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None:
+            conn.rollback()
+            return None
+        try:
+            row = users.create(conn, ident["email"], ident["name"], role="admin", status="active", google_sub=ident["sub"])
+        except db.IntegrityError:
+            conn.rollback()
+            return users.by_email(conn, ident["email"])
+    with identity.as_actor(conn, users.as_actor(row)):
+        users.audit(conn, "user.bootstrap", {"email": ident["email"], "role": "admin"})
+        conn.commit()
     return row
 
 
 def _resolve_user(conn, ident: dict) -> dict:
-    """The users row a verified Google identity may act as. Raises googleauth.Denied otherwise."""
+    """The users row a verified Google identity may act as. Raises googleauth.Denied otherwise.
+
+    Nobody is bound yet: the allow-list check reads `users` as system (readable by every connection).
+    Accepting an invite (invited -> active, the Google subject, the name Google knows) is the person's
+    own act, so it runs as them: the users policy lets a user update their own row and trg_users_guard
+    lets them make exactly that one status change (store/rls.py); the invite is marked accepted in the
+    same transaction (invites: UPDATE open to the app role, for this callback)."""
     from ..store.stores import now
-    row = users.by_email(conn, ident["email"])
+    with conn.as_system():
+        row = users.by_email(conn, ident["email"])
     if row is None and googleauth.bootstrap_admin() == ident["email"]:
         row = _bootstrap_admin(conn, ident)
     if row is None:
@@ -338,10 +354,13 @@ def _resolve_user(conn, ident: dict) -> dict:
         fields["name"] = ident["name"]
     if row["status"] == "invited":
         fields["status"] = "active"
-        conn.execute("UPDATE invites SET accepted_at=? WHERE email=? AND accepted_at IS NULL", (now(), ident["email"]))
     if fields:
-        row = users.update(conn, row["id"], **fields)
-    conn.commit()
+        with identity.as_actor(conn, users.as_actor(row)):
+            if row["status"] == "invited":
+                conn.execute("UPDATE invites SET accepted_at=? WHERE email=? AND accepted_at IS NULL",
+                             (now(), ident["email"]))
+            row = users.update(conn, row["id"], **fields)
+            conn.commit()
     return row
 
 

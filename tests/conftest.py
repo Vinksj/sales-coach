@@ -59,6 +59,20 @@ SELLER = {
 }
 
 
+def seed_org_settings(conn, profile=None) -> None:
+    """Cloud mode keeps the ORG half of the profile in org_settings (Phase 6, config.py), never in
+    seller.yaml: write SELLER's org fields there, as an operator would through Settings. `conn` is the
+    owner role or an admin's connection (only those may write the table; store/rls.py)."""
+    import json
+    from salescoach import config as _config
+    from salescoach import seller as _seller
+    body = {k: v for k, v in (SELLER if profile is None else profile).items() if k in _seller.ORG_FIELDS}
+    conn.execute("INSERT INTO org_settings(name,body,version) VALUES ('seller',?,1) ON CONFLICT(name) DO UPDATE "
+                 "SET body=excluded.body, version=org_settings.version+1", (json.dumps(body),))
+    conn.commit()
+    _config._org_cache.clear()
+
+
 def write_seller(folder, profile=None) -> Path:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
