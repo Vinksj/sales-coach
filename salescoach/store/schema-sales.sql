@@ -584,3 +584,33 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   updated_at        TEXT,
   PRIMARY KEY (user_id, provider)
 );
+
+-- ---- Recorder connections (Phase 4; salescoach/sources/connections.py) ----
+-- One rep's own recorder account (Fathom, Fireflies, tl;dv, Granola): the calls it delivers are that
+-- rep's (owner_id), nobody else's. The API key is AES-256-GCM ciphertext under the SALESCOACH_TOKEN_KEYS
+-- ring (execution/tokens.py), key_id says which key. A push webhook authenticates with a per-connection
+-- secret (only its sha256 is kept) or, for recorders that sign their webhooks, with the recorder's own
+-- signing secret (encrypted: an HMAC cannot be checked against a hash). state is json: the recorder's
+-- recent listing, what was imported from it, the account the key belongs to.
+CREATE TABLE IF NOT EXISTS source_connections (
+  id                 TEXT PRIMARY KEY,
+  owner_id           TEXT NOT NULL DEFAULT 'local',
+  kind               TEXT NOT NULL,
+  label              TEXT,
+  secret_enc         TEXT,
+  key_id             TEXT,
+  status             TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','error','disconnected')),
+  account_email      TEXT,
+  state              TEXT NOT NULL DEFAULT '{}',
+  last_poll_at       TEXT,
+  last_ok_at         TEXT,
+  next_poll_at       TEXT,
+  failures           INTEGER NOT NULL DEFAULT 0,
+  last_error         TEXT,
+  webhook_token_hash TEXT,
+  webhook_secret_enc TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT,
+  UNIQUE(owner_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_source_connections_owner_id ON source_connections(owner_id);

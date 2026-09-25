@@ -28,7 +28,7 @@ from . import db, engine  # noqa: F401  (engine: the graph/event engine, vendore
 WORLD_DB = Path(os.environ.get("WORLD_DB", os.path.expanduser("~/.claude/jarvis/world.db")))
 SCHEMA = Path(__file__).with_name("schema-sales.sql")
 PLUGINS_DIR = Path(__file__).resolve().parent.parent / "plugins"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 log = logging.getLogger("salescoach.store")
 

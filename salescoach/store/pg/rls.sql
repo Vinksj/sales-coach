@@ -86,6 +86,16 @@ CREATE OR REPLACE FUNCTION app_owner_of(node text) RETURNS text LANGUAGE sql STA
   SELECT owner_id FROM nodes WHERE id = node
 $$;
 
+-- Whose recorder connection this is (Phase 4), readable with nobody bound: the push webhook
+-- (/import/webhook/{connection_id}, sources/connections.py) learns the owner before it can bind them, and
+-- the owner is the ONLY identity an import through it can take (the payload never names one). NULL for an
+-- unknown or disconnected connection and for an owner who is not active. An id, never content.
+CREATE OR REPLACE FUNCTION app_source_connection_owner(connection text) RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT c.owner_id FROM source_connections c JOIN users u ON u.id = c.owner_id
+  WHERE c.id = connection AND c.status <> 'disconnected' AND u.status = 'active'
+$$;
+
 -- Model spend since `since` (budget.py, Phase 6), numbers only. The org's daily cap must count every rep's
 -- runs, which no rep may read; the Usage panel under Settings (admin-only in cloud mode) lists spend per
 -- user. Both answer only to an active user; per owner, an admin gets every owner and anyone else the owners
@@ -420,6 +430,13 @@ CREATE POLICY slot_fills_select ON slot_fills FOR SELECT USING (owner_id = ANY (
 CREATE POLICY slot_fills_insert ON slot_fills FOR INSERT WITH CHECK (app_can_write(owner_id));
 CREATE POLICY slot_fills_update ON slot_fills FOR UPDATE USING (app_can_write(owner_id)) WITH CHECK (app_can_write(owner_id));
 CREATE POLICY slot_fills_delete ON slot_fills FOR DELETE USING (app_can_write(owner_id));
+-- source_connections: OWNED
+ALTER TABLE source_connections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE source_connections FORCE ROW LEVEL SECURITY;
+CREATE POLICY source_connections_select ON source_connections FOR SELECT USING (owner_id = ANY (app_visible_owners()));
+CREATE POLICY source_connections_insert ON source_connections FOR INSERT WITH CHECK (app_can_write(owner_id));
+CREATE POLICY source_connections_update ON source_connections FOR UPDATE USING (app_can_write(owner_id)) WITH CHECK (app_can_write(owner_id));
+CREATE POLICY source_connections_delete ON source_connections FOR DELETE USING (app_can_write(owner_id));
 -- sources: OWNED
 ALTER TABLE sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sources FORCE ROW LEVEL SECURITY;
