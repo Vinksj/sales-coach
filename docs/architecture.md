@@ -393,11 +393,11 @@ refuses the mismatch).
 | OWNED | enabled + **forced** | `owner_id = ANY(app_visible_owners())`; `nodes` also lets any active user read a NULL owner (the directory's account and person nodes) | `app_can_write(owner_id)`: the owner, active, in a bound mode. A manager reads and never writes a rep's row; `UPDATE` cannot move a row to another owner (`WITH CHECK`) |
 | ORG: `accounts`, `people` | enabled | any active user | any active user in a bound mode (every rep contributes to the shared directory) |
 | ORG: `users`, `teams`, `team_managers` | enabled | every connection (a connection reads `users` to learn who it is) | admins; a user may `UPDATE` their own `users` row, and `trg_users_guard` refuses a non-admin (on the app role) changing `id`, `role`, `team_id` or `status`, except accepting their own invite (`invited` → `active`) at their first sign-in; the first row of an empty `users` may be inserted by anyone (the local user, the bootstrap admin) |
-| SYSTEM: `wf_events` | enabled | every connection | every connection: the bus carries ids and step names, never content; interactive requests publish, the worker claims as nobody. Whose event it is, is decided in code (`event_retry` 404s another user's) |
+| SYSTEM: `wf_events` | enabled | own events (`owner = app_actor_id()`, active); a manager reads none of the team's | `INSERT` / `UPDATE`: own events whose entity and payload name no one else (`app_event_owner_ok`: the worker runs an event as the owner its entity names); `DELETE` nobody. The worker's claim and settle paths run as nobody through the `app_bus_*` SECURITY DEFINER functions, which refuse any session with an actor bound and take or settle an event only under its owner's advisory lock (`orchestrator/bus.py`) |
 | SYSTEM: `state` | enabled | any active user; the `ops:%` heartbeat rows (host, pid, timestamps, counts) by every connection | admins and service-mode duties; the `ops:%` rows also by nobody (worker and scheduler processes act for nobody, `/health` reads them before sign-in); `DELETE` admins and duties only |
 | SYSTEM: `user_state`, `user_speaker_labels` | enabled | own rows (`user_id = app_actor_id()`) | own rows |
 | SYSTEM: `schema_migrations`, `schema_repeatables` | enabled | every connection | nobody (no privilege) |
-| SYSTEM: `sessions` | enabled | every connection | every connection. The `AuthGate` resolves a session before anyone is bound, so no owner rule can apply; `sessions.id` is **sha256 of the session id** (`sessions.key`), the cookie keeps the raw id plus its HMAC, so the row is found only by someone holding the cookie's secret and a copy of the table replays nothing (the wf_events reasoning: machinery keyed by an unguessable value) |
+| SYSTEM: `sessions` | enabled | every connection | every connection. The `AuthGate` resolves a session before anyone is bound, so no owner rule can apply; `sessions.id` is **sha256 of the session id** (`sessions.key`), the cookie keeps the raw id plus its HMAC, so the row is found only by someone holding the cookie's secret and a copy of the table replays nothing (machinery keyed by an unguessable value) |
 | SYSTEM: `invites` | enabled | every connection (the Google callback's allow-list, nobody bound) | `UPDATE` every connection (the callback marks it accepted); `INSERT` / `DELETE` admins |
 | SYSTEM: `oauth_tokens` | enabled | the acting user's own grant (`user_id = app_actor_id()`, active), or any grant for an active admin (disabling revokes grants; the admin page shows link status); nobody reads none | the same. `salescoach tokens rotate` runs as the owner role (`DATABASE_MIGRATE_URL`) or `--as` an active admin, explicitly |
 | SYSTEM: `org_settings` | enabled | every connection: `config.load()` reads the overlay from every thread, including before anyone is bound (the scheduler's intervals, the sign-in page's brand); it holds no per-user data and no secrets | active admins (Settings, which is admin-only in cloud mode: `setupui` answers 403 to anyone else) |
@@ -492,8 +492,9 @@ the app adds the read-only rule on top (`manager/access.py`). Every non-GET requ
 `access.write_request()` (the `ActorGate`), and every `*_or_404` helper passes its row through
 `access.guard()`, which raises `ReadOnly` (403) when the acting user can read the row but does not own
 it: the refusal comes before anything is written or queued, instead of a policy's silent no-op. The bus
-(`orchestrator/bus.publish`) refuses an interactive publish on someone else's object, since `wf_events`
-is the one table every connection writes and the worker handles an event as its owner. Pages decide
+(`orchestrator/bus.publish`) refuses an interactive publish on someone else's object with that 403, and the
+`wf_events` policies refuse any session filing an event as, or about, someone else, since the worker
+handles an event as its owner. Pages decide
 read-only rendering from the object's `owner_id` (`access.page_owner`); the Coach and Learning pages
 of a rep are rendered inside `identity.viewing(rep)`, which changes whose rows the own-work reads
 select (`identity.subject_id`) and nothing else. `comments` is the one OWNED table a non-owner inserts
