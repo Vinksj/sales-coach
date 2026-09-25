@@ -222,7 +222,11 @@ class Rewriter:
                 return uid if value == LOCAL else None
             raise ImportRefused(f"{table} holds a row owned by {value!r}: the source is not a single-user install")
         if (table, column) in USER_COLUMNS:
-            return uid if value == LOCAL else value
+            # A single-user install names one user, `local`. Any other id would reach the cloud verbatim and name
+            # somebody else there (another rep's people link, a comment "by" a manager, an access-log viewer).
+            if value is None or value == LOCAL:
+                return uid if value == LOCAL else None
+            raise ImportRefused(f"{table}.{column} names user {value!r}: a single-user install names only 'local'")
         if table == "comments" and column == "entity_id" and row.get("entity_type") == "coaching" and value == LOCAL:
             return uid
         if (table, column) in REF_COLUMNS:
