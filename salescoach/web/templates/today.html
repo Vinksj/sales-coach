@@ -12,6 +12,14 @@
 <div class="today-main">
   {% include "settings_problems.html" %}
 
+  {% if cloud() %}{% set notice = consent_notice() %}{% if notice %}
+  <div class="callout consent-notice" role="note">
+    <div class="eyebrow">Recording consent</div>
+    <p class="lead">Your org asks you to tell participants calls are recorded</p>
+    <p>{{ notice }}</p>
+  </div>
+  {% endif %}{% endif %}
+
   {# Setup (salescoach/setupui): shown while no model provider is usable or none has passed a test. #}
   {% if setup_today is defined %}{% set setup_card = setup_today(request) %}{% if setup_card %}{% include "setup_today_card.html" %}{% endif %}{% endif %}
 

@@ -12,6 +12,7 @@
   GET  /setup/connections                                             read-only
   GET  /setup/review         POST /setup/finish
                              POST /setup/dismiss-card                 the Today card
+                             POST /setup/compliance                   consent notice + retention (review page)
 
 Every POST passes the app's same-origin guard like any other non-GET route.
 
@@ -635,12 +636,35 @@ def _review_context(conn, live, rows):
             "provider": state.provider_state(conn), "provider_copy": PROVIDER_COPY, "sources_state": s,
             "rows": rows, "missing": state.missing(conn, live, rows),
             "style_is_own": (config.user_dir() / "style.md").exists(),
-            "finished": bool(state.get_state(conn, state.FINISHED_KEY))}
+            "finished": bool(state.get_state(conn, state.FINISHED_KEY)), "is_cloud": identity.cloud(),
+            "compliance": _compliance()}
+
+
+def _compliance() -> dict:
+    from ..lifecycle import settings as org_settings
+    stored = config.load("org") or {}
+    return {"days": org_settings.retention_days(), "max_notice": org_settings.MAX_NOTICE,
+            "notice": str((stored.get("consent") or {}).get("notice") or "")}
 
 
 @router.get("/setup/review", response_class=HTMLResponse)
 def review_page(request: Request):
     return _page(request, "setup_review.html", "review", build=_review_context)
+
+
+@router.post("/setup/compliance")
+def compliance_save(request: Request, notice: str = Form(""), retention_days: str = Form("")):
+    """The org's recording-consent notice and retention period (config/org.yaml; org_settings in cloud mode,
+    which only an admin may write: this router answers 403 to anyone else there)."""
+    from ..lifecycle import settings as org_settings
+    try:
+        saved = org_settings.save(retention_days, notice)
+    except ValueError as exc:
+        return _web()._redirect("/setup/review", err=str(exc), anchor="compliance")
+    days = saved["retention_days"]
+    return _web()._redirect("/setup/review", anchor="compliance",
+                            msg=("Saved. Calls older than " + str(days) + " days will be deleted daily." if days
+                                 else "Saved. Every call is kept."))
 
 
 @router.post("/setup/finish")

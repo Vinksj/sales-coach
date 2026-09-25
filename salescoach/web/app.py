@@ -197,6 +197,12 @@ def pretty_json(raw) -> str:
         return str(raw)
 
 
+def _consent_notice() -> str:
+    """The org's recording-consent notice (cloud; '' on a local install): lifecycle/settings.py."""
+    from ..lifecycle import settings
+    return settings.consent_notice()
+
+
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters.update(dt=fmt_dt, day=fmt_day, mmss=mmss, fromjson=fromjson, pct=pct,
                              step_label=step_label, human=human, pretty=pretty_json,
@@ -206,7 +212,8 @@ templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, lan
                              settings_problems=config.user_problems, auth_on=lambda: hosted.auth_enabled() or identity.cloud(),
                              hosted=hosted.is_hosted, cloud=identity.cloud,
                              me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None),
-                             me_role=lambda: getattr(identity.current_actor(required=False), "role", None))
+                             me_role=lambda: getattr(identity.current_actor(required=False), "role", None),
+                             consent_notice=_consent_notice)
 
 
 # ---- same-origin guard --------------------------------------------------------

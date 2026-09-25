@@ -51,6 +51,21 @@
     <p>Recording on this Mac, file upload{% if sources_state.folder_on %}, the watched folder{% endif %}{% for d in sources_state.extra %}, <span class="strong">{{ d.label }}</span>{% endfor %}.{% if not sources_state.chosen and not sources_state.extra %} <span class="default-note">using the default</span>{% endif %}</p>
   </section>
 
+  {% if compliance is defined %}
+  <section class="card review-row" id="compliance">
+    <div class="review-head"><h2>Recording consent and retention</h2></div>
+    <form method="post" action="/setup/compliance" class="stack">
+      <label>Consent notice{% if not is_cloud %} <span class="meta">(a cloud install shows it to every rep; this install keeps its reminder beside Start recording)</span>{% endif %}
+        <textarea name="notice" rows="3" maxlength="{{ compliance.max_notice }}" placeholder="Tell everyone at the start that the call is recorded for coaching and notes, and stop if anyone objects.">{{ compliance.notice }}</textarea>
+        <span class="hint">Shown on every call page, on My meetings and on Today, word for word. Empty shows nothing.</span></label>
+      <label>Keep calls for (days)
+        <input name="retention_days" inputmode="numeric" pattern="[0-9]*" value="{{ compliance.days or '' }}" placeholder="keep for ever">
+        <span class="hint">Calls older than this are deleted every day with their transcripts, analyses, closed loops and unsent drafts. Deals, accounts and people are never deleted. Empty keeps everything.</span></label>
+      <div class="actions"><button class="btn btn-sm btn-secondary" type="submit">Save</button></div>
+    </form>
+  </section>
+  {% endif %}
+
   <section class="card review-row" id="review-connections">
     <div class="review-head"><h2>Email, calendar and recording</h2><a class="btn btn-sm" href="/setup/connections">Details</a></div>
     <ul class="plain status-summary">

@@ -15,6 +15,9 @@
   {{ mm.viewed_by(viewed_by) }}
 </div>
 {% if readonly %}{{ mm.readonly_banner(owner_name, 'call') }}{% endif %}
+{% set notice = consent_notice() %}{% if notice %}
+<div class="callout consent-notice" role="note"><div class="eyebrow">Recording consent</div><p>{{ notice }}</p></div>
+{% endif %}
 
 {# ---- pipeline state ---------------------------------------------------- #}
 {% if call.wf_state == 'live' %}

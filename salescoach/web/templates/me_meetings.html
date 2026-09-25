@@ -12,6 +12,9 @@
   <h1>My meetings</h1>
   <div class="meta">Your calendar next to what your own recorder captured, for the last two weeks and the week ahead. Every call here is yours: it came from your calendar or your recorder account. Nothing to assign or claim.</div>
 </div>
+{% set notice = consent_notice() %}{% if notice %}
+<div class="callout consent-notice" role="note"><div class="eyebrow">Recording consent</div><p>{{ notice }}</p></div>
+{% endif %}
 
 {% if recorders %}
 <div class="actions">
