@@ -41,7 +41,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import config, hosted, identity, repo, seller
-from ..execution import policy
+from ..execution import policy, tokens
 from ..memory import patterns
 from ..orchestrator import bus, context, review, workflow
 from ..schemas.events import Event
@@ -393,10 +393,21 @@ def _default_hub():
     return hub_module.hub
 
 
-def _default_gmail_factory():
-    from ..execution.gmail import GmailProvider
-    alias = (config.load("policy").get("email") or {}).get("account", "work")
-    return GmailProvider(alias)
+def _default_gmail_factory(conn):
+    """The acting user's mailbox (execution/gmail.provider_for): their own grant in cloud mode, the
+    machine-local alias on a local install."""
+    from ..execution import gmail
+    return gmail.provider_for(conn)
+
+
+def gmail_for(request: Request, conn):
+    """app.state.gmail_factory, called the way it wants: with the connection (the default) or with
+    nothing (a test's stand-in)."""
+    from ..execution import gmail
+    return gmail.call_factory(request.app.state.gmail_factory, conn)
+
+
+NOT_CONNECTED = "Gmail is not connected for you. Connect it on your profile page (You), then try again."
 
 
 def _audio_importer():
@@ -1460,10 +1471,13 @@ def _approve(request: Request, email_id: int, mode: str, to, cc, subject, body):
         user_added = [a for a in addresses if a.lower() not in allowed]
         what = "Send" if mode == "send" else "Save to Gmail Drafts"
         try:
-            gmail = request.app.state.gmail_factory()
+            gmail = gmail_for(request, conn)
             result = policy.approve_and_send(conn, email_id, gmail, mode=mode, user_added=user_added)
         except policy.SendRefused as exc:
             return _redirect(back, err=f"{what} refused: {exc}", anchor="email")
+        except tokens.TokenError as exc:
+            return _redirect(back, err=f"{what} refused: {exc if isinstance(exc, tokens.NeedsReconsent) else NOT_CONNECTED}",
+                             anchor="email")
         except Exception as exc:
             return _redirect(back, err=f"{what} failed: {type(exc).__name__}: {exc}", anchor="email")
         if result.get("duplicate"):

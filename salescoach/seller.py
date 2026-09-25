@@ -264,8 +264,13 @@ def current_value(value):
 
 
 def display(value) -> str:
-    """A stored actor / stage / decision word as the user should read it."""
+    """A stored actor / stage / decision word as the user should read it. `user:<id>` (approved_by,
+    since Phase 3) reads "you" when it is the acting user, and stays an id for anyone else."""
     text = current_value(str(value or ""))
+    if text.startswith("user:") and text not in _WORDS:
+        actor = identity.current_actor(required=False)
+        if actor is not None and text == f"user:{actor.user_id}":
+            return "you"
     return _WORDS.get(text, text)
 
 

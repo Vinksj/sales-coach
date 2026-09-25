@@ -159,8 +159,18 @@ def run_followups(conn) -> dict:
 
 
 def _gmail():
+    """The machine-local mailbox of a local install (tests replace this)."""
     from ..execution.gmail import GmailProvider
     return GmailProvider((config.load("policy").get("email") or {}).get("account", "work"))
+
+
+def gmail_for(conn):
+    """The mailbox of the user bound to `conn`: their own grant in cloud mode (execution/gmail
+    .provider_for; raises tokens.NoToken / NeedsReconsent), the local alias otherwise."""
+    if identity.cloud():
+        from ..execution import gmail
+        return gmail.provider_for(conn)
+    return _gmail()
 
 
 def _replies_duty() -> Duty:
@@ -168,6 +178,14 @@ def _replies_duty() -> Duty:
 
     def run(conn):
         from . import replies
+        from ..execution import tokens
+        if identity.cloud():
+            # Per user, per round: the grant is the user's and may have died since the last round.
+            try:
+                gmail = gmail_for(conn)
+            except tokens.TokenError as exc:
+                return {"skipped": f"Gmail not connected: {exc}"[:300]}
+            return replies.poll(conn, gmail)
         if "gmail" not in held:
             try:
                 gmail = _gmail()
@@ -210,7 +228,7 @@ def run_recorder(conn) -> dict:
 
 def run_autosend(conn) -> dict:
     from . import autosend
-    return autosend.run_once(conn, _gmail)
+    return autosend.run_once(conn, lambda: gmail_for(conn))
 
 
 def default_duties() -> list[Duty]:
