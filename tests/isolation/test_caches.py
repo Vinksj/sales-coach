@@ -24,8 +24,7 @@ ALLOWED = {
     ("schemas.analysis", "analysis_model"): ("lenses", "elements"),
     ("setupui.forms", "timezones"): (),                      # the zoneinfo database
     ("store.db", "translate"): ("sql",),                     # the statement text
-    ("store.catalog", "_scratch"): (),                       # the tracked schema files
-    ("store.catalog", "tables"): (),
+    ("store.catalog", "tables"): (),                         # the tracked schema files
     ("store.catalog", "indexes"): (),
     ("store.catalog", "identity_tables"): (),
     ("store.catalog", "always_not_null_columns"): (),

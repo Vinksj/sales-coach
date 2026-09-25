@@ -7,6 +7,7 @@ baseline is generated from it (scripts/gen_pg_baseline.py) and checked against i
 """
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -43,39 +44,47 @@ def schema_sql() -> str:
     return "\n".join(p.read_text() for p in schema_files())
 
 
-@lru_cache(maxsize=1)
-def _scratch() -> sqlite3.Connection:
+@contextmanager
+def _scratch():
+    """A throwaway in-memory database holding the tracked schema, for ONE derivation, then closed. Never
+    shared: a cached connection belongs to the thread that made it, and the functions below are first
+    called from whichever thread translates a statement first (worker loops, the heartbeat, the web
+    threadpool), so a shared one raised sqlite3.ProgrammingError on a concurrent first use (e2e run,
+    2026-09-25). Each derivation is cached; the scratch database is not."""
     conn = sqlite3.connect(":memory:")
-    conn.executescript(schema_sql())
-    return conn
+    try:
+        conn.executescript(schema_sql())
+        yield conn
+    finally:
+        conn.close()
 
 
 @lru_cache(maxsize=1)
 def tables() -> dict:
     """{table: [Column, ...]} in declaration order, every table the tracked schema creates."""
-    conn = _scratch()
     out = {}
-    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-                                "ORDER BY name"):
-        out[name] = [Column(c[1], (c[2] or "").upper(), bool(c[3]), c[4], c[5])
-                     for c in conn.execute(f"PRAGMA table_info({name})")]
+    with _scratch() as conn:
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+                                    "ORDER BY name").fetchall():
+            out[name] = [Column(c[1], (c[2] or "").upper(), bool(c[3]), c[4], c[5])
+                         for c in conn.execute(f"PRAGMA table_info({name})")]
     return out
 
 
 @lru_cache(maxsize=1)
 def indexes() -> list:
     """Every index, explicit or implied by UNIQUE / a non-rowid PRIMARY KEY."""
-    conn = _scratch()
     out = []
-    for table in tables():
-        for _, name, unique, origin, _partial in conn.execute(f"PRAGMA index_list({table})"):
-            cols = tuple(r[2] for r in conn.execute(f"PRAGMA index_xinfo({name})") if r[2] is not None)
-            where = None
-            if origin == "c":
-                sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()[0]
-                m = re.search(r"\bWHERE\b(.*)$", sql, re.S | re.I)
-                where = " ".join(m.group(1).split()) if m else None
-            out.append(Index(name, table, bool(unique), cols, where, origin))
+    with _scratch() as conn:
+        for table in tables():
+            for _, name, unique, origin, _partial in conn.execute(f"PRAGMA index_list({table})").fetchall():
+                cols = tuple(r[2] for r in conn.execute(f"PRAGMA index_xinfo({name})") if r[2] is not None)
+                where = None
+                if origin == "c":
+                    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name=?", (name,)).fetchone()[0]
+                    m = re.search(r"\bWHERE\b(.*)$", sql, re.S | re.I)
+                    where = " ".join(m.group(1).split()) if m else None
+                out.append(Index(name, table, bool(unique), cols, where, origin))
     return out
 
 
@@ -103,18 +112,19 @@ def always_not_null_columns() -> frozenset:
 @lru_cache(maxsize=1)
 def check_counts() -> dict:
     """{table: number of CHECK constraints declared}."""
-    conn = _scratch()
     out = {}
-    for name, sql in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"):
-        out[name] = len(re.findall(r"\bCHECK\s*\(", sql, re.I))
+    with _scratch() as conn:
+        for name, sql in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"):
+            out[name] = len(re.findall(r"\bCHECK\s*\(", sql, re.I))
     return out
 
 
 @lru_cache(maxsize=1)
 def foreign_keys() -> dict:
     """{table: frozenset(parent tables its foreign keys point at)} (self references left out)."""
-    conn = _scratch()
-    return {t: frozenset(r[2] for r in conn.execute(f"PRAGMA foreign_key_list({t})") if r[2] != t) for t in tables()}
+    names = tables()
+    with _scratch() as conn:
+        return {t: frozenset(r[2] for r in conn.execute(f"PRAGMA foreign_key_list({t})") if r[2] != t) for t in names}
 
 
 def children_first(names) -> list:
