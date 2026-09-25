@@ -25,9 +25,9 @@ def _publish(conn, owner, n, priority=bus.PRIORITY_NORMAL):
     return ids
 
 
-def test_a_free_worker_claims_another_owners_event_past_a_long_backlog(db):
-    a_events = _publish(db, "u-a", bus.CLAIM_SCAN + 10, priority=bus.PRIORITY_INTERACTIVE)
-    b_event = _publish(db, "u-b", 1, priority=bus.PRIORITY_INTERACTIVE)[0]
+def test_a_free_worker_claims_another_owners_event_past_a_long_backlog(db, bus_rows):
+    a_events = _publish(bus_rows, "u-a", bus.CLAIM_SCAN + 10, priority=bus.PRIORITY_INTERACTIVE)
+    b_event = _publish(bus_rows, "u-b", 1, priority=bus.PRIORITY_INTERACTIVE)[0]
     worker1, worker2 = stores.sales(), stores.sales()
     try:
         with worker1.as_system(), worker2.as_system():
@@ -42,10 +42,10 @@ def test_a_free_worker_claims_another_owners_event_past_a_long_backlog(db):
         worker2.close()
 
 
-def test_priority_order_holds_across_owners(db):
-    low = _publish(db, "u-a", 3, priority=bus.PRIORITY_BACKFILL)
-    high = _publish(db, "u-b", 1, priority=bus.PRIORITY_INTERACTIVE)[0]
-    normal = _publish(db, "u-c", 1)[0]
+def test_priority_order_holds_across_owners(db, bus_rows):
+    low = _publish(bus_rows, "u-a", 3, priority=bus.PRIORITY_BACKFILL)
+    high = _publish(bus_rows, "u-b", 1, priority=bus.PRIORITY_INTERACTIVE)[0]
+    normal = _publish(bus_rows, "u-c", 1)[0]
     worker = stores.sales()
     try:
         with worker.as_system():

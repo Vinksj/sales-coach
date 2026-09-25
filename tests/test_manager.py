@@ -170,10 +170,16 @@ def test_access_helpers_on_the_single_user_install(db):
     assert views.log_view(db, "call", "call-x", identity.LOCAL_USER) is False
 
 
-def test_the_bus_refuses_queueing_work_on_someone_elses_object(db, monkeypatch):
+def test_the_bus_refuses_queueing_work_on_someone_elses_object(db, monkeypatch, dialect):
     monkeypatch.setattr(bus, "owner_for", lambda conn, event: "u-someone")
     monkeypatch.setenv(identity.MODE_ENV, "cloud")
     with pytest.raises(access.ReadOnly):
         bus.publish(db, Event(type="PROCESS_CALL", entity_id="call-x", dedupe_key="x:1"))
     with identity.as_actor(db, identity.LOCAL_ACTOR.as_service()):          # a background duty is not refused here
-        assert bus.publish(db, Event(type="PROCESS_CALL", entity_id="call-x", dedupe_key="x:2"))
+        if dialect == "postgres":        # ... but the database files an event only under its publisher (store/rls.py)
+            from psycopg import errors
+            with pytest.raises(errors.InsufficientPrivilege):
+                bus.publish(db, Event(type="PROCESS_CALL", entity_id="call-x", dedupe_key="x:2"))
+            db.rollback()
+        else:
+            assert bus.publish(db, Event(type="PROCESS_CALL", entity_id="call-x", dedupe_key="x:2"))

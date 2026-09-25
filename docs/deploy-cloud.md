@@ -218,7 +218,7 @@ redraft, a retry, a strategy, prep or coach-report request publish at 10; new ca
 daily duties at 0; history backfills at -10) and an `owner`. A
 claim takes the highest priority first, then the oldest id, and **skips events whose owner already has
 an event running**: on Postgres the claimer takes a session advisory lock on the owner
-(`pg_try_advisory_lock(hashtext('salescoach:owner:<id>'))`) before marking the row running and
+(`pg_try_advisory_lock(hashtext('salescoach:owner:<schema>:<id>'))`) before marking the row running and
 releases it when the event is settled, so two workers can never both run one owner's events, a rep's
 bulk import cannot take every worker while another rep waits, and an owner's events of equal priority
 are handled in id order. A deal has one owner, so a deal's events keep their order too (only an

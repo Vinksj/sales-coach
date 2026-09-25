@@ -632,8 +632,13 @@ def worker_on(app, conn=None) -> bool:
 
 
 def _chrome(request: Request, conn) -> dict:
+    # The viewer's own events (cloud mode): another rep's queue and failures are not this viewer's. On Postgres the
+    # wf_events policies say so too (store/rls.py); a local install has one user and events from before the owner
+    # column have none.
+    mine = "AND owner=? " if identity.cloud() else ""
     counts = {r["status"]: r["n"] for r in conn.execute(
-        "SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' GROUP BY status")}
+        f"SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' {mine}GROUP BY status",
+        (access.actor_id(conn),) if mine else ())}
     worker = request.app.state.worker
     current = getattr(worker, "current", None) if worker is not None else None
     if current is not None and identity.cloud():

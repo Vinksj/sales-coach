@@ -276,6 +276,16 @@ def pg_owner():
 
 
 @pytest.fixture
+def bus_rows(db, request):
+    """The connection a test files and inspects OTHER owners' bus events on. On Postgres the owner role: a user
+    session (the local user's included) reads and writes only its own wf_events rows (store/rls.py), and these
+    tests queue work for many owners at once. On SQLite the test's own connection."""
+    if not PG_URL:
+        return db
+    return request.getfixturevalue("pg_owner")
+
+
+@pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("SALES_DB", str(tmp_path / "sales.db"))
     monkeypatch.setenv("SALESCOACH_DATA", str(tmp_path / "data"))

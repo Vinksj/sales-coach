@@ -548,9 +548,9 @@ def owner_of_event(conn, event: Event) -> str:
         return str(owner)
     if not identity.cloud():
         return identity.LOCAL_USER
-    stored = conn.execute("SELECT owner FROM wf_events WHERE event_id=?", (event.event_id,)).fetchone()
-    if stored is not None and stored["owner"]:
-        return stored["owner"]              # what bus.publish resolved (the publisher's actor)
+    stored = bus.stored_owner(conn, event.event_id)
+    if stored:
+        return stored                       # what bus.publish resolved (the publisher's actor)
     raise UnknownOwner(f"{event.type} {event.entity_id!r}: no owner (nodes.owner_id, user:<id> or payload.owner_id)")
 
 
