@@ -102,12 +102,24 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Generated Postgres baseline is committed
-        run: python scripts/gen_pg_baseline.py --check
+      - name: Generated Postgres baseline and RLS policies are committed
+        run: |
+          python scripts/gen_pg_baseline.py --check
+          python scripts/gen_pg_rls.py --check
 
-      - name: Migrate an empty database and check it
+      - name: Create the app role (what a deployment does once; 0003_rls.sql grants it the tables)
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://test:test@127.0.0.1:5432/salescoach_test", autocommit=True) as c:
+              c.execute("CREATE ROLE salescoach_app LOGIN PASSWORD 'salescoach_app' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE")
+              c.execute("GRANT CONNECT ON DATABASE salescoach_test TO salescoach_app")
+          PY
+
+      - name: Migrate an empty database as the owner role and check it
         env:
-          DATABASE_URL: postgresql://test:test@127.0.0.1:5432/salescoach_test
+          DATABASE_MIGRATE_URL: postgresql://test:test@127.0.0.1:5432/salescoach_test
+          DATABASE_URL: postgresql://salescoach_app:salescoach_app@127.0.0.1:5432/salescoach_test
         run: |
           salescoach migrate
           salescoach migrate --check

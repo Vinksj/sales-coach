@@ -28,6 +28,12 @@ transaction implicitly, reads outside a transaction run in autocommit, commit()/
 and a SAVEPOINT outside a transaction opens one (its RELEASE commits). On Postgres a failed
 statement aborts the transaction: code that catches a database error must roll back (or use
 ON CONFLICT) instead of carrying on, which is the one rule the subset adds.
+
+The acting user (docs/architecture.md, "Isolation"): `conn.actor` is bound by identity.bind(); on
+Postgres bind_actor() sets the session settings app.user_id / app.mode and _on_begin() re-issues
+them transaction-locally at the start of every transaction, which is what the row-level policies
+read. `conn.as_system()` marks a connection that may run statements with nobody bound; with
+ASSERT_ACTOR on (the test suite) any other actor-less statement raises NoActorBound.
 """
 import os
 import re

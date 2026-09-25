@@ -8,11 +8,15 @@ walkthrough; Railway and Render take the same container.
 ## SQLite or Postgres
 
 A single-seller hosted install keeps the volume and SQLite exactly as described here. Anything
-multi-user (a team, managers reviewing reps' calls: coming) needs Postgres: set `DATABASE_URL` to a
-`postgresql://` URL, run `salescoach migrate` before the first start and after every upgrade
-(`salescoach migrate --check` says whether the database is behind the build), and the app serves
-from that database instead of `/data/sales.db`. The volume is still needed for settings, secrets
-and imported transcripts. See "Two backends" in [architecture.md](architecture.md).
+multi-user (a team, managers reviewing reps' calls: coming) needs Postgres and two roles: set
+`DATABASE_MIGRATE_URL` to the owner role's `postgresql://` URL (the role that owns the schema and has
+`BYPASSRLS`; it runs `salescoach migrate` before the first start and after every upgrade, and
+`salescoach migrate --check` says whether the database is behind the build) and `DATABASE_URL` to
+the app role's (`salescoach_app`: `CREATE ROLE salescoach_app LOGIN PASSWORD '…' NOSUPERUSER
+NOBYPASSRLS NOCREATEDB NOCREATEROLE; GRANT CONNECT ON DATABASE … TO salescoach_app;` once, before the
+first migrate, which grants it the tables). The app then serves from that database, as that role,
+under row-level security, instead of `/data/sales.db`. The volume is still needed for settings,
+secrets and imported transcripts. See "Two backends" and "Isolation" in [architecture.md](architecture.md).
 
 ## Why not Vercel
 

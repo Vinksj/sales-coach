@@ -214,8 +214,9 @@ bridge (`world.db`), the `user_version` migrations and table rebuilds (marked
 
 **Who is acting.** `salescoach/identity.py` holds the acting user: an `Actor(user_id, mode, role,
 profile)` in a contextvar, bound to the store connection as `conn.actor` and, on Postgres, to the
-session settings `app.user_id` / `app.mode` (`PostgresConnection.bind_actor`; re-issued per
-transaction and checked against RLS in Phase 2, hook `_on_begin`). `stores.sales()` binds whatever
+session settings `app.user_id` / `app.mode` (`PostgresConnection.bind_actor` for the session,
+`_on_begin` transaction-locally at the start of every transaction; the row-level policies read
+them, see "Isolation" below). `stores.sales()` binds whatever
 actor is current when it opens. Two modes, `SALESCOACH_MODE`:
 
 - `local` (default): the one user, `"local"`, is implicit everywhere, so a CLI command, a test, a
@@ -271,8 +272,8 @@ participants, artifacts, claims, assessments, agent_runs, observations, loops, e
 / slot fills / autosend log, replies and proposals, follow-up decisions, the deal tables, embeddings,
 pattern observations, nudges, coach state, and calls/deals/loops/edges/events/sources under their
 node) take the parent's owner through the `app_child_owner()` BEFORE INSERT trigger on Postgres,
-which refuses a mismatch with an integrity error. Phase 1 scopes WRITES and the reads of the tables
-that were re-keyed; the other reads still see every row until Phase 2's row-level security.
+which refuses a mismatch with an integrity error. Writes and the re-keyed tables' reads are scoped
+in the code; every other read is scoped by the database ("Isolation", below).
 
 | Class | Tables |
 |---|---|
@@ -299,6 +300,103 @@ is the acting user's (`user_id` from `conn.actor`):
 | `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
 | `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard) | `setup:card_dismissed` (the Today card) |
 | `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
+
+## Isolation
+
+**The database enforces visibility.** On Postgres every table has row-level security and the app
+connects as a role the policies apply to, so a query without an owner clause returns the acting
+user's rows and nothing else (`tests/isolation/test_deliberate_leak.py` removes owner clauses on
+purpose and proves it). SQLite has no policies and needs none: one file is one user.
+
+**The settings contract.** Two session settings, and only two: `app.user_id` (the acting user's id;
+`''` for nobody) and `app.mode` (`interactive` = a person at the keyboard, `service` = a background
+duty). `PostgresConnection.bind_actor` sets both for the session from `conn.actor` (and
+transaction-locally too when a transaction is open, so `as_user` mid-transaction is seen at once);
+`_on_begin` re-issues them transaction-locally at the start of **every** transaction (an explicit
+`BEGIN`, a `SAVEPOINT` outside one, the implicit one a DML statement opens, `serialize()`,
+`lock_rows()`), because the code commits mid-function and a `SET LOCAL` issued once would die with
+the first `COMMIT`. A pooled connection is reset to `''` when it is returned. Nothing else may `SET`
+these. An unset `app.user_id` sees no OWNED row and cannot write one.
+
+**The debug assertion.** With `store/db.ASSERT_ACTOR` on (the whole test suite;
+`SALESCOACH_ASSERT_ACTOR=1` elsewhere), a statement on Postgres with `conn.actor is None` raises
+`db.NoActorBound` unless the connection is inside `conn.as_system()` (or has `conn.system = True`).
+In production such a statement is safe but silent (it sees nothing); the assertion is what turns a
+forgotten `identity.session()` in a background thread, or a route the gate let through as nobody,
+into a failing test. The system scopes, all deliberate: the migrator (`pgmigrate.apply`), the
+store's own version check and the local-user bootstrap (`stores._postgres` / `sales()`),
+`identity._load` (reading the users row that becomes the actor), the `ActorGate`'s lookup,
+`/health`, the scheduler's and the embed loop's `users.active()` listing, and the worker's
+connection (the claim loop runs as nobody; `workflow.handle` binds the event's owner, learnt through
+`repo.owner_of` → `app_owner_of()`, a SECURITY DEFINER function that returns an owner id and nothing
+else).
+
+**The two roles.** `DATABASE_URL` names the **app role**, `salescoach_app`: `LOGIN`, no superuser,
+no `BYPASSRLS`, no `CREATE`; it has `SELECT/INSERT/UPDATE/DELETE` on the tables, `USAGE` on the
+sequences and only `SELECT` on `schema_migrations`. `DATABASE_MIGRATE_URL` names the **owner role**:
+it owns every table and the helper functions, runs `salescoach migrate` and is never used at
+runtime; it must have `BYPASSRLS` (or be a superuser) so that a migration sees every row and the
+SECURITY DEFINER helpers can read the directory and `nodes`. `pgmigrate.apply` runs with
+`row_security = off`, so an owner role without the bypass fails a migration loudly instead of
+silently touching no rows. The test suite creates `salescoach_app` in the container at session start
+and hands the app that URL (`tests/conftest.py`); a deployment creates it once:
+`CREATE ROLE salescoach_app LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+GRANT CONNECT ON DATABASE … TO salescoach_app;` then `salescoach migrate` grants the rest
+(`store/pg/0003_rls.sql` refuses to apply if the role is missing or bypasses RLS).
+
+**The policies**, generated from `store/tenancy.py` by `store/rls.py` (`scripts/gen_pg_rls.py
+--write`; `tests/isolation/test_rls_generated.py` fails when the committed `0003_rls.sql` differs).
+The helpers: `app_actor_id()` (the setting, NULL when empty), `app_mode_ok()` (a mode is bound),
+`app_actor_active()` / `app_actor_role()` (the acting user's row exists and is `active`, SECURITY
+DEFINER so the `users` policies cannot recurse), `app_visible_owners()` (the acting user's id plus
+the ids of every member of every team they manage, `team_managers` + `users.team_id`, read live so a
+demotion or a disabling takes effect on the next query; empty for nobody, for an inactive user and
+for an admin who manages no team), `app_can_write(owner)` (the row is the acting user's own, they are
+active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, and `app_child_owner()` (the
+0002 trigger, made SECURITY DEFINER so it sees another user's parent row and refuses the mismatch).
+
+| Class | RLS | SELECT | INSERT / UPDATE / DELETE |
+|---|---|---|---|
+| OWNED | enabled + **forced** | `owner_id = ANY(app_visible_owners())`; `nodes` also lets any active user read a NULL owner (the directory's account and person nodes) | `app_can_write(owner_id)`: the owner, active, in a bound mode. A manager reads and never writes a rep's row; `UPDATE` cannot move a row to another owner (`WITH CHECK`) |
+| ORG: `accounts`, `people` | enabled | any active user | any active user in a bound mode (every rep contributes to the shared directory) |
+| ORG: `users`, `teams`, `team_managers` | enabled | every connection (a connection reads `users` to learn who it is) | admins; a user may `UPDATE` their own `users` row, and `trg_users_guard` refuses a non-admin changing `id`, `role`, `team_id` or `status`; the first row of an empty `users` may be inserted by anyone (the local user, the bootstrap admin) |
+| SYSTEM: `wf_events` | enabled | every connection | every connection: the bus carries ids and step names, never content; interactive requests publish, the worker claims as nobody. Whose event it is, is decided in code (`event_retry` 404s another user's) |
+| SYSTEM: `state` | enabled | any active user | admins and service-mode duties |
+| SYSTEM: `user_state`, `user_speaker_labels` | enabled | own rows (`user_id = app_actor_id()`) | own rows |
+| SYSTEM: `schema_migrations` | enabled | every connection | nobody (no privilege) |
+
+Managers get **SELECT only**; "a manager can never send" is also a hard check in the code:
+`execution/policy.approve_and_send`, `mark_sent_manually` and `acknowledge_not_sent` raise
+`SendRefused` unless `conn.actor` is the email's owner acting interactively (the local install's
+auto-send executor, `approved_by='policy:…'`, is the owner's own service duty and is refused in cloud
+mode). The web layer's `ActorGate` answers a request with no valid session before any store is
+opened (a page is sent to `/login`, anything else gets 401), a session for a user who is not
+`active` gets 403, and open paths (`/login`, `/logout`, `/health`, `/static`, the webhook) pass with
+nobody bound and read the store as system.
+
+**Adding a table.** Classify it in `tenancy.TABLE_CLASS` (the catalog lint fails until you do). OWNED:
+give it `owner_id TEXT NOT NULL DEFAULT 'local'` with an index in the SQLite files, the Postgres
+default `NULLIF(current_setting('app.user_id', true), '')` and, when its owner is a parent row's,
+an entry in `tenancy.OWNER_PARENTS` with the `app_child_owner` trigger; then write the migration's
+policy block with `store/rls.table_block(table)` (the generator's output for that table) in a new
+numbered file, since 0003 is applied once. `tests/isolation/factories.py` derives the matrix row
+from the schema; if a column needs a value the rules cannot derive, add it to `factories.VALUES`, or
+the matrix fails with `NoFactory`. ORG / SYSTEM tables need a policy set in `rls.ORG_POLICIES` /
+`rls.SYSTEM_POLICIES`. Grants for new tables come from `ALTER DEFAULT PRIVILEGES` set in 0003.
+
+**Adding a route.** A route with a path parameter must be placed in
+`tests/isolation/test_route_crawl.py`: either its parameter names resolve to rep A's objects (add an
+object of the new kind to the `objects` fixture) so the crawl requests it as rep B and demands a 404,
+or the route is listed in `NOT_A_USERS_OBJECT` with the reason it is not one user's object. The
+inventory test fails until one of the two is done. Look objects up through the store as the acting
+user and let a missing row be a 404; never a 403 (it confirms the object exists) and never an empty
+200.
+
+**Caches.** Every `functools.lru_cache` in `salescoach/` is allow-listed in
+`tests/isolation/test_caches.py` with the parameters its key is made of; none is keyed on the acting
+user or reads the store. `intel/methodology._library` is keyed on the three files' paths and stamps
+plus `methodology.settings_version()`, the hook for the day methodology settings live in the
+database and a file stamp would go stale across processes.
 
 ## Prompts
 
