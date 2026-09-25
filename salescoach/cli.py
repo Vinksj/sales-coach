@@ -18,6 +18,9 @@
   salescoach deal add|list, person add
   salescoach models pull REPO             explicit model download (never implicit)
   salescoach jarvis sync|bootstrap
+  salescoach import-sqlite PATH --as EMAIL [--dry-run]   a local install into an empty cloud org
+  salescoach export --user EMAIL [--out FILE]  one user's own data, a zip of JSON files (admins)
+  salescoach retention [--dry-run]        what the org's retention.days would delete (or deletes it)
   salescoach status
 """
 import argparse
@@ -380,6 +383,18 @@ def cmd_migrate(args):
         conn.close()
 
 
+def cmd_import_sqlite(args):
+    """A single-user SQLite install into an EMPTY Postgres org as the user with that email
+    (salescoach/lifecycle/importer.py; docs/deploy-cloud.md, "Launch checklist")."""
+    from .lifecycle import importer, owner
+    try:
+        report = importer.run(args.path, args.as_email, url=args.url, dry_run=args.dry_run, log=print)
+    except (importer.ImportRefused, owner.NoOwnerURL) as exc:
+        print(f"import-sqlite: {exc}", file=sys.stderr)
+        return 2
+    return 0 if (report.committed or report.dry_run) else 1
+
+
 def _worker_listening(port: int = 8140) -> bool:
     import socket
     try:
@@ -520,6 +535,14 @@ def main(argv=None):
     mg.add_argument("--check", action="store_true", help="exit 1 when the database is behind this build")
     mg.add_argument("--url", help="the postgresql:// URL to migrate (default: the environment)")
     mg.set_defaults(fn=cmd_migrate)
+
+    im = sub.add_parser("import-sqlite", help="import a single-user SQLite install into an empty Postgres org")
+    im.add_argument("path", help="the local install's sales.db (never written: a migrated copy is read)")
+    im.add_argument("--as", dest="as_email", required=True, metavar="EMAIL",
+                    help="the user the data becomes (created as an active rep when missing)")
+    im.add_argument("--dry-run", action="store_true", help="do everything, print the counts, roll back")
+    im.add_argument("--url", help="the owner role's postgresql:// URL (default: DATABASE_MIGRATE_URL)")
+    im.set_defaults(fn=cmd_import_sqlite)
 
     from . import plugins
     plugins.register_cli(sub)
