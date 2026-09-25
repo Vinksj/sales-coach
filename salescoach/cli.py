@@ -6,6 +6,7 @@
   salescoach health                       the container health check for whatever role this is
   salescoach payloads export              raw payloads (cloud mode) to files, for support
   salescoach password-hash                a SALESCOACH_PASSWORD_HASH for the password on stdin
+  salescoach tokens new-key|rotate        the OAuth token key ring (plugins/admin.py; docs/deploy-cloud.md)
   salescoach call --title "NWP weekly"    capture a call in the foreground; Ctrl-C ends it
   salescoach import-audio FILE ...        process an existing recording
   salescoach import-text FILE ...         process a text transcript (Granola export, paste)
@@ -363,14 +364,18 @@ def cmd_migrate(args):
     try:
         current, expected = pgmigrate.check(conn)
         if args.check:
+            stale = pgmigrate.stale_repeatables(conn)
             state = "up to date" if current == expected else "BEHIND" if current < expected else "AHEAD of this build"
             print(f"postgres: schema at version {current}, this build expects {expected}: {state}")
-            return 0 if current == expected else 1
+            for name in stale:
+                print(f"postgres: {name}.sql (row-level security) differs from this build's: run `salescoach migrate`")
+            return 0 if current == expected and not stale else 1
         applied = pgmigrate.apply(conn, log=print)
         current, expected = pgmigrate.check(conn)
+        stale = pgmigrate.stale_repeatables(conn)
         print(f"postgres: schema at version {current}" + ("" if applied else " (nothing to apply)"))
         stores.forget_verified()
-        return 0 if current == expected else 1
+        return 0 if current == expected and not stale else 1
     finally:
         conn.close()
 

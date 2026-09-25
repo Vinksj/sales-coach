@@ -8,10 +8,9 @@
 --   org_settings        the settings overlay (what user_dir()/<name>.yaml is locally), versioned
 --   raw_payloads        OWNED: what a recorder, an upload or a paste delivered, before interpretation
 --
--- Numbering: 0003 is Phase 2 (row-level security) and 0004 is Phase 3 (Google sign-in); they were written
--- in parallel with this file. raw_payloads is an OWNED table created AFTER 0003, so the merge that brings
--- 0003 in must also give raw_payloads its FORCE ROW LEVEL SECURITY and owner policy (a follow-up numbered
--- file, or this one if 0003 lands first): tests/isolation's live lint will say so.
+-- Row-level security for both tables (raw_payloads FORCED with the OWNED policies, org_settings read by
+-- every connection and written by admins) is in the repeatable store/pg/rls.sql, applied after every
+-- numbered step (store/pgmigrate.py), so a table created here is policed like one created in 0001.
 
 -- ---- the bus: priority and owner --------------------------------------------------------------
 ALTER TABLE wf_events ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;

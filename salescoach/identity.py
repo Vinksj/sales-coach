@@ -22,7 +22,7 @@ Two modes (SALESCOACH_MODE):
 
 On Postgres the binding is the session settings app.user_id / app.mode, set for the session by
 bind() and re-issued transaction-locally at the start of every transaction
-(store/db.py PostgresConnection._on_begin), which the row-level policies (store/pg/0003_rls.sql)
+(store/db.py PostgresConnection._on_begin), which the row-level policies (store/pg/rls.sql)
 read. A connection with no actor sees and writes nothing OWNED; in the test suite it also trips
 db.NoActorBound unless the code marked the connection conn.as_system() on purpose.
 """

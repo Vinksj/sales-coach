@@ -1,9 +1,25 @@
 """Row-level security, generated from the table classification in tenancy.py.
 
-store/pg/0003_rls.sql is `generate()` written to disk (scripts/gen_pg_rls.py); tests/isolation/
+store/pg/rls.sql is `generate()` written to disk (scripts/gen_pg_rls.py); tests/isolation/
 test_rls_generated.py fails when the file and the generator disagree, so the SQL and the
 classification cannot drift: a table that changes class is re-policied by regenerating, and a
 table nobody classified never gets to Postgres (tests/isolation/test_catalog_lint.py).
+
+rls.sql is a REPEATABLE step, not a numbered migration (store/pgmigrate.py): `salescoach migrate`
+applies it after every numbered step whenever its sha256 differs from the one recorded in
+schema_repeatables, and stores.sales() refuses to serve a schema whose recorded checksum is not this
+build's. A numbered file can only police the tables that existed when it ran; a table created by a
+LATER migration (sessions, invites, oauth_tokens in 0004; org_settings, raw_payloads in 0005) would
+have no policy at all. So the file is idempotent end to end and describes the WHOLE policy set:
+
+  * a leading DO block drops every policy on every table of the current schema, so a policy that was
+    removed or renamed never lingers;
+  * functions are CREATE OR REPLACE, triggers are dropped before they are created;
+  * every classified table gets ENABLE ROW LEVEL SECURITY, then FORCE (OWNED) or NO FORCE (ORG,
+    SYSTEM), then its policies from scratch;
+  * the app role's grants are re-issued.
+It runs in one transaction under the migration lock, so a reader sees the old policy set or the new
+one, never a table with none.
 
 The contract (docs/architecture.md, "Isolation"):
 
@@ -31,13 +47,34 @@ Policies, per class:
                    the shared directory). users, teams, team_managers: readable by every connection
                    (a connection has to read `users` to learn who it is); writable by admins, and
                    a user may update their own users row except id, role, team_id and status
-                   (trg_users_guard); the first user of an empty directory may be inserted by
+                   (trg_users_guard; the one exception is accepting their own invite, invited ->
+                   active, at their first sign-in); the first user of an empty directory may be inserted by
                    anyone (the bootstrap).
   SYSTEM  wf_events: open to every connection of the app role (the bus carries ids and step names,
                    never content; the web layer publishes from interactive requests, the worker
                    claims with no user bound). state: readable by any active user, written by
-                   admins and service-mode duties. user_state and user_speaker_labels: the acting
-                   user's own rows. schema_migrations: readable; the app role has no write privilege.
+                   admins and service-mode duties; the process heartbeats (keys 'ops:%': host, pid,
+                   timestamps, counts) are also read and written with nobody bound, because the
+                   worker and scheduler processes that write them act for nobody and /health and
+                   the container health check read them before anyone signs in.
+                   user_state and user_speaker_labels: the acting user's own rows.
+                   schema_migrations, schema_repeatables: readable; the app role has no write privilege.
+          sessions: open to the app role. The AuthGate resolves a session by its id BEFORE any
+                   actor exists, so no owner-based rule can apply; the id column holds sha256 of the
+                   random session id (salescoach/sessions.py), so the row is found only by someone
+                   who already holds the cookie's secret, and a leaked table cannot be replayed.
+                   The same machinery-keyed-by-an-unguessable-value reasoning as wf_events.
+          invites: SELECT and UPDATE open (the Google callback reads the allow-list and marks the
+                   invite accepted with nobody bound yet); INSERT and DELETE by admins only.
+          oauth_tokens: the acting user's own grant (user_id = app_actor_id(), active), or any row
+                   for an active admin (disabling a user revokes their grants; the admin page shows
+                   link status). Nobody bound reads nothing. `salescoach tokens rotate` runs as the
+                   owner role (DATABASE_MIGRATE_URL) or as an admin.
+          org_settings: SELECT open to the app role: config.load() reads the overlay from every
+                   thread, including before any actor exists (the scheduler's intervals, the sign-in
+                   page's brand, process start); it holds no per-user data and no secrets (those stay
+                   in the environment). Written by active admins only (the setup wizard, which is
+                   admin-only in cloud mode).
 
 The SECURITY DEFINER helpers read users / team_managers / nodes as the owner role, which is why
 those tables are ENABLED but not FORCED (a policy that reads its own table would recurse) and why
@@ -49,15 +86,31 @@ from pathlib import Path
 from . import tenancy
 
 APP_ROLE = "salescoach_app"
-OUT = Path(__file__).with_name("pg") / "0003_rls.sql"
+NAME = "rls"                               # its row in schema_repeatables
+OUT = Path(__file__).with_name("pg") / "rls.sql"
 
 HEADER = f"""-- GENERATED by scripts/gen_pg_rls.py from store/tenancy.py. Do not edit: change the classification
 -- and regenerate (tests/isolation/test_rls_generated.py fails when this file and the generator differ).
--- Postgres migration 0003 (2026-09-25): row-level security. Session settings: app.user_id and
--- app.mode ('interactive' | 'service'), set by store/db.py PostgresConnection.bind_actor / _on_begin.
--- Roles: the OWNER role applies this file (it must have BYPASSRLS, see docs/architecture.md
--- "Isolation"); the APP role {APP_ROLE} is what the running app connects as and is subject to
--- every policy below. Policy summary per class: store/rls.py.
+-- Postgres REPEATABLE step (store/pgmigrate.py): row-level security. Applied after every numbered
+-- migration whenever this file's sha256 differs from the one in schema_repeatables, in one transaction,
+-- so it must stay idempotent: every policy in the schema is dropped first and re-created below.
+-- Session settings: app.user_id and app.mode ('interactive' | 'service'), set by store/db.py
+-- PostgresConnection.bind_actor / _on_begin. Roles: the OWNER role applies this file (it must have
+-- BYPASSRLS, see docs/architecture.md "Isolation"); the APP role {APP_ROLE} is what the running app
+-- connects as and is subject to every policy below. Policy summary per class: store/rls.py.
+
+"""
+
+DROP_POLICIES = """-- ---- start clean: every policy on every table of this schema -------------------------------------
+-- The policy set below is complete; anything a previous version of this file created and this one does not
+-- (a removed or renamed policy) must not survive.
+DO $$
+DECLARE p record;
+BEGIN
+  FOR p IN SELECT policyname, tablename FROM pg_policies WHERE schemaname = current_schema() LOOP
+    EXECUTE format('DROP POLICY %I ON %I.%I', p.policyname, current_schema(), p.tablename);
+  END LOOP;
+END $$;
 
 """
 
@@ -74,6 +127,7 @@ BEGIN
   EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO {APP_ROLE}', current_schema());
   EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO {APP_ROLE}', current_schema());
   EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %I.schema_migrations FROM {APP_ROLE}', current_schema());
+  EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %I.schema_repeatables FROM {APP_ROLE}', current_schema());
   EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {APP_ROLE}', current_user, current_schema());
   EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO {APP_ROLE}', current_user, current_schema());
 END $$;
@@ -129,21 +183,50 @@ CREATE OR REPLACE FUNCTION app_owner_of(node text) RETURNS text LANGUAGE sql STA
   SELECT owner_id FROM nodes WHERE id = node
 $$;
 
+-- Model spend since `since` (budget.py, Phase 6), numbers only. The org's daily cap must count every rep's
+-- runs, which no rep may read; the Usage panel under Settings (admin-only in cloud mode) lists spend per
+-- user. Both answer only to an active user; per owner, an admin gets every owner and anyone else the owners
+-- they may read (app_visible_owners). A sum per owner, never a row of agent_runs.
+CREATE OR REPLACE FUNCTION app_org_spend_since(since text) RETURNS double precision
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT CASE WHEN app_actor_active() THEN COALESCE(SUM(cost_usd), 0)::double precision ELSE 0 END
+  FROM agent_runs WHERE started_at >= since
+$$;
+
+CREATE OR REPLACE FUNCTION app_spend_by_owner_since(since text)
+RETURNS TABLE(owner_id text, spent double precision, runs bigint, unpriced bigint, deferred bigint)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT r.owner_id, COALESCE(SUM(r.cost_usd), 0)::double precision, COUNT(*),
+         SUM(CASE WHEN r.cost_usd IS NULL AND r.status = 'ok' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN r.error LIKE 'budget_deferred:%' THEN 1 ELSE 0 END)
+  FROM agent_runs r
+  WHERE r.started_at >= since AND app_actor_active()
+    AND (app_actor_role() = 'admin' OR r.owner_id = ANY (app_visible_owners()))
+  GROUP BY r.owner_id ORDER BY r.owner_id
+$$;
+
 -- The child-owner trigger (0002) reads the parent row; as the app role it would see nothing of another user's
 -- parent and let a mismatched child through. As the owner it sees every parent and refuses the mismatch.
 ALTER FUNCTION app_child_owner() SECURITY DEFINER;
 
--- A user may edit their own profile; only an admin changes who someone is in the org.
+-- A user may edit their own profile; only an admin changes who someone is in the org. The one status change a
+-- user makes themselves is accepting their own invite at their first Google sign-in (invited -> active,
+-- web/auth.py _resolve_user); every other status change is an admin's. The guard constrains the APP role
+-- (session_user: current_user is the definer in here); the owner role, an operator at psql or the migrator,
+-- bypasses row security altogether and is not the app.
 CREATE OR REPLACE FUNCTION app_users_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-  IF app_actor_role() IS DISTINCT FROM 'admin' AND (
+  IF session_user = '@APP_ROLE@' AND app_actor_role() IS DISTINCT FROM 'admin' AND (
        NEW.id IS DISTINCT FROM OLD.id OR NEW.role IS DISTINCT FROM OLD.role
-       OR NEW.team_id IS DISTINCT FROM OLD.team_id OR NEW.status IS DISTINCT FROM OLD.status) THEN
+       OR NEW.team_id IS DISTINCT FROM OLD.team_id
+       OR (NEW.status IS DISTINCT FROM OLD.status
+           AND NOT (OLD.status = 'invited' AND NEW.status = 'active' AND OLD.id = app_actor_id()))) THEN
     RAISE EXCEPTION 'only an admin may change a user''s id, role, team or status'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
   RETURN NEW;
 END $$;
+DROP TRIGGER IF EXISTS trg_users_guard ON users;
 CREATE TRIGGER trg_users_guard BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION app_users_guard();
 
 """
@@ -158,6 +241,10 @@ ACTIVE = "app_actor_active()"
 ACTIVE_WRITE = "app_actor_active() AND app_mode_ok()"
 ADMIN = "app_actor_role() = 'admin'"
 ANY = "true"
+ACTIVE_ADMIN_WRITE = f"{ACTIVE_WRITE} AND {ADMIN}"
+OWN_GRANT = f"(user_id = app_actor_id() AND app_actor_active()) OR {ADMIN}"
+SERVICE_OR_ADMIN = f"{ACTIVE_WRITE} AND ({ADMIN} OR current_setting('app.mode', true) = 'service')"
+HEARTBEAT = "key LIKE 'ops:%'"                 # ops.py: process heartbeats and the scheduler leader row
 
 # {table: (select, insert, update, delete)}; None = no policy for that command (the command is refused,
 # because RLS is enabled and no policy permits it).
@@ -170,12 +257,18 @@ ORG_POLICIES = {
 }
 SYSTEM_POLICIES = {
     "wf_events": (ANY, ANY, ANY, ANY),
-    "state": (ACTIVE, f"{ACTIVE_WRITE} AND ({ADMIN} OR current_setting('app.mode', true) = 'service')",
-              f"{ACTIVE_WRITE} AND ({ADMIN} OR current_setting('app.mode', true) = 'service')",
-              f"{ACTIVE_WRITE} AND ({ADMIN} OR current_setting('app.mode', true) = 'service')"),
+    "state": (f"{ACTIVE} OR {HEARTBEAT}", f"{SERVICE_OR_ADMIN} OR {HEARTBEAT}",
+              f"{SERVICE_OR_ADMIN} OR {HEARTBEAT}", SERVICE_OR_ADMIN),
     "user_state": ("user_id = app_actor_id() AND app_actor_active()",) * 4,
     "user_speaker_labels": ("user_id = app_actor_id() AND app_actor_active()",) * 4,
     "schema_migrations": (ANY, None, None, None),
+    "schema_repeatables": (ANY, None, None, None),
+    # Phase 3. The reasons are in the module docstring.
+    "sessions": (ANY, ANY, ANY, ANY),
+    "invites": (ANY, ADMIN, ANY, ADMIN),
+    "oauth_tokens": (OWN_GRANT,) * 4,
+    # Phase 6.
+    "org_settings": (ANY, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE),
 }
 
 
@@ -197,8 +290,9 @@ def table_block(table: str) -> str:
     select, insert, update, delete = policies_for(table)
     lines = [f"-- {table}: {kind}",
              f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;"]
-    if kind == tenancy.OWNED:
-        lines.append(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;")
+    # FORCE for OWNED; NO FORCE otherwise, stated rather than assumed, so a table that stops being OWNED
+    # loses it when this file is applied again.
+    lines.append(f"ALTER TABLE {table} {'' if kind == tenancy.OWNED else 'NO '}FORCE ROW LEVEL SECURITY;")
     lines.append(f"CREATE POLICY {table}_select ON {table} FOR SELECT USING ({select});")
     if insert is not None:
         lines.append(f"CREATE POLICY {table}_insert ON {table} FOR INSERT WITH CHECK ({insert});")
@@ -216,7 +310,7 @@ def generate() -> str:
     for table, policies in list(ORG_POLICIES.items()) + list(SYSTEM_POLICIES.items()):
         if tenancy.TABLE_CLASS.get(table) not in (tenancy.ORG, tenancy.SYSTEM):
             raise ValueError(f"store/rls.py names {table} which tenancy.py does not classify ORG or SYSTEM")
-    parts = [HEADER, ROLE_BOOTSTRAP, FUNCTIONS]
+    parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE)]
     for kind, title in ((tenancy.OWNED, "OWNED: one rep's work; the owner writes, the owner's managers read"),
                         (tenancy.ORG, "ORG: the shared directory"),
                         (tenancy.SYSTEM, "SYSTEM: the machinery")):

@@ -1,8 +1,9 @@
 -- Postgres migration 0004 (2026-09-25): Phase 3, Google sign-in. Hand-written; the SQLite side is
 -- store/migrate.py migration 8 and the tail of store/schema-sales.sql, which tests/test_schema_parity.py
--- checks a database migrated through here against. Numbered after 0003 (row-level security, built on
--- the `cloud` branch in parallel): the three tables here are SYSTEM (store/tenancy.py), bookkeeping
--- about a user rather than a rep's work, so no policy applies to them.
+-- checks a database migrated through here against. The three tables here are SYSTEM (store/tenancy.py),
+-- bookkeeping about a user rather than a rep's work; their row-level policies are in the repeatable
+-- store/pg/rls.sql, applied after every numbered step (store/pgmigrate.py). sessions.id holds sha256 of
+-- the session id, never the id (salescoach/sessions.py).
 
 -- Which users row made an admin change (invite, role, team, disable). engine._emit leaves it NULL.
 ALTER TABLE events ADD COLUMN actor_user_id TEXT;

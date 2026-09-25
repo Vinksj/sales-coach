@@ -144,7 +144,7 @@ def create_call(conn, *, source, title=None, deal_id=None, lang_mode="auto", aud
 
 def owner_of(conn, node_id: str) -> Optional[str]:
     """Who owns a call, deal or loop (nodes.owner_id); None for an unknown id or a directory node. On
-    Postgres through app_owner_of() (store/pg/0003_rls.sql), which answers with nobody bound: the worker
+    Postgres through app_owner_of() (store/pg/rls.sql), which answers with nobody bound: the worker
     asks before it can bind the owner. An id, never content."""
     if conn.dialect == "postgres":
         return conn.execute("SELECT app_owner_of(?)", (node_id,)).fetchone()[0]

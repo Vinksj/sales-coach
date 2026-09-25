@@ -544,7 +544,7 @@ class PostgresConnection(Connection):
 
     def bind_actor(self, actor) -> None:
         """conn.actor, and the session settings app.user_id / app.mode that the owner_id column defaults
-        (store/pg/0002_owner.sql) and the row-level policies (0003_rls.sql) read. An unbound connection
+        (store/pg/0002_owner.sql) and the row-level policies (store/pg/rls.sql) read. An unbound connection
         sets '' so that NULLIF(current_setting('app.user_id', true), '') is NULL: nobody sees an OWNED
         row and an owned INSERT is refused, so nobody's data is ever read or written as somebody's.
         Inside an open transaction the transaction-local value is set too (as_user mid-transaction)."""

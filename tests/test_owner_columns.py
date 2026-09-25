@@ -30,7 +30,7 @@ def _as(conn, actor):
 
 @pytest.fixture(autouse=True)
 def two_users(db, dialect):
-    """Postgres: the row-level policies (store/pg/0003_rls.sql) give an id with no active users row no
+    """Postgres: the row-level policies (store/pg/rls.sql) give an id with no active users row no
     rows at all, so A and B exist. SQLite holds one user per file and has no policies: nothing to do."""
     if dialect == "postgres":
         for actor, name in ((A, "Alpha"), (B, "Beta")):

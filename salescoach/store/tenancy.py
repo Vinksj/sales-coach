@@ -22,7 +22,12 @@ Decisions worth a line:
   * users, teams and team_managers are the directory of who is here: ORG, like accounts and people.
   * nodes.owner_id is NULL for account and person nodes (the shared directory's nodes) and NOT NULL
     for call, deal and loop nodes (a CHECK says so); the rows in accounts/people themselves are ORG.
-  * schema_migrations exists on Postgres only (SQLite tracks its version in PRAGMA user_version).
+  * schema_migrations and schema_repeatables exist on Postgres only (SQLite tracks its version in
+    PRAGMA user_version and has no row-level security to re-apply).
+  * sessions, invites and oauth_tokens (Phase 3) are SYSTEM: bookkeeping about a user (who is signed
+    in, who may sign in, a user's Google grant), never a rep's work; store/rls.py polices each.
+  * org_settings (Phase 6) is SYSTEM: the org's settings overlay, one row per settings file; raw_payloads
+    is OWNED: what one user's source delivered (top-level: no parent, no trigger).
 """
 
 OWNED = "OWNED"
@@ -45,7 +50,7 @@ TABLE_CLASS = {
     "field_provenance": OWNED, "memory_conflicts": OWNED,
     # -- machinery
     "wf_events": SYSTEM, "state": SYSTEM, "user_state": SYSTEM, "user_speaker_labels": SYSTEM,
-    "schema_migrations": SYSTEM,
+    "schema_migrations": SYSTEM, "schema_repeatables": SYSTEM,
     "sessions": SYSTEM, "invites": SYSTEM, "oauth_tokens": SYSTEM,    # Phase 3: about a user, never a rep's work
     # -- execution plugin
     "followup_decisions": OWNED, "email_replies": OWNED, "reply_proposals": OWNED,
@@ -58,13 +63,13 @@ TABLE_CLASS = {
     "learned_patterns": OWNED, "learning_proposals": OWNED,
     # -- live coach plugin
     "nudges": OWNED, "coach_state": OWNED,
-    # -- Phase 6 (appended here; the only edit this phase makes to this file): the org settings overlay is
-    #    machinery, a raw payload is what one user's source delivered (top-level: no parent, no trigger)
+    # -- Phase 6: the org settings overlay is machinery; a raw payload is what one user's source delivered
     "org_settings": SYSTEM, "raw_payloads": OWNED,
 }
 
 # Tables that exist on one backend only, and why.
-POSTGRES_ONLY = {"schema_migrations": "migration ledger; SQLite uses PRAGMA user_version"}
+POSTGRES_ONLY = {"schema_migrations": "migration ledger; SQLite uses PRAGMA user_version",
+                 "schema_repeatables": "checksums of the repeatable steps (store/pg/rls.sql); SQLite has no RLS"}
 SQLITE_ONLY = {"sqlite_sequence": "SQLite's AUTOINCREMENT bookkeeping"}
 
 

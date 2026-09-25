@@ -107,7 +107,7 @@ jobs:
           python scripts/gen_pg_baseline.py --check
           python scripts/gen_pg_rls.py --check
 
-      - name: Create the app role (what a deployment does once; 0003_rls.sql grants it the tables)
+      - name: Create the app role (what a deployment does once; rls.sql grants it the tables)
         run: |
           python - <<'PY'
           import psycopg
