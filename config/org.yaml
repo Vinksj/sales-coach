@@ -1,0 +1,11 @@
+# Org-wide compliance settings (Phase 8; salescoach/lifecycle/settings.py). In a cloud install an admin edits
+# them in Settings (Review: "Recording consent and retention") and they live in org_settings; on a local
+# install a copy of this file in your settings folder overrides it.
+retention:
+  days: null            # delete calls older than this many days, with everything that hangs off them
+                        # (salescoach/lifecycle/retention.py); null keeps everything for ever
+  batch: 100            # calls per transaction (each batch writes one audit event)
+  interval_hours: 24    # how often the scheduler's retention duty runs
+consent:
+  notice: ""            # cloud: shown on every call page, on My meetings and on Today. A local install keeps
+                        # its own reminder next to Start recording

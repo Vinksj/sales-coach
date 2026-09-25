@@ -108,3 +108,27 @@ def check_counts() -> dict:
     for name, sql in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL"):
         out[name] = len(re.findall(r"\bCHECK\s*\(", sql, re.I))
     return out
+
+
+@lru_cache(maxsize=1)
+def foreign_keys() -> dict:
+    """{table: frozenset(parent tables its foreign keys point at)} (self references left out)."""
+    conn = _scratch()
+    return {t: frozenset(r[2] for r in conn.execute(f"PRAGMA foreign_key_list({t})") if r[2] != t) for t in tables()}
+
+
+def children_first(names) -> list:
+    """`names` ordered so that every table comes BEFORE the tables its foreign keys point at: the order to
+    delete in. Ties are alphabetical, so the order (and any SQL generated from it) is stable."""
+    names = set(names)
+    fks = foreign_keys()
+    parents = {t: (fks.get(t, frozenset()) & names) for t in names}
+    order, done = [], set()
+    while len(order) < len(names):
+        # a table is ready when no remaining table points at it
+        ready = sorted(t for t in names - done if not any(t in parents[o] for o in names - done - {t}))
+        if not ready:
+            raise ValueError(f"circular foreign keys among {sorted(names - done)}")
+        order.extend(ready)
+        done.update(ready)
+    return order

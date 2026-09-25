@@ -177,6 +177,262 @@ END $$;
 DROP TRIGGER IF EXISTS trg_comments_guard ON comments;
 CREATE TRIGGER trg_comments_guard BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION app_comments_guard();
 
+-- ---- Phase 8: offboarding (salescoach/lifecycle/offboard.py) ----------------------------------------
+-- An active admin, interactively, ends a user's ownership of their work: p_to NULL purges every OWNED row of
+-- p_user; p_to (another active rep) receives every OWNED row except what describes the person
+-- (tenancy.PERSONAL, the coaching notes about them, their pattern provenance), which is deleted. Comments keep
+-- their author. Either way the user's user_state and speaker labels go. One transaction (the caller's);
+-- returns the per-table counts as JSON text. An admin reads no rep's content, so this is the one path by
+-- which rows change owner: generated from tenancy.py, it covers every OWNED table there is.
+CREATE OR REPLACE FUNCTION app_offboard(p_user text, p_to text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  counts jsonb := '{}'::jsonb;
+  n integer;
+BEGIN
+  IF app_actor_role() IS DISTINCT FROM 'admin' OR current_setting('app.mode', true) IS DISTINCT FROM 'interactive' THEN
+    RAISE EXCEPTION 'only an active admin, interactively, offboards a user' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF p_user IS NULL OR p_user = app_actor_id() THEN
+    RAISE EXCEPTION 'an admin cannot offboard themselves' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM users WHERE id = p_user) THEN
+    RAISE EXCEPTION 'no such user' USING ERRCODE = 'no_data_found';
+  END IF;
+  IF p_to IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE id = p_to AND id <> p_user AND status = 'active' AND role = 'rep') THEN
+    RAISE EXCEPTION 'the work can only go to another active rep' USING ERRCODE = 'check_violation';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('offboard:' || p_user));
+  IF p_to IS NULL THEN
+    DELETE FROM edges WHERE owner_id <> p_user AND (src IN (SELECT id FROM nodes WHERE owner_id = p_user)
+                                            OR dst IN (SELECT id FROM nodes WHERE owner_id = p_user));
+    DELETE FROM artifacts WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('artifacts', n);
+    DELETE FROM assessments WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('assessments', n);
+    DELETE FROM autosend_log WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('autosend_log', n);
+    DELETE FROM calendar_cache WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calendar_cache', n);
+    DELETE FROM calendar_meetings WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calendar_meetings', n);
+    DELETE FROM call_participants WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('call_participants', n);
+    DELETE FROM calls WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calls', n);
+    DELETE FROM claims WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('claims', n);
+    DELETE FROM coach_reports WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('coach_reports', n);
+    DELETE FROM coach_state WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('coach_state', n);
+    DELETE FROM comments WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('comments', n);
+    DELETE FROM deal_health WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_health', n);
+    DELETE FROM deal_health_history WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_health_history', n);
+    DELETE FROM deal_people WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_people', n);
+    DELETE FROM deal_risks WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_risks', n);
+    DELETE FROM deal_stage_history WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_stage_history', n);
+    DELETE FROM deals WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deals', n);
+    DELETE FROM derived_outcomes WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('derived_outcomes', n);
+    DELETE FROM edges WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('edges', n);
+    DELETE FROM email_edits WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('email_edits', n);
+    DELETE FROM email_replies WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('email_replies', n);
+    DELETE FROM embeddings WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('embeddings', n);
+    DELETE FROM events WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('events', n);
+    DELETE FROM field_provenance WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('field_provenance', n);
+    DELETE FROM followup_decisions WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('followup_decisions', n);
+    DELETE FROM learned_patterns WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('learned_patterns', n);
+    DELETE FROM learning_proposals WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('learning_proposals', n);
+    DELETE FROM loops WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('loops', n);
+    DELETE FROM meddpicc WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('meddpicc', n);
+    DELETE FROM memory_conflicts WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('memory_conflicts', n);
+    DELETE FROM nudges WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('nudges', n);
+    DELETE FROM pattern_observations WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('pattern_observations', n);
+    DELETE FROM prep_briefs WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('prep_briefs', n);
+    DELETE FROM raw_payloads WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('raw_payloads', n);
+    DELETE FROM reconciliations WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('reconciliations', n);
+    DELETE FROM reply_proposals WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('reply_proposals', n);
+    DELETE FROM seller_observations WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('seller_observations', n);
+    DELETE FROM seller_patterns WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('seller_patterns', n);
+    DELETE FROM slot_fills WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('slot_fills', n);
+    DELETE FROM source_connections WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('source_connections', n);
+    DELETE FROM sources WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('sources', n);
+    DELETE FROM speakers WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('speakers', n);
+    DELETE FROM stakeholders WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('stakeholders', n);
+    DELETE FROM turns WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('turns', n);
+    DELETE FROM agent_runs WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('agent_runs', n);
+    DELETE FROM emails WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('emails', n);
+    DELETE FROM nodes WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('nodes', n);
+    DELETE FROM access_log WHERE owner_user_id = p_user;
+  ELSE
+    DELETE FROM comments WHERE owner_id = p_user AND entity_type = 'coaching';
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('comments_coaching', n);
+    DELETE FROM field_provenance WHERE owner_id = p_user AND entity_id LIKE 'lp:%';
+    DELETE FROM memory_conflicts WHERE owner_id = p_user AND entity_id LIKE 'lp:%';
+    DELETE FROM calendar_cache WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calendar_cache', n);
+    DELETE FROM calendar_meetings WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calendar_meetings', n);
+    DELETE FROM coach_reports WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('coach_reports', n);
+    DELETE FROM coach_state WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('coach_state', n);
+    DELETE FROM learned_patterns WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('learned_patterns', n);
+    DELETE FROM learning_proposals WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('learning_proposals', n);
+    DELETE FROM nudges WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('nudges', n);
+    DELETE FROM pattern_observations WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('pattern_observations', n);
+    DELETE FROM seller_observations WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('seller_observations', n);
+    DELETE FROM seller_patterns WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('seller_patterns', n);
+    DELETE FROM source_connections WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('source_connections', n);
+    DELETE FROM reply_proposals WHERE owner_id = p_user AND reply_id IN (SELECT r.id FROM email_replies r
+      WHERE r.owner_id = p_user AND EXISTS (SELECT 1 FROM email_replies x WHERE x.owner_id = p_to AND x.message_id = r.message_id));
+    DELETE FROM email_replies r WHERE r.owner_id = p_user AND EXISTS (SELECT 1 FROM email_replies x WHERE x.owner_id = p_to AND x.message_id = r.message_id);
+    DELETE FROM raw_payloads r WHERE r.owner_id = p_user AND EXISTS (SELECT 1 FROM raw_payloads x WHERE x.owner_id = p_to AND x.sha256 = r.sha256);
+    UPDATE agent_runs SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('agent_runs', n);
+    UPDATE artifacts SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('artifacts', n);
+    UPDATE assessments SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('assessments', n);
+    UPDATE autosend_log SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('autosend_log', n);
+    UPDATE call_participants SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('call_participants', n);
+    UPDATE calls SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('calls', n);
+    UPDATE claims SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('claims', n);
+    UPDATE deal_health SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_health', n);
+    UPDATE deal_health_history SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_health_history', n);
+    UPDATE deal_people SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_people', n);
+    UPDATE deal_risks SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_risks', n);
+    UPDATE deal_stage_history SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deal_stage_history', n);
+    UPDATE deals SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('deals', n);
+    UPDATE derived_outcomes SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('derived_outcomes', n);
+    UPDATE edges SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('edges', n);
+    UPDATE email_edits SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('email_edits', n);
+    UPDATE email_replies SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('email_replies', n);
+    UPDATE emails SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('emails', n);
+    UPDATE embeddings SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('embeddings', n);
+    UPDATE events SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('events', n);
+    UPDATE field_provenance SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('field_provenance', n);
+    UPDATE followup_decisions SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('followup_decisions', n);
+    UPDATE loops SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('loops', n);
+    UPDATE meddpicc SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('meddpicc', n);
+    UPDATE memory_conflicts SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('memory_conflicts', n);
+    UPDATE nodes SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('nodes', n);
+    UPDATE prep_briefs SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('prep_briefs', n);
+    UPDATE raw_payloads SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('raw_payloads', n);
+    UPDATE reconciliations SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('reconciliations', n);
+    UPDATE reply_proposals SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('reply_proposals', n);
+    UPDATE slot_fills SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('slot_fills', n);
+    UPDATE sources SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('sources', n);
+    UPDATE speakers SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('speakers', n);
+    UPDATE stakeholders SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('stakeholders', n);
+    UPDATE turns SET owner_id = p_to WHERE owner_id = p_user;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('turns', n);
+    WITH gone AS (DELETE FROM comments WHERE owner_id = p_user RETURNING id, author_id, entity_type, entity_id, turn_idx, body, created_at, resolved_at, resolved_by)
+    INSERT INTO comments (owner_id, id, author_id, entity_type, entity_id, turn_idx, body, created_at, resolved_at, resolved_by) SELECT p_to, id, author_id, entity_type, entity_id, turn_idx, body, created_at, resolved_at, resolved_by FROM gone;
+    GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('comments', n);
+    UPDATE access_log SET owner_user_id = p_to WHERE owner_user_id = p_user;
+    UPDATE wf_events SET owner = p_to WHERE owner = p_user AND status IN ('pending', 'running');
+  END IF;
+  DELETE FROM user_state WHERE user_id = p_user;
+  DELETE FROM user_speaker_labels WHERE user_id = p_user;
+  RETURN counts::text;
+END $$;
+
+-- Retention (salescoach/lifecycle/retention.py): a background duty, acting for the owner, deletes the comments
+-- and access-log rows about objects of that owner it is deleting. Comments are deleted by their author only and
+-- the access log by nobody, so without this a manager's note on an expired call would outlive the call.
+-- Service mode only: no person at a keyboard can erase a manager's comment or the record of who looked.
+CREATE OR REPLACE FUNCTION app_forget_annotations(p_type text, p_ids text[]) RETURNS integer LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  n integer := 0;
+  m integer := 0;
+BEGIN
+  IF NOT app_actor_active() OR current_setting('app.mode', true) IS DISTINCT FROM 'service' THEN
+    RAISE EXCEPTION 'only a background duty of an active user forgets annotations' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  DELETE FROM comments WHERE owner_id = app_actor_id() AND entity_type = p_type AND entity_id = ANY (p_ids);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF p_type IN ('call', 'deal') THEN
+    DELETE FROM access_log WHERE owner_user_id = app_actor_id() AND entity_type = p_type AND entity_id = ANY (p_ids);
+    GET DIAGNOSTICS m = ROW_COUNT;
+  END IF;
+  RETURN n + m;
+END $$;
+
 -- ---- OWNED: one rep's work; the owner writes, the owner's managers read --------------------------------
 -- agent_runs: OWNED
 ALTER TABLE agent_runs ENABLE ROW LEVEL SECURITY;

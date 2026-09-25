@@ -395,6 +395,38 @@ def cmd_import_sqlite(args):
     return 0 if (report.committed or report.dry_run) else 1
 
 
+def cmd_retention(args):
+    """Apply (or with --dry-run, count) the org's retention period for every active user, each in their own
+    service session: exactly what the scheduler's retention duty does in a round."""
+    from . import identity, users
+    from .lifecycle import retention, settings
+    days = args.days or settings.retention_days()
+    if not days:
+        print("retention.days is not set (Settings, or config/org.yaml): every call is kept")
+        return 0
+    with identity.activate(None):
+        conn = stores.sales()
+    try:
+        with conn.as_system():
+            targets = [(u["id"], u.get("email") or u["id"]) for u in users.active(conn)]
+        total = 0
+        for user_id, label in targets:
+            with identity.as_user(conn, user_id, mode=identity.SERVICE):
+                result = retention.purge(conn, days=days, dry_run=args.dry_run)
+            n = result.get("calls", 0)
+            total += n
+            held = f", {result['held']} held (being processed)" if result.get("held") else ""
+            verb = "would delete" if args.dry_run else "deleted"
+            print(f"{label}: {verb} {n} call(s) started before {result.get('cutoff')}{held}")
+        print(f"{'dry run: ' if args.dry_run else ''}{total} call(s) older than {days} days"
+              + (" would be deleted" if args.dry_run else " deleted"))
+        if identity.cloud():
+            print("disabled users' calls are kept until they are offboarded (Admin: Offboard)")
+        return 0
+    finally:
+        conn.close()
+
+
 def _worker_listening(port: int = 8140) -> bool:
     import socket
     try:
@@ -543,6 +575,11 @@ def main(argv=None):
     im.add_argument("--dry-run", action="store_true", help="do everything, print the counts, roll back")
     im.add_argument("--url", help="the owner role's postgresql:// URL (default: DATABASE_MIGRATE_URL)")
     im.set_defaults(fn=cmd_import_sqlite)
+
+    rt = sub.add_parser("retention", help="apply the org's retention.days now, or --dry-run to count")
+    rt.add_argument("--dry-run", action="store_true", help="count what would be deleted; delete nothing")
+    rt.add_argument("--days", type=int, help="override retention.days for this run")
+    rt.set_defaults(fn=cmd_retention)
 
     from . import plugins
     plugins.register_cli(sub)

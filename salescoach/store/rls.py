@@ -391,6 +391,117 @@ def table_block(table: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---- Phase 8: the data's life cycle (salescoach/lifecycle) ----------------------------------------------
+# Two narrow doors through row-level security, each a SECURITY DEFINER function that checks WHO calls it and
+# acts only on the rows its arguments name. Generated from tenancy.py, so a new OWNED table is moved or purged
+# by an offboarding without anyone remembering to add it (tests/isolation/test_offboard.py checks every one).
+
+def _offboard_function() -> str:
+    from . import catalog
+    owned = tenancy.tables_of(tenancy.OWNED)
+    personal = set(tenancy.PERSONAL)
+    unknown = personal - owned
+    if unknown:
+        raise ValueError(f"tenancy.PERSONAL names tables that are not OWNED: {sorted(unknown)}")
+    purge_order = catalog.children_first(owned)
+    personal_order = [t for t in purge_order if t in personal]
+    moved = [t for t in sorted(owned) if t not in personal and t != "comments"]
+    comment_cols = [c.name for c in catalog.tables()["comments"]]
+    count = lambda t: f"  GET DIAGNOSTICS n = ROW_COUNT; counts := counts || jsonb_build_object('{t}', n);"  # noqa: E731
+    purge = ["    DELETE FROM edges WHERE owner_id <> p_user AND (src IN (SELECT id FROM nodes WHERE owner_id = p_user)",
+             "                                            OR dst IN (SELECT id FROM nodes WHERE owner_id = p_user));"]
+    for t in purge_order:
+        purge.append(f"    DELETE FROM {t} WHERE owner_id = p_user;")
+        purge.append("  " + count(t))
+    purge.append("    DELETE FROM access_log WHERE owner_user_id = p_user;")
+    reassign = [
+        "    DELETE FROM comments WHERE owner_id = p_user AND entity_type = 'coaching';",
+        "  " + count("comments_coaching"),
+        "    DELETE FROM field_provenance WHERE owner_id = p_user AND entity_id LIKE 'lp:%';",
+        "    DELETE FROM memory_conflicts WHERE owner_id = p_user AND entity_id LIKE 'lp:%';",
+    ]
+    for t in personal_order:
+        reassign.append(f"    DELETE FROM {t} WHERE owner_id = p_user;")
+        reassign.append("  " + count(t))
+    reassign += [
+        "    DELETE FROM reply_proposals WHERE owner_id = p_user AND reply_id IN (SELECT r.id FROM email_replies r",
+        "      WHERE r.owner_id = p_user AND EXISTS (SELECT 1 FROM email_replies x WHERE x.owner_id = p_to AND x.message_id = r.message_id));",
+    ]
+    for t, cols in sorted(tenancy.OWNER_KEYED.items()):
+        same = " AND ".join(f"x.{c} = r.{c}" for c in cols)
+        reassign.append(f"    DELETE FROM {t} r WHERE r.owner_id = p_user AND EXISTS "
+                        f"(SELECT 1 FROM {t} x WHERE x.owner_id = p_to AND {same});")
+    for t in moved:
+        reassign.append(f"    UPDATE {t} SET owner_id = p_to WHERE owner_id = p_user;")
+        reassign.append("  " + count(t))
+    # comments move by delete + insert: trg_comments_guard (rightly) refuses any UPDATE of a comment's owner
+    others = ", ".join(c for c in comment_cols if c != "owner_id")
+    reassign += [
+        f"    WITH gone AS (DELETE FROM comments WHERE owner_id = p_user RETURNING {others})",
+        f"    INSERT INTO comments (owner_id, {others}) SELECT p_to, {others} FROM gone;",
+        "  " + count("comments"),
+        "    UPDATE access_log SET owner_user_id = p_to WHERE owner_user_id = p_user;",
+        "    UPDATE wf_events SET owner = p_to WHERE owner = p_user AND status IN ('pending', 'running');",
+    ]
+    return f"""-- ---- Phase 8: offboarding (salescoach/lifecycle/offboard.py) ----------------------------------------
+-- An active admin, interactively, ends a user's ownership of their work: p_to NULL purges every OWNED row of
+-- p_user; p_to (another active rep) receives every OWNED row except what describes the person
+-- (tenancy.PERSONAL, the coaching notes about them, their pattern provenance), which is deleted. Comments keep
+-- their author. Either way the user's user_state and speaker labels go. One transaction (the caller's);
+-- returns the per-table counts as JSON text. An admin reads no rep's content, so this is the one path by
+-- which rows change owner: generated from tenancy.py, it covers every OWNED table there is.
+CREATE OR REPLACE FUNCTION app_offboard(p_user text, p_to text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  counts jsonb := '{{}}'::jsonb;
+  n integer;
+BEGIN
+  IF app_actor_role() IS DISTINCT FROM 'admin' OR current_setting('app.mode', true) IS DISTINCT FROM 'interactive' THEN
+    RAISE EXCEPTION 'only an active admin, interactively, offboards a user' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF p_user IS NULL OR p_user = app_actor_id() THEN
+    RAISE EXCEPTION 'an admin cannot offboard themselves' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM users WHERE id = p_user) THEN
+    RAISE EXCEPTION 'no such user' USING ERRCODE = 'no_data_found';
+  END IF;
+  IF p_to IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE id = p_to AND id <> p_user AND status = 'active' AND role = 'rep') THEN
+    RAISE EXCEPTION 'the work can only go to another active rep' USING ERRCODE = 'check_violation';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('offboard:' || p_user));
+  IF p_to IS NULL THEN
+{chr(10).join(purge)}
+  ELSE
+{chr(10).join(reassign)}
+  END IF;
+  DELETE FROM user_state WHERE user_id = p_user;
+  DELETE FROM user_speaker_labels WHERE user_id = p_user;
+  RETURN counts::text;
+END $$;
+
+-- Retention (salescoach/lifecycle/retention.py): a background duty, acting for the owner, deletes the comments
+-- and access-log rows about objects of that owner it is deleting. Comments are deleted by their author only and
+-- the access log by nobody, so without this a manager's note on an expired call would outlive the call.
+-- Service mode only: no person at a keyboard can erase a manager's comment or the record of who looked.
+CREATE OR REPLACE FUNCTION app_forget_annotations(p_type text, p_ids text[]) RETURNS integer LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  n integer := 0;
+  m integer := 0;
+BEGIN
+  IF NOT app_actor_active() OR current_setting('app.mode', true) IS DISTINCT FROM 'service' THEN
+    RAISE EXCEPTION 'only a background duty of an active user forgets annotations' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  DELETE FROM comments WHERE owner_id = app_actor_id() AND entity_type = p_type AND entity_id = ANY (p_ids);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF p_type IN ('call', 'deal') THEN
+    DELETE FROM access_log WHERE owner_user_id = app_actor_id() AND entity_type = p_type AND entity_id = ANY (p_ids);
+    GET DIAGNOSTICS m = ROW_COUNT;
+  END IF;
+  RETURN n + m;
+END $$;
+
+"""
+
+
 def generate() -> str:
     unknown = {t: k for t, k in tenancy.TABLE_CLASS.items() if k not in (tenancy.OWNED, tenancy.ORG, tenancy.SYSTEM)}
     if unknown:
@@ -401,7 +512,7 @@ def generate() -> str:
     for table, spec in OWNED_EXCEPTIONS.items():
         if tenancy.TABLE_CLASS.get(table) != tenancy.OWNED or not spec[4].strip():
             raise ValueError(f"store/rls.py OWNED_EXCEPTIONS names {table}: it must be OWNED and carry a reason")
-    parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE)]
+    parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE), _offboard_function()]
     for kind, title in ((tenancy.OWNED, "OWNED: one rep's work; the owner writes, the owner's managers read"),
                         (tenancy.ORG, "ORG: the shared directory"),
                         (tenancy.SYSTEM, "SYSTEM: the machinery")):

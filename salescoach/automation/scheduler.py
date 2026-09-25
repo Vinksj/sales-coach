@@ -8,7 +8,9 @@ Four threads, each with its own sales.db handle, each honouring the stop Event:
               answers), each rep's own Google Calendar in cloud mode (automation/gcal.py);
   autosend    every auto_send.interval_minutes; a no-op unless enabled;
   recorder    every calendar.record.poll_seconds: starts the meetings the seller
-              armed for recording and stops them after the grace period.
+              armed for recording and stops them after the grace period;
+  retention   every retention.interval_hours (config/org.yaml): deletes each owner's calls
+              older than the org's retention.days (lifecycle/retention.py); a no-op while unset.
 Each duty waits before its first run, so a server that starts and stops at
 once (a test, for example) never reaches Gmail or `claude -p`. Last run,
 result, error and unavailability are recorded as automation:<duty>:*: in
@@ -54,6 +56,7 @@ class Duty:
     interval_s: Callable          # () -> seconds until the next run
     first_delay_s: float = 60.0
     per_user: bool = True         # once per active user, in that user's session; False = once, org-level
+    needs_profile: bool = True    # False: runs for a user whose profile is not filled in (retention)
 
 
 def seconds_until(run_at: str, current: Optional[datetime] = None) -> float:
@@ -75,7 +78,7 @@ def _record(conn, duty: Duty, key: str, value: str) -> None:
 def _run_once(duty: Duty, conn) -> float | None:
     """One duty for the user bound to `conn`. Returns a longer delay when the duty is unavailable."""
     try:
-        if not seller.is_configured():
+        if duty.needs_profile and not seller.is_configured():
             # No profile, no duties: without the seller's addresses a reply poll cannot tell their
             # mail from a buyer's. Checked every round, so saving the profile is enough to start.
             raise Unavailable("the seller profile is not set up yet", retry_s=60)
@@ -250,4 +253,16 @@ def default_duties() -> list[Duty]:
              first_delay_s=120),
         Duty("recorder", run_recorder,
              lambda: float((common.cfg("calendar").get("record") or {}).get("poll_seconds", 20)), first_delay_s=20),
+        Duty("retention", run_retention, _retention_interval, first_delay_s=300, needs_profile=False),
     ]
+
+
+def run_retention(conn) -> dict:
+    """The org's retention period, applied to the calls of the owner bound to `conn` (a service session)."""
+    from ..lifecycle import retention
+    return retention.run_duty(conn)
+
+
+def _retention_interval() -> float:
+    from ..lifecycle import settings
+    return settings.retention_interval_s()

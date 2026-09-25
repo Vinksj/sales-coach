@@ -136,3 +136,27 @@ OWNER_PARENTS = {
 
 def tables_of(kind: str) -> frozenset:
     return frozenset(t for t, k in TABLE_CLASS.items() if k == kind)
+
+
+# ---- Phase 8: a rep leaving (salescoach/lifecycle/offboard.py, the SQL in store/rls.py app_offboard) --------
+# What describes the PERSON rather than the work: on a reassign these rows are deleted, never handed to the
+# receiving rep (their coaching must not start with someone else's patterns, calendar or recorder account).
+# Besides these, the leaving rep's user_state and user_speaker_labels (SYSTEM), the coaching notes about them
+# (comments with entity_type 'coaching') and the memory-gate rows of their learned patterns (field_provenance /
+# memory_conflicts with an lp: entity) go too. Everything else OWNED moves; comments keep their author.
+PERSONAL = {
+    "learned_patterns": "the coach's belief about how this person sells",
+    "learning_proposals": "suggestions about this person's patterns",
+    "pattern_observations": "what the learner counted about this person",
+    "seller_patterns": "this person's coaching patterns (the older seller memory)",
+    "seller_observations": "how this person behaved on each call: evidence for their coaching, not the deal's",
+    "coach_reports": "reports about this person",
+    "nudges": "the live coach's prompts to this person",
+    "coach_state": "the live coach's state for this person",
+    "calendar_cache": "this person's calendar",
+    "calendar_meetings": "this person's meetings, from their calendar",
+    "source_connections": "this person's own recorder account and its key",
+}
+# OWNED tables (not PERSONAL) whose unique key includes owner_id: a reassign drops the leaving rep's row when
+# the receiver already holds the same key (the same Gmail message, the same payload), then moves the rest.
+OWNER_KEYED = {"email_replies": ("message_id",), "raw_payloads": ("sha256",)}
