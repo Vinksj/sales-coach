@@ -15,6 +15,10 @@ What goes, per expired call (owner-scoped, in batches of `retention.batch` calls
   emails from the call that are not 'sending' (with their edits, slot fills, auto-send log, the replies to them
   and those replies' proposals); the comments and access-log rows about all of these (Postgres: through
   app_forget_annotations, store/rls.py, since a manager's comment is deletable by its author only).
+  What was derived from them: the seller memory is recomputed from the observations that are left (a pattern
+  with none left goes, with the verbatim quotes and call ids in its `examples`), and every coach report that
+  cites a deleted call is deleted (a report is a model's narrative over the calls; it cannot be recomputed
+  without a model call, so it goes, and the next analysed call or a refresh on the Coach page writes a new one).
 What stays: deals, accounts and people (never deleted); open loops and 'sending' emails of an expired call
 (their call_id is cleared); deal-level history (deal health, stage history, prep briefs). A call that is live
 or has a pending or running bus event is left for the next round.
@@ -148,7 +152,55 @@ def delete_calls(conn, call_ids: list) -> dict:
     _delete_nodes(conn, counts, call_ids)
     _delete(conn, counts, "calls", f"node_id IN ({m})", call_ids, key="call_rows")
     _delete(conn, counts, "nodes", f"id IN ({m})", call_ids, key="call_nodes")
+    _forget_derived(conn, counts, call_ids)
     return counts
+
+
+def _cited_calls(value, out: set) -> set:
+    """Every "call_id" anywhere in a coach report's JSON (evidence, well-handled calls, say-differently)."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == "call_id" and isinstance(v, str):
+                out.add(v)
+            else:
+                _cited_calls(v, out)
+    elif isinstance(value, list):
+        for v in value:
+            _cited_calls(v, out)
+    return out
+
+
+def _forget_derived(conn, counts, call_ids):
+    """What the owner's coaching memory holds FROM the deleted calls: seller_patterns examples (verbatim
+    quotes with the call id) and coach reports that cite them."""
+    from ..memory import patterns
+    me, gone = _owner(conn), set(call_ids)
+    before = conn.execute("SELECT COUNT(*) FROM seller_patterns WHERE owner_id=?", (me,)).fetchone()[0]
+    patterns.recompute(conn)                         # rebuilt from what is left; a pattern with nothing left goes
+    after = conn.execute("SELECT COUNT(*) FROM seller_patterns WHERE owner_id=?", (me,)).fetchone()[0]
+    if before - after:
+        counts["seller_patterns"] = counts.get("seller_patterns", 0) + before - after
+    for row in conn.execute("SELECT tag, examples FROM seller_patterns WHERE owner_id=?", (me,)).fetchall():
+        try:                                          # belt and braces: recompute already rebuilt the examples
+            examples = json.loads(row["examples"] or "[]")
+        except ValueError:
+            examples = []
+        kept = [e for e in examples if not (isinstance(e, dict) and e.get("call_id") in gone)]
+        if kept != examples:
+            conn.execute("UPDATE seller_patterns SET examples=? WHERE owner_id=? AND tag=?",
+                         (json.dumps(kept), me, row["tag"]))
+    reports = []
+    rows = conn.execute("SELECT id, json FROM coach_reports WHERE owner_id=?", (me,)).fetchall() \
+        if conn.table_exists("coach_reports") else []
+    for row in rows:
+        try:
+            cited = _cited_calls(json.loads(row["json"] or "{}"), set())
+        except ValueError:
+            cited = set()
+        if cited & gone:
+            reports.append(row["id"])
+    if reports:
+        _delete(conn, counts, "coach_reports", f"id IN ({_marks(reports)})", reports)
 
 
 def _audit(conn, days, cutoff, call_ids, counts) -> None:

@@ -119,3 +119,32 @@ def test_the_setting_drives_the_duty_and_a_typo_deletes_nothing(db, aged, seller
         settings.save("-3", "")
     with pytest.raises(ValueError):
         settings.save("", "x" * (settings.MAX_NOTICE + 1))
+
+
+def test_what_was_derived_from_an_expired_call_goes_with_it(db, aged):
+    """seller_patterns.examples hold verbatim quotes with the call id, and a coach report cites calls and quotes:
+    neither may outlive the call. A pattern seen only on the expired call goes; one also seen on the recent call
+    keeps only the recent example; a coach report citing the expired call goes, one citing only the recent stays."""
+    from salescoach.memory import patterns
+    old, recent = aged["call"], aged["recent"]
+    quote_old, quote_new = "our budget is 40 lakh and the CFO signs on Friday", "we can start the pilot in May"
+    rows = ((old, "only_old", quote_old), (old, "both", quote_old), (recent, "both", quote_new))
+    for call, tag, quote in rows:
+        db.execute("INSERT INTO seller_observations(call_id,tag,polarity,severity,evidence_quote,confidence,created_at) "
+                   "VALUES (?,?,'weakness','high',?,'high',?)", (call, f"new:{tag}", quote, now()))
+    patterns.recompute(db)
+    report = lambda cid: json.dumps({"headline": "h", "well_handled": [{"call_id": cid, "why": "w", "evidence": []}]})  # noqa: E731
+    for cid in (old, recent):
+        db.execute("INSERT INTO coach_reports(calls_analysed,trigger,input_sha,json,created_at) VALUES (1,'manual','s',?,?)",
+                   (report(cid), now()))
+    db.commit()
+    assert quote_old in json.dumps([r["examples"] for r in db.execute("SELECT examples FROM seller_patterns")])
+    with _service(db):
+        result = retention.purge(db, days=365)
+    assert result["calls"] == 1 and result["coach_reports"] == 1 and result["seller_patterns"] >= 1
+    kept = {r["tag"]: json.loads(r["examples"]) for r in db.execute("SELECT tag, examples FROM seller_patterns")}
+    assert "new:only_old" not in kept
+    assert [e["call_id"] for e in kept["new:both"]] == [recent] and kept["new:both"][0]["quote"] == quote_new
+    everything = json.dumps(kept) + json.dumps([r["json"] for r in db.execute("SELECT json FROM coach_reports")])
+    assert old not in everything and quote_old not in everything
+    assert recent in everything

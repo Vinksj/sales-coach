@@ -92,18 +92,25 @@ def _analysed_calls(conn):
 
 def recompute(conn, window: int = WINDOW):
     """Rebuild the ACTING user's seller_patterns from their own observations. Two users get two rows
-    per tag (PRIMARY KEY (owner_id, tag)); nothing here reads another user's calls."""
+    per tag (PRIMARY KEY (owner_id, tag)); nothing here reads another user's calls.
+
+    A pattern whose observations are all gone (the calls expired under retention, or a re-analysis no longer
+    sees it) is deleted, not left as it was: its `examples` hold verbatim quotes and call ids, which must not
+    outlive the calls they came from."""
     known = taxonomy()
     owner = _owner(conn)
     analysed = _analysed_calls(conn)
     in_window = analysed[:window]
     retired = retired_tags(conn)
     tags = {r["tag"] for r in conn.execute("SELECT DISTINCT tag FROM seller_observations WHERE owner_id=?", (owner,))}
-    for tag in tags:
+    stored = {r["tag"] for r in conn.execute("SELECT tag FROM seller_patterns WHERE owner_id=?", (owner,))}
+    for tag in sorted(tags | stored):
         obs = conn.execute(
             "SELECT o.*, c.started_at FROM seller_observations o JOIN calls c ON c.node_id=o.call_id "
             "WHERE o.tag=? AND o.owner_id=? AND o.confidence != 'low' ORDER BY c.started_at", (tag, owner)).fetchall()
         if not obs:
+            if tag in stored:
+                conn.execute("DELETE FROM seller_patterns WHERE owner_id=? AND tag=?", (owner, tag))
             continue
         calls_with = {o["call_id"] for o in obs}
         seen_window = [c for c in in_window if c in calls_with]
