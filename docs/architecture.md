@@ -187,10 +187,11 @@ connections come from a `psycopg_pool` pool; `close()` returns one.
   statement aborts a Postgres transaction. Prefer `ON CONFLICT` to catching `IntegrityError`.
 - Catch `db.IntegrityError` / `db.OperationalError` / `db.Error`, never `sqlite3.*`.
 
-**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (7 today), run by
+**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (9 today; 8 is
+Phase 3's and a missing number is skipped), run by
 every connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
 `store/pgmigrate.py` applies the numbered files in `store/pg/` once, under `pg_advisory_lock`,
-recorded in `schema_migrations` (0002 today); `salescoach migrate` (`--check` in CI) is the only thing
+recorded in `schema_migrations` (0002 and 0005 today; 0003 and 0004 are Phases 2 and 3); `salescoach migrate` (`--check` in CI) is the only thing
 that runs DDL, and `stores.sales()` refuses to serve a schema at the wrong version.
 `store/pg/0001_baseline.sql` was generated from the version-6 SQLite files by
 `scripts/gen_pg_baseline.py` (`INTEGER PRIMARY KEY AUTOINCREMENT` becomes an identity column,
@@ -236,8 +237,9 @@ looked up in `users`, a stub Phase 3 replaces with Google sign-in). Thread entry
 
 | Thread | Actor |
 |---|---|
-| worker (`orchestrator/worker.py`) | the connection is opened as nobody (`activate(None)`); `workflow.handle` wraps each event in `as_user(owner_of_event(...), mode="service")`: entity `user:<id>` says the owner, a call/deal/loop id resolves through `nodes.owner_id`, else `payload.owner_id`, else the local user (local mode) or `UnknownOwner` (cloud) |
-| scheduler (`automation/scheduler._loop`) | a per-user duty runs once per `users.active()` inside `as_user(..., service)`; bookkeeping goes to `user_state`. An org-level duty (`per_user=False`: the sources poller until Phase 4) runs once as the local user and not at all in cloud |
+| worker (`orchestrator/worker.py`) | the connection is opened as nobody (`activate(None)`); `workflow.handle` wraps each event in `as_user(owner_of_event(...), mode="service")`: entity `user:<id>` says the owner, a call/deal/loop id resolves through `nodes.owner_id`, else `payload.owner_id`, else `wf_events.owner` (what `bus.publish` resolved from the publisher's actor), else the local user (local mode) or `UnknownOwner` (cloud). `bus.claim_next` hands out the highest-priority, oldest event whose owner has nothing running (a per-owner advisory lock on Postgres); a `worker` process runs `WORKER_CONCURRENCY` such loops (`ops.py`, docs/deploy-cloud.md) |
+| scheduler (`automation/scheduler._loop`) | a per-user duty runs once per `users.active()` inside `as_user(..., service)`; bookkeeping goes to `user_state`. An org-level duty (`per_user=False`: the sources poller until Phase 4) runs once as the local user and not at all in cloud. In the split deploy the duties (and the embed loop below) run only in the `scheduler` role's leader process (`ops.run_scheduler`, a Postgres advisory lock) |
+| heartbeats (`ops.Heartbeat`) | nobody (`activate(None)`): `state` is SYSTEM. `ops:worker:<host>:heartbeat`, `ops:scheduler:<host>:heartbeat`, `ops:scheduler:leader` |
 | intel embed (`plugins/intelligence.py`) | per active user, `as_user(..., service)` |
 | learning daily (`plugins/learning.py`) | a per-user scheduler duty |
 | jarvis sync (`web/app.py`) | `session("local", service)`; not started in cloud |
@@ -278,7 +280,12 @@ that were re-keyed; the other reads still see every row until Phase 2's row-leve
 |---|---|
 | OWNED (owner_id) | nodes (nullable), edges, events, sources, deals, deal_people, calls, call_participants, turns, speakers, agent_runs, artifacts, claims, assessments, reconciliations, loops, emails, email_edits, seller_observations, seller_patterns, field_provenance, memory_conflicts, followup_decisions, email_replies, reply_proposals, calendar_cache, calendar_meetings, slot_fills, autosend_log, stakeholders, meddpicc, deal_risks, deal_health, deal_health_history, coach_reports, prep_briefs, embeddings, deal_stage_history, derived_outcomes, pattern_observations, learned_patterns, learning_proposals, nudges, coach_state |
 | ORG | accounts, people, users, teams, team_managers |
-| SYSTEM | wf_events, state, user_state, user_speaker_labels, schema_migrations |
+| SYSTEM | wf_events, state, user_state, user_speaker_labels, schema_migrations, org_settings |
+
+Phase 6 added `raw_payloads` (OWNED, top-level: the acting user's import, no parent row, no trigger)
+and `org_settings` (SYSTEM: the settings overlay in cloud mode, `config.py`). `wf_events.owner` is a
+routing key for the bus's fairness rule, not a rep's data, which is why it is `owner`, not `owner_id`,
+and the table stays SYSTEM.
 
 **Keys re-scoped per owner** (migration 7 / 0002): `seller_patterns (owner_id, tag)`,
 `calendar_cache (owner_id, key)`, `calendar_meetings (owner_id, event_id)`, `email_replies UNIQUE
@@ -297,7 +304,7 @@ is the acting user's (`user_id` from `conn.actor`):
 | Org-wide (`state`) | Per user (`user_state`) |
 |---|---|
 | `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
-| `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard) | `setup:card_dismissed` (the Today card) |
+| `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard); `ops:worker:<host>:heartbeat`, `ops:scheduler:<host>:heartbeat`, `ops:scheduler:leader` (process liveness, `ops.py`) | `setup:card_dismissed` (the Today card) |
 | `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
 
 ## Prompts

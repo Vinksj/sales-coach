@@ -659,7 +659,7 @@ def switch(conn, key: str) -> int:
         if bus.publish(conn, Event(type="STRATEGY_REQUESTED", entity_id=deal_id,
                                    payload={"reason": "methodology_switch", "methodology": key},
                                    dedupe_key=f"STRATEGY_REQUESTED:{deal_id}:methodology:{key}:{stamp}"),
-                       priority=bus.PRIORITY_BACKFILL):     # every deal at once: behind anything a person waits for
+                       priority=bus.PRIORITY_NORMAL):       # normal, not backfill: a deal's events must keep their order
             queued += 1
     conn.commit()
     return queued
