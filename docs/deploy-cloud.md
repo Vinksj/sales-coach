@@ -432,7 +432,9 @@ Send on A's email is refused (403) with nothing reaching Gmail; a 1 USD per-user
 one message, from A's grant, with the draft's To, Message-ID and send key; exactly one scheduler holds the
 lock, and `docker kill` of it hands the lead to the other within the 5 s retry; offboarding B to A ends B's
 session at once and moves B's call to A, which the manager still reads; `salescoach import-sqlite` of a
-synthetic laptop database (built with the test fixtures) into the second database round-trips every count.
+synthetic laptop database (built with the test fixtures) into the second database round-trips every count;
+and the rep with no recorder connects Fathom and gets their own call from it. Any traceback in the web, worker
+or scheduler logs other than the deliberate budget deferral fails the run.
 `/health` and `salescoach health` are checked on every process.
 
 Ports, on 127.0.0.1 only: 18140 (the app; `SALESCOACH_PUBLIC_URL`), 19000 (the fakes: the test's "browser"
