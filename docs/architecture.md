@@ -300,6 +300,26 @@ is the acting user's (`user_id` from `conn.actor`):
 | `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard) | `setup:card_dismissed` (the Today card) |
 | `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
 
+**Sign-in, sessions and grants (Phase 3).** In cloud mode the acting user comes from Google
+sign-in (`web/auth.py`, `googleauth.py`): `/auth/google` keeps `state`, `nonce` and a PKCE verifier
+server-side; `/auth/callback` exchanges the code, parses the ID token with Authlib against Google's
+JWKS and verifies it again with google-auth, then checks `email_verified`, `hd` in
+`GOOGLE_ALLOWED_DOMAINS` and the invite list (`users.status = invited|active`, or
+`SALESCOACH_BOOTSTRAP_ADMIN` once). The session is a row in `sessions` (`salescoach/sessions.py`);
+the cookie is only its signed id, and the `AuthGate` reads the session and the `users` row on every
+request (sliding thirty days; revoke, revoke all, disable are immediate), leaving the `Actor` in
+`scope["state"]` for the `ActorGate`. Password mode (`hosted.py`) is unchanged for a single-seller
+hosted install. Per-user OAuth grants live in `oauth_tokens` (`execution/tokens.py`: AES-256-GCM
+under the `SALESCOACH_TOKEN_KEYS` ring, one live row per user and provider, scopes `gmail.compose`
++ `gmail.readonly` and `calendar.readonly`, `invalid_grant` marks `needs_reconsent` once);
+`GmailProvider.for_user` builds a mailbox from one, `provider_for(conn)` picks it in cloud and the
+machine-local alias otherwise, and `policy.approve_and_send` refuses in cloud anyone but the
+email's owner in an interactive session (auto-send is off). Sends carry `X-Salescoach-Key`; an
+unknown-outcome send is recovered from Sent by that header, not by a Message-ID Gmail may have
+replaced. Admin writes (`adminui/ops.py`) land in `events` with `actor_user_id`. The tables
+`sessions`, `invites` and `oauth_tokens` are SYSTEM in `store/tenancy.py`. See
+[deploy-cloud.md](deploy-cloud.md).
+
 ## Prompts
 
 Every prompt is a Markdown file beside its agent, with `{{variables}}` filled by
