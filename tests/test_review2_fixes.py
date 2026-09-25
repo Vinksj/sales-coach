@@ -266,8 +266,11 @@ def test_prep_when_from_datetime_local_is_ist(client, db):
     r = client.post(f"/deals/{deal}/prep", data={"title": "CFO intro", "when": "2026-09-16T11:00"},
                     headers=ORIGIN, follow_redirects=False)
     assert r.status_code == 303
-    ev = json.loads(db.execute("SELECT payload FROM wf_events WHERE type='PREP_REQUESTED' ORDER BY id DESC").fetchone()[0])
-    assert ev["when"] == "2026-09-16T11:00:00+05:30"
+    payload = json.loads(db.execute("SELECT payload FROM wf_events WHERE type='PREP_REQUESTED' ORDER BY id DESC").fetchone()[0])
+    assert set(payload) == {"request"}                       # the bus carries ids only; the details are the rep's own
+    from salescoach.store import stores
+    ev = json.loads(stores.get_user_state(db, payload["request"]))
+    assert ev["when"] == "2026-09-16T11:00:00+05:30" and ev["title"] == "CFO intro"
     prep.generate(db, deal, meeting_title="CFO intro", attendees=(), when=ev["when"], use_llm=False)
     db.commit()
     page = client.get(f"/deals/{deal}/prep").text

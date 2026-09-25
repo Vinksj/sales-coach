@@ -16,6 +16,7 @@ coach report) is queued on the workflow bus and done by the worker; the
 fragment refreshes itself while it waits.
 """
 import json
+import uuid
 from contextlib import contextmanager
 from urllib.parse import urlencode
 
@@ -30,6 +31,7 @@ from ..store import stores
 from . import coach, history, methodology, prep, tables
 
 router = APIRouter()
+PREP_REQUEST_PREFIX = "intel:prep_request:"      # user_state key of one queued prep request
 ACTOR = "user"
 USER = {"kind": "user_input", "ref": "deal page"}
 CHOICES = {
@@ -277,8 +279,12 @@ def prep_request(request: Request, deal_id: str, title: str = Form(""), attendee
             when_iso = _web()._started_at(when)      # a bare datetime-local value is IST, not UTC
         except ValueError:
             return _redirect(f"/deals/{deal_id}/prep", err="Meeting time is not a valid date.", anchor=None)
-        _queue(conn, "PREP_REQUESTED", deal_id, {"title": title.strip() or None, "attendees": people,
-                                                  "when": when_iso})
+        # The bus carries ids only (wf_events is machinery every session can read): what the rep typed stays
+        # in their own user_state, and the event names the key (plugins/intelligence._on_prep reads it).
+        key = f"{PREP_REQUEST_PREFIX}{uuid.uuid4().hex}"
+        stores.set_user_state(conn, key, json.dumps({"title": title.strip() or None, "attendees": people,
+                                                     "when": when_iso}))
+        _queue(conn, "PREP_REQUESTED", deal_id, {"request": key})
     tail = "" if _worker_on(request) else f" The worker is not running here; run: salescoach prep --deal {deal_id}"
     return _redirect(f"/deals/{deal_id}/prep", msg="Preparing the brief. This page refreshes when it is ready." + tail,
                      anchor=None)

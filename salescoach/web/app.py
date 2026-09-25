@@ -636,6 +636,12 @@ def _chrome(request: Request, conn) -> dict:
         "SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' GROUP BY status")}
     worker = request.app.state.worker
     current = getattr(worker, "current", None) if worker is not None else None
+    if current is not None and identity.cloud():
+        # The worker is the whole install's: say what it is doing only when it is the viewer's own work
+        # (another rep's event type and call id are not this viewer's business).
+        row = conn.execute("SELECT owner FROM wf_events WHERE event_id=?", (current.event_id,)).fetchone()
+        if row is None or row["owner"] != access.actor_id(conn):
+            current = None
     return {
         "path": request.url.path,
         "nav_queued": counts.get("pending", 0) + counts.get("running", 0),

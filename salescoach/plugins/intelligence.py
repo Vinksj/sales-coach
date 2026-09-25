@@ -48,10 +48,24 @@ def _on_strategy(conn, event):
 
 
 def _on_prep(conn, event):
+    """A prep brief the rep asked for on the deal's page. The event names a user_state key (intel/web.py
+    prep_request: the bus carries ids only); an event queued before that change carries the fields inline."""
+    import json
+    from .. import identity
     from ..intel import prep
-    p = event.payload
+    from ..store import stores
+    p = dict(event.payload or {})
+    key = p.get("request")
+    if key:
+        try:
+            p = json.loads(stores.get_user_state(conn, key) or "{}")
+        except ValueError:
+            p = {}
     prep.generate(conn, event.entity_id, meeting_title=p.get("title"), attendees=p.get("attendees") or (),
                   when=p.get("when"))
+    if key:
+        conn.execute("DELETE FROM user_state WHERE user_id=? AND key=?", (identity.actor_of(conn).user_id, key))
+        conn.commit()
 
 
 def _on_coach_request(conn, event):

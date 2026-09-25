@@ -117,6 +117,7 @@ def test_requests_are_queued_and_done_by_the_worker(client, db, fake_llm):
 
     assert worker.drain(db) == 3
     assert db.execute("SELECT COUNT(*) FROM wf_events WHERE status!='done'").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM user_state WHERE key LIKE 'intel:prep_request:%'").fetchone()[0] == 0
     page = client.get(f"/deals/{deal}/prep").text
     assert "Lock the CFO meeting date" in page and "Not on the map: cfo@northwind.test" in page
     assert "Send the plant-wise" in page or "plant-wise" in page
