@@ -23,6 +23,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import identity
+from ..manager import access
 from ..orchestrator import bus
 from ..schemas.events import Event
 from ..store import stores
@@ -69,7 +70,7 @@ def _deal_or_404(conn, deal_id):
                        "ON a.node_id=d.account_id WHERE d.node_id=?", (deal_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "deal not found")
-    return row
+    return access.guard(conn, row, "this deal")          # a write on a deal the actor only reads: 403
 
 
 def _pending(conn, event_type, entity_id=None):
@@ -141,6 +142,7 @@ def deal_intel(request: Request, deal_id: str):
     with _db(request) as conn:
         ctx = deal_context(conn, deal_id)
         ctx["worker_on"] = _worker_on(request)
+        ctx.update(access.page_owner(conn, ctx["deal"]["owner_id"]))       # a manager reads; forms are left out
         return _web().templates.TemplateResponse(request, "intel_deal.html", ctx)
 
 
@@ -258,7 +260,8 @@ def prep_page(request: Request, deal_id: str, id: int | None = None):
                                "ORDER BY id DESC LIMIT 10", (deal_id,)).fetchall()
         pending = _pending(conn, "PREP_REQUESTED", deal_id)
         titles = {r["node_id"]: r["title"] for r in conn.execute("SELECT node_id, title FROM calls")}
-        return _web().render(request, conn, "intel_prep.html", deal=deal, brief=brief, earlier=earlier,
+        return _web().render(request, conn, "intel_prep.html", **access.page_owner(conn, deal["owner_id"]),
+                             deal=deal, brief=brief, earlier=earlier,
                              pending=pending, titles=titles, worker_on=_worker_on(request),
                              methodology_name=prep.methodology_name(brief or {}) if brief
                              else methodology.active().name, autorefresh=5 if pending else 0)
@@ -284,17 +287,28 @@ def prep_request(request: Request, deal_id: str, title: str = Form(""), attendee
 # ---- coach --------------------------------------------------------------------------------
 
 @router.get("/coach/intel", response_class=HTMLResponse)
-def coach_intel(request: Request):
+def coach_intel(request: Request, rep: str = ""):
     with _db(request) as conn:
-        report = coach.latest(conn)
-        titles = {r["node_id"]: r["title"] for r in conn.execute("SELECT node_id, title FROM calls")}
-        n = len(coach.analysed_calls(conn))
-        error = (stores.get_user_state(conn, "intel:coach_error") or "").strip()
-        return _web().templates.TemplateResponse(request, "intel_coach.html", {
-            "report": report, "titles": titles, "n_calls": n,
-            "min_calls": int((history.cfg().get("coach") or {}).get("min_calls", 3)),
-            "pending": _pending(conn, "COACH_REPORT_REQUESTED", f"user:{identity.actor_of(conn).user_id}"),
-            "error": error, "worker_on": _worker_on(request)})
+        try:
+            with access.viewing(conn, rep or None) as subject:
+                return _coach_intel(request, conn, subject)
+        except LookupError:
+            raise HTTPException(404, "Not found")
+
+
+def _coach_intel(request: Request, conn, subject: str):
+    """The coach report of `subject`: the acting user, or a rep they manage (read only: no Regenerate)."""
+    owner = access.page_owner(conn, subject)
+    report = coach.latest(conn)
+    titles = {r["node_id"]: r["title"] for r in conn.execute("SELECT node_id, title FROM calls")}
+    n = len(coach.analysed_calls(conn))
+    # user_state is the acting user's own bookkeeping: a manager reading a rep's report has no error of theirs.
+    error = "" if owner["readonly"] else (stores.get_user_state(conn, "intel:coach_error") or "").strip()
+    return _web().templates.TemplateResponse(request, "intel_coach.html", {
+        "report": report, "titles": titles, "n_calls": n,
+        "min_calls": int((history.cfg().get("coach") or {}).get("min_calls", 3)),
+        "pending": _pending(conn, "COACH_REPORT_REQUESTED", f"user:{subject}"),
+        "error": error, "worker_on": _worker_on(request), **owner})
 
 
 @router.post("/coach/report")

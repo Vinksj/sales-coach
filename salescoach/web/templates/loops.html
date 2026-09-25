@@ -1,14 +1,17 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
+{% import "manager_macros.html" as mm %}
 {% block title %}Open loops{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div class="eyebrow">Open loops</div>
+  <div class="eyebrow">Open loops{% if readonly %} · {{ owner_name }}{% endif %}</div>
   <h1>{% if overdue %}{{ overdue }} overdue{% else %}Nothing overdue{% endif %}{% if unconfirmed %} · {{ unconfirmed }} unconfirmed{% endif %}</h1>
   <div class="meta">{{ loops|length }} loop{{ '' if loops|length == 1 else 's' }} match these filters.</div>
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'loops') }}{% endif %}
 
 <form method="get" action="/loops" class="filters card">
+  {% if reps %}<label>Rep<select name="rep"><option value="{{ me }}">You</option>{% for r in reps %}<option value="{{ r.id }}"{% if f.rep == r.id %} selected{% endif %}>{{ r.name or r.email or r.id }}</option>{% endfor %}</select></label>{% endif %}
   <label>Deal<select name="deal"><option value="">All deals</option>{% for d in deals %}<option value="{{ d.node_id }}"{% if f.deal == d.node_id %} selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></label>
   <label>Owner<select name="owner"><option value="">Anyone</option>{% for o in owners %}<option value="{{ o }}"{% if f.owner == o %} selected{% endif %}>{{ o }}</option>{% endfor %}</select></label>
   <label>Priority<select name="priority"><option value="">Any</option>{% for p in priorities %}<option value="{{ p }}"{% if f.priority == p %} selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
@@ -31,7 +34,7 @@
     <td>{{ m.prio(l.priority) }}</td>
     <td>{{ l.status }}<div>{{ m.review_pill(l.review_state) }}</div></td>
     <td>{% if l.deal_id %}<a href="/deals/{{ l.deal_id }}">{{ l.deal_name }}</a>{% endif %}</td>
-    <td>{{ m.loop_quick(l, here) }}</td>
+    <td>{% if not readonly %}{{ m.loop_quick(l, here) }}{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>

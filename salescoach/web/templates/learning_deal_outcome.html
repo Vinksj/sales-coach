@@ -5,6 +5,18 @@
   <span class="purpose">Yours to set. Won and lost are the ground truth the coach learns from; no agent changes them.</span>
 </div>
 <div class="grid-2">
+  {% if readonly %}
+  <div class="card">
+    <dl class="facts">
+      <div><dt>Stage</dt><dd>{{ deal.stage or 'none' }}</dd></div>
+      <div><dt>Status</dt><dd>{{ deal.status }}</dd></div>
+      <div><dt>Value</dt><dd>{% if deal.value is not none %}{{ '%g'|format(deal.value) }} {{ deal.currency or '' }}{% else %}not set{% endif %}</dd></div>
+      <div><dt>Close target</dt><dd>{{ (deal.close_target or '')[:10] or 'not set' }}</dd></div>
+    </dl>
+    {% if deal.status == 'lost' and (reason_code or reason_text) %}<p class="meta">Lost: {{ lost_reasons.get(reason_code, reason_code) }}{% if reason_text %} · {{ reason_text }}{% endif %}</p>{% endif %}
+    <p class="meta">Only {{ owner_name }} sets the stage and outcome.</p>
+  </div>
+  {% else %}
   <form method="post" action="/deals/{{ deal.node_id }}/outcome" class="card edit-form outcome-form">
     <div class="form-grid">
       <label>Stage<input name="stage" list="deal-stages" value="{{ deal.stage or '' }}" maxlength="60"></label>
@@ -22,6 +34,7 @@
     <button class="btn btn-primary btn-sm">Save</button>
     <p class="meta">Marking a deal won or lost needs the box ticked. A lost deal needs a reason.</p>
   </form>
+  {% endif %}
   <div class="card">
     <div class="label">History</div>
     {% if history %}

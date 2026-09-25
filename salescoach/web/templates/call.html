@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
+{% import "manager_macros.html" as mm %}
 {% block title %}{{ call.title or cid }}{% endblock %}
 {% block content %}
 {% set here = '/calls/' ~ cid %}
@@ -9,9 +10,11 @@
   <div class="meta">
     {{ call.source|human }} · {{ call.lang_mode }} · {{ call.wf_state|step_label }}
     {% if participants %} · {% for p in participants %}{{ p.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
-    · <a href="{{ here }}/runs">Agent runs</a>
+    · <a href="{{ here }}/runs">Agent runs</a>{% if readonly %} · {{ owner_name }}'s call{% endif %}
   </div>
+  {{ mm.viewed_by(viewed_by) }}
 </div>
+{% if readonly %}{{ mm.readonly_banner(owner_name, 'call') }}{% endif %}
 
 {# ---- pipeline state ---------------------------------------------------- #}
 {% if call.wf_state == 'live' %}
@@ -23,6 +26,9 @@
   <div class="eyebrow">Needs you</div>
   <h2>Which speaker are you?</h2>
   <p class="meta">This transcript names its speakers, and none of the names is one the coach knows as yours. It will not guess: whose words a promise is in decides whether it counts as your commitment. Nothing is processed until you answer; the answer is remembered for the next import.</p>
+  {% if readonly %}
+  <p>Waiting for {{ owner_name }} to say which speaker they are.</p>
+  {% else %}
   <form method="post" action="{{ here }}/speaker" class="stack">
     {% for s in speaker_question %}
     <label class="row"><input type="radio" name="label" value="{{ s.label }}" required> <strong>{{ s.label }}</strong> <span class="meta">· {{ s.count }} turns · "{{ s.sample }}"</span></label>
@@ -30,6 +36,7 @@
     <label class="row"><input type="radio" name="label" value="__none__"> <span>None of them: I do not speak in this transcript</span></label>
     <button class="btn btn-primary">That is me. Process the call</button>
   </form>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -37,7 +44,7 @@
 <div class="callout callout-err">
   <div class="eyebrow">{% if call.wf_state == 'capture_failed' %}Capture failed{% else %}Pipeline failed{% endif %}</div>
   <p class="err-text">{{ call.wf_error }}</p>
-  {% if failed_step %}
+  {% if failed_step and not readonly %}
   <form method="post" action="{{ here }}/retry"><input type="hidden" name="from_step" value="{{ failed_step }}"><button class="btn btn-primary">Retry from {{ failed_step|step_label }}</button></form>
   {% endif %}
 </div>
@@ -97,12 +104,14 @@
   <div class="callout">
     <div class="eyebrow">No draft this time</div>
     <p>{{ email_skipped }}</p>
+    {% if not readonly %}
     <div class="actions">
       <form method="post" action="{{ here }}/redraft"><button class="btn btn-secondary">Draft one anyway</button></form>
       {% if call.wf_state not in ('done', 'email_sent', 'email_skipped') %}
       <form method="post" action="{{ here }}/no-email"><button class="btn btn-quiet">Close without email</button></form>
       {% endif %}
     </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -123,7 +132,7 @@
     <div class="h3">{{ e.subject }}</div>
     <pre class="email-body">{{ e.body }}</pre>
     <div class="actions">
-      <form method="post" action="/emails/{{ e.id }}/mark-sent"><button class="btn btn-primary">I sent it from Gmail</button></form>
+      {% if not readonly %}<form method="post" action="/emails/{{ e.id }}/mark-sent"><button class="btn btn-primary">I sent it from Gmail</button></form>{% endif %}
     </div>
   </div>
   {% elif e.status == 'sending' %}
@@ -131,7 +140,7 @@
     <div class="eyebrow">Send did not finish</div>
     <p>A send started but never confirmed. Check Gmail Sent before doing anything else; this email will not be resent automatically.</p>
     <pre class="email-body">{{ e.body }}</pre>
-    {% if (e.error or '').startswith('delivery unknown') %}
+    {% if (e.error or '').startswith('delivery unknown') and not readonly %}
     <p class="meta">{{ e.error }}</p>
     <div class="actions">
       <form method="post" action="/emails/{{ e.id }}/not-sent"><button class="btn btn-secondary" data-confirm="Only press this after checking Gmail Sent: is this email NOT there? It can then be sent again.">It was not sent</button></form>
@@ -141,7 +150,7 @@
   {% elif e.status == 'rejected' %}
   <div class="card">
     <p class="muted">The last draft was {{ e.error or 'skipped' }}.</p>
-    <form method="post" action="{{ here }}/redraft"><button class="btn btn-secondary">Redraft</button></form>
+    {% if not readonly %}<form method="post" action="{{ here }}/redraft"><button class="btn btn-secondary">Redraft</button></form>{% endif %}
   </div>
   {% else %}
   {% if e.status == 'failed' %}<div class="flash flash-err">The last attempt failed: {{ e.error }}</div>{% endif %}
@@ -152,7 +161,7 @@
   {% if email.blocks or email.warns %}
   <ul class="plain issues">
     {% for i in email.blocks %}<li><span class="tag tag-block">blocks send</span> {{ i.detail }}
-      {% if i.kind == 'slots' and automation_slot_fill is defined %}<button class="btn btn-sm btn-secondary" type="submit" form="email-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots" title="Saves your edits, reads your calendar (read-only) and puts two or three free times in place of [SLOTS]">Fill times from calendar</button>
+      {% if i.kind == 'slots' and automation_slot_fill is defined and not readonly %}<button class="btn btn-sm btn-secondary" type="submit" form="email-form-{{ e.id }}" formaction="/emails/{{ e.id }}/fill-slots" title="Saves your edits, reads your calendar (read-only) and puts two or three free times in place of [SLOTS]">Fill times from calendar</button>
         {% if slot_fill and slot_fill.status not in ('filled', 'not_needed') %}<div class="meta">Last try {{ slot_fill.created_at|dt }}: {{ slot_fill.reason }}</div>{% endif %}{% endif %}</li>{% endfor %}
     {% for i in email.warns %}<li><span class="tag">check</span> {{ i.detail }}</li>{% endfor %}
   </ul>
@@ -160,6 +169,15 @@
   {% if slot_fill and slot_fill.status == 'filled' %}<p class="meta">Meeting times calendar-verified {{ slot_fill.verified_at|dt }}.</p>{% endif %}
   {% if email.user_added %}<p class="warn-line">Added by you, not on this call or deal: {{ email.user_added|join(', ') }}</p>{% endif %}
 
+  {% if readonly %}
+  <div class="card">
+    <div class="eyebrow">Draft v{{ e.version }} · {{ e.status|human }} · not sent</div>
+    <p>To {{ email.to|join(', ') or 'nobody yet' }}{% if email.cc %} · Cc {{ email.cc|join(', ') }}{% endif %}</p>
+    <div class="h3">{{ e.subject or '' }}</div>
+    <pre class="email-body">{{ e.body or '' }}</pre>
+    {% if e.rationale %}<p class="meta">{{ e.rationale }}</p>{% endif %}
+  </div>
+  {% else %}
   <form method="post" action="/emails/{{ e.id }}/save" class="email-form card" id="email-form-{{ e.id }}">
     <div class="form-grid-2">
       <label>To<input name="to" value="{{ email.to|join(', ') }}" autocomplete="off"></label>
@@ -185,10 +203,12 @@
     </div>
   </form>
   {% endif %}
+  {% endif %}
   {% elif not email_skipped %}
   <p class="empty">{% if ready %}No email was drafted.{% else %}The email is drafted after the analysis finishes.{% endif %}</p>
   {% endif %}
 </section>
+{% if email %}{{ mm.thread(email_comments, 'email', email.row.id, here, anchor='email-comments', title='Comments on the email') }}{% endif %}
 
 {# ---- c. action review ---------------------------------------------------- #}
 <section class="section" id="actions">
@@ -209,10 +229,12 @@
           {% if c.reason %}<div class="meta">{{ c.reason }}</div>{% endif %}
           {% if c.evidence %}<div class="meta">evidence {{ m.trefs(c.evidence, c.source_call if c.source_call != cid else None) }}</div>{% endif %}
         </div>
+        {% if not readonly %}
         <div class="quick">
           <form method="post" action="/conflicts/{{ c.id }}/resolve">{{ m.next_field(here ~ '#actions') }}<input type="hidden" name="accept" value="1"><button class="btn btn-sm btn-primary">Accept</button></form>
           <form method="post" action="/conflicts/{{ c.id }}/resolve">{{ m.next_field(here ~ '#actions') }}<input type="hidden" name="accept" value="0"><button class="btn btn-sm btn-quiet">Keep current</button></form>
         </div>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -242,6 +264,7 @@
     {% endif %}
     {% if l.notes %}<ul class="plain vnotes">{% for n in l.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
     <div class="actions">
+      {% if not readonly %}
       {% if l.review_state == 'proposed' %}
       <form method="post" action="/loops/{{ l.node_id }}/confirm">{{ m.next_field(here) }}<button class="btn btn-primary btn-sm">Confirm</button></form>
       {% endif %}
@@ -265,6 +288,7 @@
           <button class="btn btn-primary btn-sm">Save and confirm</button>
         </form>
       </details>
+      {% endif %}
       {% if run_ids.actions %}<a class="why" href="/runs/{{ run_ids.actions }}">Why?</a>{% endif %}
     </div>
   </article>
@@ -279,6 +303,7 @@
   </div>
   {% endif %}
 
+  {% if not readonly %}
   <details class="add-loop">
     <summary class="btn btn-sm">Add a loop</summary>
     <form method="post" action="{{ here }}/loops" class="card edit-form">
@@ -292,6 +317,7 @@
       <button class="btn btn-primary btn-sm">Add</button>
     </form>
   </details>
+  {% endif %}
 </section>
 
 {# ---- d. what changed, summary, missed opportunity, coaching -------------- #}
@@ -352,7 +378,7 @@
       <p class="lead">{{ ci.insight }} {{ m.trefs(ci.evidence_turns) }}</p>
       <div class="label">Practise on the next call</div>
       <p>{{ ci.practice_next_call }}</p>
-      <p><a href="/coach">Your patterns</a></p>
+      <p>{% if readonly %}<a href="/coach?rep={{ owner_id }}">{{ owner_name }}'s patterns</a>{% else %}<a href="/coach">Your patterns</a>{% endif %}</p>
     </div>
     {% endif %}
   </div>
@@ -366,6 +392,12 @@
   <details{% if needs_link %} open{% endif %}>
     <summary class="section-head"><h2>Deal and participants</h2>
       <span class="purpose">{% if not deal %}Not linked to a deal. {% endif %}{% if not buyers %}No buyer-side participant, so there is nobody to email. {% endif %}{% if not needs_link %}{{ deal.name }} · {{ buyers|length }} buyer-side participant{{ '' if buyers|length == 1 else 's' }}.{% endif %}</span></summary>
+    {% if readonly %}
+    <div class="card">
+      <p>{% if deal %}Deal: <a href="/deals/{{ deal.node_id }}">{{ deal.name }}</a>{% else %}Not linked to a deal.{% endif %}</p>
+      <p class="meta">Participants: {% for p in participants %}{{ p.name }}{% if p.email %} &lt;{{ p.email }}&gt;{% endif %}{% if not loop.last %}, {% endif %}{% else %}none recorded{% endfor %}.</p>
+    </div>
+    {% else %}
     <div class="grid-2">
       <form method="post" action="{{ here }}/deal" class="card edit-form">
         <div class="label">{% if deal %}Move to another deal{% else %}Link a deal{% endif %}</div>
@@ -384,6 +416,7 @@
         <button class="btn btn-primary btn-sm">Add participant</button>
       </form>
     </div>
+    {% endif %}
   </details>
 </section>
 
@@ -391,6 +424,12 @@
 {% if clusters|length > 1 %}
 <section class="section" id="speakers">
   <div class="section-head"><h2>Who was speaking</h2><span class="purpose">The other side has {{ clusters|length }} voices. Map each to a person so quotes and owners are right.</span></div>
+  {% if readonly %}
+  <div class="card"><div class="table-wrap"><table class="table">
+    <thead><tr><th>Voice</th><th>Sample</th><th>Person</th></tr></thead>
+    <tbody>{% for c in clusters %}<tr><td class="nowrap mono">{{ c.cluster }}<div class="meta">{{ c.count }} turns</div></td><td>"{{ c.sample }}" {{ m.trefs([c.first_idx]) }}</td><td>{% for p in people if p.node_id == c.person_id %}{{ p.name }}{% else %}<span class="muted">unknown</span>{% endfor %}</td></tr>{% endfor %}</tbody>
+  </table></div></div>
+  {% else %}
   <form method="post" action="{{ here }}/speakers" class="card">
     <div class="table-wrap"><table class="table">
       <thead><tr><th>Voice</th><th>Sample</th><th>Person</th></tr></thead>
@@ -405,11 +444,15 @@
     </table></div>
     <button class="btn btn-primary btn-sm">Save speakers</button>
   </form>
+  {% endif %}
 </section>
 {% endif %}
 
+{# ---- comments: the whole call; a moment of it is commented on in the transcript ---------------- #}
+{{ mm.thread(call_comments.general, 'call', cid, here, purpose=(call_comments.n ~ ' comment' ~ ('' if call_comments.n == 1 else 's') ~ ' on this call, ' ~ call_comments.open ~ ' unresolved. To comment on one moment, open the transcript and use "Comment" under that turn. Seen by the rep and their managers; never by the coach\'s agents.')) }}
+
 {# ---- g. transcript -------------------------------------------------------- #}
-<details class="section transcript" id="transcript">
+<details class="section transcript" id="transcript"{% if call_comments.by_turn %} open{% endif %}>
   <summary class="section-head"><h2>Transcript</h2>
     <span class="purpose">{{ turns|length }} turns{% if garbled_count %} · {{ garbled_count }} garbled{% endif %}{% if partial_count %} · {{ partial_count }} partial{% endif %}{% if bleed_count %} · {{ bleed_count }} bleed{% endif %}{% if not has_audio %} · no audio{% endif %}</span></summary>
   <ol class="turns">
@@ -419,7 +462,10 @@
       <span class="turn-text">{{ t.text }}
         {% if t.quality in ('garbled', 'partial') %}<span class="tag tag-{{ t.quality }}">{{ t.quality }}{% if t.quality_note %}: {{ t.quality_note }}{% endif %}</span>{% endif %}
         {% if t.bleed_flag %}<span class="tag">possible bleed</span>{% endif %}
-        {{ m.play(cid, [t.idx], can_play([t.idx])) }}</span>
+        {{ m.play(cid, [t.idx], can_play([t.idx])) }}
+        {% set tc = call_comments.by_turn.get(t.idx, []) %}
+        {% if tc %}<ul class="plain comment-list turn-comments">{% for c in tc %}{{ mm.comment(c, here ~ '#t' ~ t.idx) }}{% endfor %}</ul>{% endif %}
+        <details class="turn-comment"><summary class="meta" aria-label="Comment on turn {{ t.idx }}">Comment</summary>{{ mm.comment_form('call', cid, here ~ '#t' ~ t.idx, 'Comment on this moment (turn #' ~ t.idx ~ ')', t.idx) }}</details></span>
     </li>
     {% else %}
     <li class="empty">No final transcript yet.</li>
@@ -428,7 +474,7 @@
 </details>
 
 {# ---- h. complete review --------------------------------------------------- #}
-{% if ready %}
+{% if ready and not readonly %}
 <section class="section complete">
   <form method="post" action="{{ here }}/complete" class="complete-row">
     <button class="btn btn-primary">{% if review_completed %}Complete review again{% else %}Complete review{% endif %}</button>

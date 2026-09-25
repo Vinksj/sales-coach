@@ -31,7 +31,20 @@
   </div>
   {% endfor %}
 
-  <section class="section first">
+  {% if comment_inbox %}
+  <section class="section first comments-inbox" id="comments">
+    <div class="section-head"><h2>Comments on your work</h2><span class="purpose">Unresolved. Open one to read it in place and resolve it there.</span></div>
+    {% for g in comment_inbox %}
+    <div class="card">
+      <div class="strong">{{ g.n }} comment{{ '' if g.n == 1 else 's' }} from {{ g.author_name }}</div>
+      <ul class="plain dash">{% for i in g['items'][:5] %}<li><a href="{{ i.href }}">{{ i.label or i.what|capitalize }}</a> <span class="meta">{{ i.what }}{% if i.turn_idx is not none %}, turn #{{ i.turn_idx }}{% endif %} · {{ i.created_at|dt }}</span><div class="meta">{{ i.body|truncate(160) }}</div></li>{% endfor %}</ul>
+      {% if g.n > 5 %}<p class="meta">and {{ g.n - 5 }} more.</p>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="section{% if not comment_inbox %} first{% endif %}">
     <div class="section-head"><h2>Calls to review</h2><span class="purpose">{{ awaiting|length }} waiting. Confirm the actions, fix the email, send.</span></div>
     {% for a in awaiting %}
     <a class="card call-row" href="/calls/{{ a.call.node_id }}">

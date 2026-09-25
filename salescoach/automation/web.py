@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 
 from .. import identity
 from ..execution import policy, tokens
+from ..manager import access, comments
 from ..orchestrator import bus, review
 from ..schemas.events import Event
 from ..store import stores
@@ -43,10 +44,12 @@ def _latest_decisions(conn, loop_ids) -> dict:
 
 
 def _drafted_nudges(conn) -> list[dict]:
+    """The acting user's own nudges to send (a manager reads their team's, but never sends them)."""
     out = []
     for r in conn.execute(
             "SELECT e.*, d.name AS deal_name FROM emails e LEFT JOIN deals d ON d.node_id=e.deal_id "
-            "WHERE e.kind='nudge' AND e.status IN ('drafted','failed','saved_to_gmail','sending') ORDER BY e.id DESC"):
+            "WHERE e.owner_id=? AND e.kind='nudge' AND e.status IN ('drafted','failed','saved_to_gmail','sending') "
+            "ORDER BY e.id DESC", (identity.actor_of(conn).user_id,)):
         n = dict(r)
         n["to"] = core.fromjson(n["to_addrs"], []) or []
         dec = conn.execute("SELECT f.*, l.description FROM followup_decisions f JOIN loops l ON l.node_id=f.loop_id "
@@ -104,9 +107,9 @@ def today_data(request) -> dict:
         due = [dict(r) for r in followup.due_loops(conn, today)]
         decided = conn.execute(
             "SELECT f.*, l.description, d.name AS deal_name FROM followup_decisions f JOIN loops l ON l.node_id=f.loop_id "
-            "LEFT JOIN deals d ON d.node_id=f.deal_id WHERE f.eval_date=? AND f.stage IN ('rules','agent') "
+            "LEFT JOIN deals d ON d.node_id=f.deal_id WHERE f.owner_id=? AND f.eval_date=? AND f.stage IN ('rules','agent') "
             "AND f.decision IN ('ask_user','escalate','close_as_stale') ORDER BY f.id DESC LIMIT 10",
-            (today.isoformat(),)).fetchall()
+            (identity.actor_of(conn).user_id, today.isoformat())).fetchall()
         return {"due": due, "decided": [dict(r) for r in decided], "nudges": _drafted_nudges(conn),
                 "replies": _recent_replies(conn, 6), "upcoming": _upcoming(conn),
                 "calendar": _calendar_state(conn, request),
@@ -192,6 +195,7 @@ def calendar_record(request: Request, event_id: str, action: str = Form("arm"),
 def followups_page(request: Request):
     today = common.today_ist()
     with core._db(request) as conn:
+        me = identity.actor_of(conn).user_id           # the acting user's own follow-ups (a manager reads, never acts)
         due = [dict(r) for r in followup.due_loops(conn, today)]
         latest = _latest_decisions(conn, [l["node_id"] for l in due])
         for loop in due:
@@ -200,19 +204,20 @@ def followups_page(request: Request):
             "SELECT f.*, l.description, l.owner, l.owner_name, l.follow_up_count, d.name AS deal_name, "
             "e.status AS email_status FROM followup_decisions f JOIN loops l ON l.node_id=f.loop_id "
             "LEFT JOIN deals d ON d.node_id=f.deal_id LEFT JOIN emails e ON e.id=f.email_id "
-            "WHERE f.eval_date>=? ORDER BY f.id DESC LIMIT 80", ((today - timedelta(days=14)).isoformat(),))]
+            "WHERE f.owner_id=? AND f.eval_date>=? ORDER BY f.id DESC LIMIT 80", (me, (today - timedelta(days=14)).isoformat()))]
         proposals = [dict(r) for r in conn.execute(
             "SELECT mc.*, l.description FROM memory_conflicts mc JOIN loops l ON l.node_id=mc.entity_id "
-            "WHERE mc.status='open' AND mc.provenance LIKE '%\"kind\": \"followup\"%' ORDER BY mc.id DESC")]
+            "WHERE mc.owner_id=? AND mc.status='open' AND mc.provenance LIKE '%\"kind\": \"followup\"%' ORDER BY mc.id DESC",
+            (me,))]
         for p in proposals:
             p["reason"] = (core.fromjson(p["provenance"], {}) or {}).get("reason")
         escalations = [dict(r) for r in conn.execute(
             "SELECT l.*, d.name AS deal_name FROM loops l LEFT JOIN deals d ON d.node_id=l.deal_id "
-            "WHERE l.node_id LIKE 'loop-esc-%' AND l.status IN ('open','waiting') AND l.review_state!='rejected' "
-            "ORDER BY l.created_at DESC")]
+            "WHERE l.owner_id=? AND l.node_id LIKE 'loop-esc-%' AND l.status IN ('open','waiting') "
+            "AND l.review_state!='rejected' ORDER BY l.created_at DESC", (me,))]
         sent = [dict(r) for r in conn.execute(
             "SELECT e.*, d.name AS deal_name FROM emails e LEFT JOIN deals d ON d.node_id=e.deal_id "
-            "WHERE e.kind='nudge' AND e.status='sent' ORDER BY e.sent_at DESC LIMIT 10")]
+            "WHERE e.owner_id=? AND e.kind='nudge' AND e.status='sent' ORDER BY e.sent_at DESC LIMIT 10", (me,))]
         for s in sent:
             s["to"] = core.fromjson(s["to_addrs"], []) or []
         return core.render(request, conn, "automation_followups.html", due=due, recent=recent,
@@ -282,6 +287,8 @@ def nudge_page(request: Request, email_id: int):
         fill = calendar.last_fill(conn, email_id)
         return core.render(request, conn, "automation_nudge.html", email=core._email_view(conn, email), info=info,
                            verdict=verdict, fill=dict(fill) if fill else None, here=f"/nudges/{email_id}",
+                           email_comments=comments.thread(conn, "email", email_id),
+                           **access.page_owner(conn, email["owner_id"]),
                            deal=conn.execute("SELECT * FROM deals WHERE node_id=?", (email["deal_id"],)).fetchone()
                            if email["deal_id"] else None)
 
@@ -426,7 +433,7 @@ def replies_poll(request: Request):
 def replies_reviewed(request: Request, reply_id: int):
     from . import replies
     with core._db(request) as conn:
-        core._one(conn, "SELECT id FROM email_replies WHERE id=?", (reply_id,), "reply")
+        core._one(conn, "SELECT id, owner_id FROM email_replies WHERE id=?", (reply_id,), "reply")
         replies.mark_reviewed(conn, reply_id)
     return core._redirect("/replies", msg="Marked reviewed.")
 

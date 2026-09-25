@@ -106,6 +106,7 @@
 {% endif %}
 
 <section class="section">
+  {% if readonly %}<p class="meta">{{ owner_name }}'s deal: read only. Only {{ owner_name }} can prepare a brief.</p>{% else %}
   <form method="post" action="/deals/{{ deal.node_id }}/prep" class="card edit-form">
     <div class="eyebrow">{% if brief %}Prepare again{% else %}Prepare a brief{% endif %}</div>
     <div class="form-grid">
@@ -115,6 +116,7 @@
     <label>Attendees<input name="attendees" placeholder="emails or names, comma separated"><span class="hint">Attendees are shown first; anyone not on the stakeholder map is flagged.</span></label>
     <button class="btn btn-primary btn-sm">Prepare brief</button>
   </form>
+  {% endif %}
   {% if earlier|length > 1 %}
   <details><summary class="meta">Earlier briefs</summary><ul class="plain">{% for e in earlier %}<li><a href="/deals/{{ deal.node_id }}/prep?id={{ e.id }}">{{ e.meeting_title or 'Next call' }}</a> <span class="meta">{{ e.created_at|dt }}</span></li>{% endfor %}</ul></details>
   {% endif %}

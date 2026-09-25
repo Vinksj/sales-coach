@@ -13,7 +13,7 @@
     <a class="brand" href="/"><span class="wm">{{ brand() or 'Sales Coach' }}<i class="wm-dot" aria-hidden="true"></i></span>{% if brand() %}<span class="brand-sub">Sales coach</span>{% endif %}</a>
     <nav class="nav" aria-label="Main">
       {% for href, label in [("/", "Today"), ("/loops", "Loops"), ("/deals", "Deals"), ("/coach", "Coach"), ("/import", "Import")] + (nav_ext or []) %}
-      {% if not href.startswith('/admin') or me_role() == 'admin' %}
+      {% if (not href.startswith('/admin') or me_role() == 'admin') and (href != '/team' or nav_manages) %}
       <a href="{{ href }}" class="{% if (href == '/' and path == '/') or (href != '/' and path.startswith(href)) %}active{% endif %}">{{ label }}</a>
       {% endif %}
       {% endfor %}

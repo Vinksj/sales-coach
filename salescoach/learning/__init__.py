@@ -74,7 +74,8 @@ PROPOSALS_DDL = """CREATE TABLE learning_proposals (
   applied     TEXT,
   created_at  TEXT NOT NULL,
   resolved_at TEXT,
-  decided_n   INTEGER
+  decided_n   INTEGER,
+  owner_id    TEXT NOT NULL DEFAULT 'local'
 )"""
 PROPOSAL_COLUMNS = "id,kind,subject,pattern_id,target_id,summary,payload,status,applied,created_at,resolved_at"
 
@@ -105,8 +106,12 @@ def _rebuild_proposals(conn) -> None:
     try:
         conn.execute("ALTER TABLE learning_proposals RENAME TO learning_proposals_f1")
         conn.execute(PROPOSALS_DDL)
-        conn.execute(f"INSERT INTO learning_proposals({PROPOSAL_COLUMNS}) SELECT {PROPOSAL_COLUMNS} "
-                     "FROM learning_proposals_f1 ORDER BY id")
+        # An F1 table that already went through the owner migration (store/migrate.py 7) keeps its owners;
+        # one that did not is the local seller's, which the column's default says.
+        old_cols = {r[1] for r in conn.execute("PRAGMA table_info(learning_proposals_f1)")}
+        cols = PROPOSAL_COLUMNS + (",owner_id" if "owner_id" in old_cols else "")
+        conn.execute(f"INSERT INTO learning_proposals({cols}) SELECT {cols} FROM learning_proposals_f1 ORDER BY id")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_proposals_owner_id ON learning_proposals(owner_id)")
         conn.execute("DROP TABLE learning_proposals_f1")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(kind, subject) "
                      "WHERE status='open'")

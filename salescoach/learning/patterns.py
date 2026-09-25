@@ -61,7 +61,9 @@ class ActionRefused(ValueError):
 
 
 def _owner(conn=None) -> str:
-    return identity.actor_of(conn).user_id if conn is not None else identity.current_user_id()
+    """Whose patterns: the acting user, or the rep whose Learning page a manager is reading
+    (identity.viewing; read-only, never set on a path that writes or builds a prompt)."""
+    return identity.subject_id(conn)
 
 
 def pattern_id(family: str, key: str, scope: str = SCOPE, owner: str | None = None) -> str:
@@ -366,8 +368,8 @@ def _open_proposal(conn, kind, subject, pattern, target, summary, payload, n: in
 def decided_proposals(conn, limit: int = 50) -> list[dict]:
     """The history: what was proposed and what the user decided, newest first."""
     out = []
-    for r in conn.execute("SELECT * FROM learning_proposals WHERE status!='open' ORDER BY resolved_at DESC, id DESC "
-                          "LIMIT ?", (limit,)):
+    for r in conn.execute("SELECT * FROM learning_proposals WHERE owner_id=? AND status!='open' "
+                          "ORDER BY resolved_at DESC, id DESC LIMIT ?", (_owner(conn), limit)):
         d = dict(r)
         d["payload"] = json.loads(r["payload"] or "{}")
         out.append(d)
@@ -475,7 +477,8 @@ def _propose_trigger_weights(conn) -> int:
 
 def open_proposals(conn) -> list[dict]:
     out = []
-    for r in conn.execute("SELECT * FROM learning_proposals WHERE status='open' ORDER BY id"):
+    for r in conn.execute("SELECT * FROM learning_proposals WHERE owner_id=? AND status='open' ORDER BY id",
+                          (_owner(conn),)):
         d = dict(r)
         d["payload"] = json.loads(r["payload"] or "{}")
         out.append(d)
@@ -596,8 +599,8 @@ def series(conn, key: str | None = None) -> list[dict]:
     """Numeric per-call series (talk share, questions asked, slots filled): the values and n, no judgement."""
     out = {}
     for o in conn.execute("SELECT o.key, o.call_id, o.value, o.source_is_replay, o.observed_at, c.title FROM "
-                          "pattern_observations o LEFT JOIN calls c ON c.node_id=o.call_id WHERE o.family='seller_series' "
-                          "AND o.excluded=0 ORDER BY o.observed_at, o.id"):
+                          "pattern_observations o LEFT JOIN calls c ON c.node_id=o.call_id WHERE o.owner_id=? "
+                          "AND o.family='seller_series' AND o.excluded=0 ORDER BY o.observed_at, o.id", (_owner(conn),)):
         if key and o["key"] != key:
             continue
         out.setdefault(o["key"], []).append({"call_id": o["call_id"], "title": o["title"], "at": o["observed_at"],
@@ -671,8 +674,8 @@ def beliefs(conn, evidence_limit: int = 5) -> list[dict]:
             obs = conn.execute(
                 "SELECT o.*, c.title AS call_title, d.name AS deal_name, m.kind AS email_kind, m.call_id AS email_call_id "
                 "FROM pattern_observations o LEFT JOIN calls c ON c.node_id=o.call_id LEFT JOIN deals d ON d.node_id=o.deal_id "
-                f"LEFT JOIN emails m ON m.id=o.email_id WHERE o.family=? AND o.key IN ({marks}) "
-                "ORDER BY o.observed_at DESC, o.id DESC", (family, *keys)).fetchall()
+                f"LEFT JOIN emails m ON m.id=o.email_id WHERE o.owner_id=? AND o.family=? AND o.key IN ({marks}) "
+                "ORDER BY o.observed_at DESC, o.id DESC", (owner, family, *keys)).fetchall()
             links, seen_links = [], set()
             for o in obs:
                 link = _evidence_link(o) if countable(o) else None

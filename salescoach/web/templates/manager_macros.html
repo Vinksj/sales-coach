@@ -1,0 +1,43 @@
+{# Phase 7 (salescoach/manager): the read-only banner, the "Viewed by" line and comment threads. #}
+
+{% macro readonly_banner(owner_name, what) -%}
+<div class="readonly-banner" role="status">
+  <span class="eyebrow">Read only</span>
+  <span>Viewing {{ owner_name }}'s {{ what }}. You can read everything here and comment; only {{ owner_name }} can change it.</span>
+</div>
+{%- endmacro %}
+
+{% macro viewed_by(views) -%}
+{% if views %}<p class="meta viewed-by">Viewed by {% for v in views %}<span class="strong">{{ v.name }}</span> <span class="nowrap">{{ v.last|dt }}{% if v.n > 1 %} ({{ v.n }} visits){% endif %}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+{%- endmacro %}
+
+{% macro comment(c, here) -%}
+<li class="comment{% if c.resolved_at %} comment-resolved{% endif %}" id="c-{{ c.id }}">
+  <div class="comment-head"><span class="strong">{{ c.author_name }}</span> <span class="meta">{{ c.created_at|dt }}{% if c.resolved_at %} · resolved by {{ c.resolved_by_name }}{% endif %}</span></div>
+  <div class="comment-body">{{ c.body }}</div>
+  {% if c.can_resolve or c.mine %}
+  <div class="quick">
+    {% if c.can_resolve %}<form method="post" action="/comments/{{ c.id }}/resolve"><input type="hidden" name="next" value="{{ here }}"><button class="btn btn-sm btn-quiet">Resolve</button></form>{% endif %}
+    {% if c.mine %}<form method="post" action="/comments/{{ c.id }}/delete"><input type="hidden" name="next" value="{{ here }}"><button class="btn btn-sm btn-quiet" data-confirm="Delete this comment?">Delete</button></form>{% endif %}
+  </div>
+  {% endif %}
+</li>
+{%- endmacro %}
+
+{% macro comment_form(entity_type, entity_id, here, label='Add a comment', turn_idx=none, placeholder='') -%}
+<form method="post" action="/comments" class="comment-form">
+  <input type="hidden" name="entity_type" value="{{ entity_type }}"><input type="hidden" name="entity_id" value="{{ entity_id }}">
+  {% if turn_idx is not none %}<input type="hidden" name="turn_idx" value="{{ turn_idx }}">{% endif %}
+  <input type="hidden" name="next" value="{{ here }}">
+  <label>{{ label }}<textarea name="body" rows="2" required maxlength="4000"{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}></textarea></label>
+  <div class="actions"><button class="btn btn-sm btn-secondary">Post</button></div>
+</form>
+{%- endmacro %}
+
+{% macro thread(items, entity_type, entity_id, here, anchor='comments', title='Comments', purpose='') -%}
+<section class="section comments" id="{{ anchor }}">
+  <div class="section-head"><h2>{{ title }}</h2><span class="purpose">{% if purpose %}{{ purpose }}{% else %}{{ items|length }} comment{{ '' if items|length == 1 else 's' }}. Seen by the rep and their managers; never by the coach's agents.{% endif %}</span></div>
+  {% if items %}<ul class="plain comment-list">{% for c in items %}{{ comment(c, here ~ '#' ~ anchor) }}{% endfor %}</ul>{% endif %}
+  {{ comment_form(entity_type, entity_id, here ~ '#' ~ anchor) }}
+</section>
+{%- endmacro %}

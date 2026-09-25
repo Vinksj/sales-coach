@@ -62,7 +62,7 @@
 {% endif %}
 <div class="intel-actions">
   {% if pending %}<span class="meta">A coach report is queued{% if not worker_on %}; the worker is not running here (run <span class="mono">salescoach coach-report</span>){% endif %}.</span>
-  {% elif n_calls %}<form method="post" action="/coach/report"><button class="btn btn-sm">{% if report %}Regenerate{% else %}Write it now{% endif %}</button></form>{% endif %}
+  {% elif n_calls and not readonly %}<form method="post" action="/coach/report"><button class="btn btn-sm">{% if report %}Regenerate{% else %}Write it now{% endif %}</button></form>{% endif %}
   {% if error %}<span class="meta accent">Last attempt failed: {{ error }}</span>{% endif %}
 </div>
 </div>

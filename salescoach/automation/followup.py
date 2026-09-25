@@ -543,9 +543,13 @@ def schedule_unscheduled(conn, today: date) -> int:
 
 
 def due_loops(conn, today: date) -> list:
+    """The acting user's own loops due a follow-up check (a manager can read a rep's loops; they are not
+    the manager's to follow up)."""
+    from .. import identity
     return conn.execute(
-        LOOP_SELECT + f"WHERE l.status IN ('open','waiting') AND {TRACKED} AND l.next_check_at IS NOT NULL "
-        f"AND substr(l.next_check_at,1,10)<=? ORDER BY {PRIORITY_SQL}, l.next_check_at", (today.isoformat(),)).fetchall()
+        LOOP_SELECT + f"WHERE l.owner_id=? AND l.status IN ('open','waiting') AND {TRACKED} AND l.next_check_at IS NOT NULL "
+        f"AND substr(l.next_check_at,1,10)<=? ORDER BY {PRIORITY_SQL}, l.next_check_at",
+        (identity.actor_of(conn).user_id, today.isoformat())).fetchall()
 
 
 def evaluate_due(conn, today: Optional[date] = None) -> list[dict]:

@@ -68,7 +68,8 @@ def _learned_verdicts(conn) -> dict:
 
 
 def _owner(conn) -> str:
-    return identity.actor_of(conn).user_id
+    """The acting user, or the rep whose Coach page a manager is reading (identity.viewing, read-only)."""
+    return identity.subject_id(conn)
 
 
 def retired_tags(conn) -> set:

@@ -29,6 +29,7 @@ Two halves:
 import json
 from datetime import date, timedelta
 
+from .. import identity
 from ..automation import common
 from ..execution.cadence import add_business_days
 from ..memory import gate
@@ -396,7 +397,7 @@ def counts(conn) -> list[dict]:
     for kind in KINDS:
         row = conn.execute("SELECT SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS yes, SUM(CASE WHEN value=0 THEN 1 ELSE 0 END) AS no, "
                            "SUM(CASE WHEN value IS NULL THEN 1 ELSE 0 END) AS pending, COUNT(*) AS n "
-                           "FROM derived_outcomes WHERE kind=?", (kind,)).fetchone()
+                           "FROM derived_outcomes WHERE owner_id=? AND kind=?", (identity.subject_id(conn), kind)).fetchone()
         out.append({"kind": kind, "yes": row["yes"] or 0, "no": row["no"] or 0, "pending": row["pending"] or 0,
                     "n": row["n"] or 0})
     return out

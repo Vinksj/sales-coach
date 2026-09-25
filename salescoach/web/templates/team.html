@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Team{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Team{% if windows %} · {{ windows.today|day }}{% endif %}</div>
+  <h1>{% if no_team %}You manage no team{% else %}{{ reps|length }} rep{{ '' if reps|length == 1 else 's' }}{% endif %}</h1>
+  {% if not no_team %}<div class="meta">Every number is counted from the store, never estimated by a model; each one opens the list it counts. You can read everything your reps record and comment on it; you cannot change or send anything of theirs.</div>{% endif %}
+</div>
+
+{% if no_team %}
+<div class="callout">
+  <p>An admin runs the org and sees no one's calls, deals or coaching. To review a team, make yourself (or someone) its manager under <a href="/admin#teams">Admin, Teams</a>.</p>
+</div>
+{% else %}
+<section class="section first">
+  <div class="table-wrap"><table class="table team-table">
+    <caption class="meta">Calls by the date they started. Loops are overdue when open or waiting past their due date. Health is the median over open deals that have a score. Gaps are {{ methodology or 'methodology' }} elements neither known nor partial on open deals. Talk share is from live captures and stereo imports only.</caption>
+    <thead><tr>
+      <th scope="col">Rep</th>
+      <th scope="col" class="r">Calls<div class="meta">7 d · 28 d</div></th>
+      <th scope="col" class="r">To review</th>
+      <th scope="col" class="r">Overdue loops</th>
+      <th scope="col" class="r">Open deals<div class="meta">median health</div></th>
+      <th scope="col">Most often unknown</th>
+      <th scope="col">Talk share</th>
+      <th scope="col" class="r">Follow-ups<div class="meta">sent / drafted, 28 d</div></th>
+      <th scope="col">Last activity</th>
+    </tr></thead>
+    <tbody>
+    {% for r in reps %}
+    {% set q = 'rep=' ~ r.id %}
+    <tr class="{% if r.status == 'disabled' %}row-muted{% endif %}">
+      <th scope="row" class="team-rep"><span class="strong">{{ r.name or r.email or r.id }}</span>
+        <div class="meta">{{ r.team_name or '' }}{% if r.status != 'active' %} · {{ r.status }}{% endif %}</div>
+        <div class="meta"><a href="/coach?rep={{ r.id }}">Coach</a> · <a href="/learning?rep={{ r.id }}">Learning</a></div></th>
+      <td class="r num"><a href="/calls?{{ q }}&amp;from={{ windows.week_from }}" aria-label="{{ r.calls_week }} calls in the last 7 days">{{ r.calls_week }}</a> · <a href="/calls?{{ q }}&amp;from={{ windows.month_from }}" aria-label="{{ r.calls_4w }} calls in the last 28 days">{{ r.calls_4w }}</a></td>
+      <td class="r num"><a href="/calls?{{ q }}&amp;state=awaiting_review" class="{% if r.awaiting %}strong{% endif %}">{{ r.awaiting }}</a></td>
+      <td class="r num"><a href="/loops?{{ q }}&amp;due=overdue" class="{% if r.overdue_loops %}due-over{% endif %}">{{ r.overdue_loops }}</a></td>
+      <td class="r num"><a href="/deals?{{ q }}&amp;status=active">{{ r.open_deals }}</a>
+        <div class="meta">{% if r.median_health is not none %}{{ r.median_health|round|int }} <span title="deals with a health score">(n={{ r.n_scored }})</span>{% else %}no score{% endif %}</div></td>
+      <td>{% for g in r.gaps %}<a href="/calls?{{ q }}&amp;gap={{ g.key }}">{{ g.label }}</a> <span class="meta">{{ g.unknown }}/{{ g.of }}</span>{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">{% if r.open_deals %}none{% else %}no open deals{% endif %}</span>{% endfor %}</td>
+      <td>{% if r.talk_share %}<a href="/learning?{{ q }}#family-seller">{{ (r.talk_share.latest * 100)|round|int }}%</a>
+        <div class="meta">{% if r.talk_share.direction %}{{ r.talk_share.direction }} from {{ (r.talk_share.before * 100)|round|int }}%{% else %}first calls{% endif %} · n={{ r.talk_share.n }}</div>
+        {% else %}<span class="muted">no live or stereo calls</span>{% endif %}</td>
+      <td class="r num"><a href="/calls?{{ q }}&amp;from={{ windows.month_from }}&amp;email=sent">{{ r.emails_sent }}</a> / <a href="/calls?{{ q }}&amp;from={{ windows.month_from }}&amp;email=drafted">{{ r.emails_drafted }}</a></td>
+      <td class="nowrap">{% if r.last_activity %}<a href="/calls?{{ q }}">{{ r.last_activity|dt }}</a>{% else %}<span class="muted">nothing yet</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="empty">Your team has no members yet. An admin adds them under Admin.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+{% if rollup %}
+<section class="section" id="patterns">
+  <div class="section-head"><h2>Patterns across the team</h2><span class="purpose">How many reps have each selling pattern active (and established). Counted at read time from each rep's own Learning page; stored nowhere and never used in a prompt. A pattern shows only once at least {{ rollup.min_n }} reps have it; email voice is never compared.</span></div>
+  {% if rollup.tags %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th scope="col">Pattern</th><th scope="col" class="r">Reps with it active</th><th scope="col" class="r">Of them, established</th></tr></thead>
+    <tbody>{% for t in rollup.tags %}<tr><td>{{ t.label }}<div class="meta mono">{{ t.key }}</div></td><td class="r num">{{ t.active }} of {{ rollup.reps }}</td><td class="r num">{{ t.established }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="empty">No pattern is active for {{ rollup.min_n }} or more reps yet.</p>{% endif %}
+  {% if rollup.hidden %}<p class="meta">{{ rollup.hidden }} pattern{{ '' if rollup.hidden == 1 else 's' }} active for fewer than {{ rollup.min_n }} reps {{ 'is' if rollup.hidden == 1 else 'are' }} not shown.</p>{% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

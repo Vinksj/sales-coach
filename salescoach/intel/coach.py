@@ -42,9 +42,11 @@ def _cfg():
 
 
 def analysed_calls(conn) -> list[dict]:
+    """The coached seller's own analysed calls (a manager can read their team's too; this is one seller's)."""
     return [dict(r) for r in conn.execute(
-        "SELECT c.node_id, c.title, c.started_at, c.deal_id FROM calls c WHERE EXISTS "
-        "(SELECT 1 FROM artifacts a WHERE a.call_id=c.node_id AND a.kind='analysis') ORDER BY c.started_at DESC")]
+        "SELECT c.node_id, c.title, c.started_at, c.deal_id FROM calls c WHERE c.owner_id=? AND EXISTS "
+        "(SELECT 1 FROM artifacts a WHERE a.call_id=c.node_id AND a.kind='analysis') ORDER BY c.started_at DESC",
+        (_owner(conn),))]
 
 
 def trajectory(rows) -> tuple[str, dict]:
@@ -261,8 +263,9 @@ def validate(conn, ctx, raw: dict) -> dict:
 
 
 def _owner(conn) -> str:
+    """The acting user, or the rep whose Coach page a manager is reading (identity.viewing, read-only)."""
     from .. import identity
-    return identity.actor_of(conn).user_id
+    return identity.subject_id(conn)
 
 
 def latest(conn) -> dict | None:
