@@ -43,7 +43,7 @@
 </section>
 {% endif %}
 
-{% if call.wf_error %}
+{% if call.wf_error and not budget_wait %}
 <div class="callout callout-err">
   <div class="eyebrow">{% if call.wf_state == 'capture_failed' %}Capture failed{% else %}Pipeline failed{% endif %}</div>
   <p class="err-text">{{ call.wf_error }}</p>
@@ -53,10 +53,11 @@
 </div>
 {% elif processing or rerun %}
 <section class="card progress">
-  <div class="eyebrow">{% if rerun %}Re-running{% else %}Processing{% endif %}</div>
+  <div class="eyebrow">{% if budget_wait %}Waiting{% elif rerun %}Re-running{% else %}Processing{% endif %}</div>
+  {% if budget_wait %}<p class="lead budget-wait">{{ budget_waiting_text }}</p>{% endif %}
   <h2>{% if current_step %}Now: {{ current_step.label }}{% elif rerun and job %}Queued: from {{ (job.payload|fromjson({})).get('from')|step_label }}{% else %}Queued{% endif %}</h2>
   <ol class="steps">{% for s in steps %}<li class="step step-{{ s.status }}">{{ s.label }}</li>{% endfor %}</ol>
-  <p class="meta">This page refreshes by itself.{% if job %} Job {{ job.status }}, attempt {{ job.attempts }}.{% endif %}
+  <p class="meta">This page refreshes by itself.{% if job and not budget_wait %} Job {{ job.status }}, attempt {{ job.attempts }}.{% endif %}
     {% if not nav_worker_on %} The worker is not running in this server, so nothing will move until <span class="mono">salescoach serve</span> or <span class="mono">salescoach work</span> runs.{% endif %}</p>
 </section>
 {% endif %}
@@ -482,7 +483,7 @@
 <section class="section complete">
   <form method="post" action="{{ here }}/complete" class="complete-row">
     <button class="btn btn-primary">{% if review_completed %}Complete review again{% else %}Complete review{% endif %}</button>
-    <p class="meta">{% if review_completed %}Review completed. {% endif %}Confirmed loops are mirrored to Jarvis. Anything still proposed stays in Open Loops.{% if proposed_count %} {{ proposed_count }} still proposed.{% endif %}</p>
+    <p class="meta">{% if review_completed %}Review completed. {% endif %}{% if jarvis_on() %}Confirmed loops are mirrored to Jarvis. {% endif %}Anything still proposed stays in Open Loops.{% if proposed_count %} {{ proposed_count }} still proposed.{% endif %}</p>
   </form>
 </section>
 {% endif %}

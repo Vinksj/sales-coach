@@ -146,6 +146,8 @@
 </div>
 
 <aside class="today-side">
+  {# Live capture is a local install's (a microphone on this machine); cloud mode records through each rep's recorder. #}
+  {% if not cloud() %}
   <section class="card start">
     <div class="eyebrow">Start a call</div>
     {% if live.active %}
@@ -170,6 +172,7 @@
       <button class="btn btn-primary"{% if not live.available or live.active %} disabled{% endif %}>Start recording</button>
     </form>
   </section>
+  {% endif %}
 
   <section class="card priority-card">
     <div class="eyebrow">Coaching priority</div>
@@ -189,7 +192,7 @@
     <ul class="plain progress-list">
       {% for p in processing %}
       <li><a href="/calls/{{ p.call.node_id }}">{{ p.call.title or p.call.node_id }}</a>
-        <div class="meta">{% if p.next %}next: {{ p.next|step_label }}{% endif %}{% if p.job %} · {{ p.job.status }}{% else %} · not queued{% endif %}</div></li>
+        <div class="meta">{% if p.budget_wait %}{{ budget_waiting_text }}{% else %}{% if p.next %}next: {{ p.next|step_label }}{% endif %}{% if p.job %} · {{ p.job.status }}{% else %} · not queued{% endif %}{% endif %}</div></li>
       {% endfor %}
     </ul>
   </section>

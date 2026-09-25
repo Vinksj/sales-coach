@@ -6,18 +6,22 @@ back the numbers on /team (team.py), so a number there and the list it links to 
 """
 from datetime import date
 
+from .. import budget
 from ..orchestrator import workflow
 
 # state filter -> (label, SQL on calls c)
 DONE_STATES = ("done", "email_sent", "email_skipped")
+# A step deferred by the daily model budget is waiting, not failed (budget.is_waiting): it counts as processing.
+BUDGET_WAIT_SQL = f"c.wf_error LIKE '%: {budget.WAIT_MARK}: %'"
 STATES = {
     "awaiting_review": ("Awaiting review", "c.wf_state='awaiting_review' AND c.wf_error IS NULL"),
     "reviewed": ("Reviewed", "c.wf_state='reviewed' AND c.wf_error IS NULL"),
     "done": ("Done", "c.wf_state IN ('done','email_sent','email_skipped') AND c.wf_error IS NULL"),
-    "failed": ("Failed", "(c.wf_error IS NOT NULL OR c.wf_state='capture_failed')"),
+    "failed": ("Failed", f"((c.wf_error IS NOT NULL AND NOT ({BUDGET_WAIT_SQL})) OR c.wf_state='capture_failed')"),
     "needs_speaker": ("Needs the rep: which speaker", "c.wf_state IN ({holds}) AND c.wf_error IS NULL"),
-    "processing": ("Processing", "c.wf_error IS NULL AND c.wf_state NOT IN ('awaiting_review','reviewed','done',"
-                                 "'email_sent','email_skipped','capture_failed','live',{holds})"),
+    "processing": ("Processing", f"(c.wf_error IS NULL OR {BUDGET_WAIT_SQL}) AND c.wf_state NOT IN "
+                                 "('awaiting_review','reviewed','done','email_sent','email_skipped','capture_failed','live',"
+                                 "{holds})"),
 }
 EMAIL = {
     "drafted": ("A follow-up was drafted", "EXISTS (SELECT 1 FROM emails e WHERE e.call_id=c.node_id "
@@ -101,13 +105,15 @@ def state_label(call: dict) -> str:
     for key in ("failed", "needs_speaker", "awaiting_review", "reviewed", "done"):
         if _matches(call, key):
             return STATES[key][0]
+    if budget.is_waiting(call.get("wf_error")):
+        return "Waiting for tomorrow's model budget"
     return "Live" if call.get("wf_state") == "live" else STATES["processing"][0]
 
 
 def _matches(call: dict, key: str) -> bool:
     state, err = call.get("wf_state"), call.get("wf_error")
     if key == "failed":
-        return bool(err) or state == "capture_failed"
+        return (bool(err) and not budget.is_waiting(err)) or state == "capture_failed"
     if err:
         return False
     return {"needs_speaker": state in workflow.HOLD_STATES, "awaiting_review": state == "awaiting_review",

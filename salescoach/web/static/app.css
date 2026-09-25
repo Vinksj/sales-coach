@@ -198,7 +198,7 @@ select[multiple] { padding: 6px; }
 .quick { gap: 6px; }
 
 /* ---- tables -------------------------------------------------------------- */
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; max-width: 100%; }
 .table { width: 100%; border-collapse: collapse; }
 .table th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .table td { padding: 12px 10px; border-top: 1px solid var(--line); vertical-align: top; }
@@ -374,6 +374,11 @@ select[multiple] { padding: 6px; }
 .turn-comment { margin-top: 4px; }
 .turn-comment > summary { cursor: pointer; display: inline-block; }
 .team-table th[scope="row"] { font-weight: 400; text-align: left; vertical-align: top; }
+/* Nine columns: the headers wrap (the .table th nowrap made the row wider than the page and cut off Last activity)
+   and the cells are a little tighter, so the table fits the page; .table-wrap scrolls it, never the page, if not. */
+.team-table { font-size: 14px; }
+.team-table thead th { white-space: normal; vertical-align: bottom; }
+.team-table th, .team-table td { padding: 10px 8px; }
 .team-table caption { caption-side: bottom; text-align: left; padding-top: 10px; }
 .team-table td a, .calls-table td a { text-underline-offset: 3px; }
 @media (max-width: 900px) {

@@ -14,6 +14,22 @@
 
 <div class="review-list">
   <section class="card review-row" id="review-you">
+    {% if is_cloud %}
+    {# Cloud: these are the ORG's settings. Each person's own name, addresses, timezone and signature are theirs,
+       under You (/me/setup), not an admin's to review here. #}
+    <div class="review-head"><h2>Your org</h2><a class="btn btn-sm" href="/setup/you">Edit</a></div>
+    {% if p.company %}
+    <dl class="facts">
+      <div><dt>Company</dt><dd>{{ p.company }}</dd></div>
+      {% if p.website %}<div><dt>Website</dt><dd>{{ p.website }}</dd></div>{% endif %}
+      {% if p.buyer_titles %}<div><dt>Buyers</dt><dd>{{ p.buyer_titles }}</dd></div>{% endif %}
+      {% if p.own_domains %}<div><dt>Own domains</dt><dd>{{ p.own_domains|join(', ') }}</dd></div>{% endif %}
+      {% if p.vocabulary %}<div><dt>Vocabulary</dt><dd>{{ p.vocabulary }}</dd></div>{% endif %}
+    </dl>
+    <p><span class="label-inline">Sells</span> {{ p.offering }}{% if p.icp %} <span class="label-inline">to</span> {{ p.icp }}{% endif %}</p>
+    {% else %}<p class="warn-line">Not filled in yet. The coach cannot start without it.</p>{% endif %}
+    <p class="meta">Each person's own name, email addresses, timezone and signature are theirs to set under <a href="/me/setup">You</a>.</p>
+    {% else %}
     <div class="review-head"><h2>You and your org</h2><a class="btn btn-sm" href="/setup/you">Edit</a></div>
     {% if p.name and p.company %}
     <dl class="facts">
@@ -26,6 +42,7 @@
     </dl>
     <p><span class="label-inline">Sells</span> {{ p.offering }}{% if p.icp %} <span class="label-inline">to</span> {{ p.icp }}{% endif %}</p>
     {% else %}<p class="warn-line">Not filled in yet. The coach cannot start without it.</p>{% endif %}
+    {% endif %}
   </section>
 
   <section class="card review-row" id="review-method">

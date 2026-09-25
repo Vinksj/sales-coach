@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import date
 
-from .. import config, identity, repo
+from .. import budget, config, identity, repo
 from ..agents.actions import ActionAgent
 from ..agents.base import record_items
 from ..agents.call_analyst import CallAnalystAgent
@@ -498,7 +498,9 @@ def run_pipeline(conn, call_id, from_step=None, force=False, until=None):
                 _claim_for_jarvis(conn)
         except Exception as exc:
             conn.rollback()
-            repo.update_call(conn, call_id, wf_error=f"{name}: {type(exc).__name__}: {exc}"[:2000], actor=ACTOR)
+            over = budget.deferred_by(exc)            # a daily cap: waiting, not failed (budget.is_waiting)
+            error = f"{name}: {budget.WAIT_MARK}: {over}" if over else f"{name}: {type(exc).__name__}: {exc}"
+            repo.update_call(conn, call_id, wf_error=error[:2000], actor=ACTOR)
             conn.commit()
             raise
         if until and name == until:

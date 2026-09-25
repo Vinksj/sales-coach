@@ -185,9 +185,11 @@ def _context(request: Request, **ctx) -> dict:
     """base.html's chrome without touching the database: the login page must render even when
     the store is what is broken."""
     thread = getattr(request.app.state, "worker_thread", None)
+    # signed_out: base.html shows no app nav and no queue pill (cloud: nobody is signed in on these pages; a local
+    # install's password page renders as it always has).
     return {"path": request.url.path, "live": {"available": False, "active": False}, "nav_queued": 0, "nav_failed": 0,
             "nav_worker_on": thread is not None and thread.is_alive(), "nav_current": None,
-            "flash_msg": None, "flash_err": None, "today": "", "step_names": (), **ctx}
+            "flash_msg": None, "flash_err": None, "today": "", "step_names": (), "signed_out": identity.cloud(), **ctx}
 
 
 def _render(request: Request, status: int = 200, template: str = "login.html", **ctx):

@@ -688,8 +688,12 @@ def dismiss_card(request: Request):
 
 
 def today_card(request: Request) -> dict | None:
-    """For today.html (a template global, like the automation plugin's). Never raises into the page."""
+    """For today.html (a template global, like the automation plugin's). Never raises into the page. Cloud mode:
+    the org's setup is an admin's to finish (every /setup route answers 403 to anyone else), so only an admin
+    is nagged about it."""
     from ..store import stores
+    if identity.cloud() and getattr(identity.current_actor(required=False), "role", None) != "admin":
+        return None
     try:
         conn = stores.sales(request.app.state.db_path)
     except Exception:
