@@ -67,9 +67,20 @@ def update_user(conn, user_id: str, role: Optional[str] = None, team_id: Optiona
     if not fields:
         return row
     after = users.update(conn, user_id, **fields)
-    users.audit(conn, "admin.user.update", {"user_id": user_id, **fields},
+    dropped = _drop_manager_seats(conn, user_id) if fields.get("role") == "rep" else []
+    users.audit(conn, "admin.user.update", {"user_id": user_id, **fields, **({"managed_teams_removed": dropped} if dropped else {})},
                 before={k: row[k] for k in fields})
     return after
+
+
+def _drop_manager_seats(conn, user_id: str) -> list:
+    """A rep, a disabled or an offboarded user manages no team: their team_managers rows go with the role or the
+    access (app_visible_owners() also checks role and status live; this keeps the directory saying the same).
+    Returns the team ids they managed, for the audit event."""
+    teams = users.teams_managed_by(conn, user_id)
+    if teams:
+        conn.execute("DELETE FROM team_managers WHERE user_id=?", (user_id,))
+    return teams
 
 
 def disable(conn, user_id: str) -> dict:
@@ -83,7 +94,9 @@ def disable(conn, user_id: str) -> dict:
     after = users.update(conn, user_id, status="disabled")
     ended = sessions.revoke_all(conn, user_id)
     revoked = tokens.revoke_all_for_user(conn, user_id)
-    users.audit(conn, "admin.user.disable", {"user_id": user_id, "sessions_revoked": ended, "grants_revoked": revoked},
+    dropped = _drop_manager_seats(conn, user_id)
+    users.audit(conn, "admin.user.disable", {"user_id": user_id, "sessions_revoked": ended, "grants_revoked": revoked,
+                                             **({"managed_teams_removed": dropped} if dropped else {})},
                 before={"status": row["status"]})
     return after
 
@@ -105,9 +118,13 @@ def offboard(conn, user_id: str, mode: str, to_user_id: Optional[str] = None) ->
     disabled and signed out of everything (lifecycle/offboard.py, which audits it)."""
     from ..lifecycle import offboard as lifecycle_offboard
     try:
-        return lifecycle_offboard.offboard(conn, user_id, mode, to_user_id or None)
+        result = lifecycle_offboard.offboard(conn, user_id, mode, to_user_id or None)
     except lifecycle_offboard.OffboardError as exc:
         raise AdminError(str(exc)) from exc
+    dropped = _drop_manager_seats(conn, user_id)
+    if dropped:
+        users.audit(conn, "admin.team.managers.removed", {"user_id": user_id, "teams": dropped, "by": "offboard"})
+    return result
 
 
 def logout_everywhere(conn, user_id: str) -> int:
