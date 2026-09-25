@@ -83,7 +83,10 @@ def from_parsed(parsed, kind: str, raw: Any = None, source_ref: Optional[str] = 
     if parsed.ext_id:
         owner = parsed.ext_source or "generic"
         native = trusted and owner in ("fireflies", "fathom")
-        source_ref = f"{owner}:{parsed.ext_id}" if native else f"ext:{owner}:{parsed.ext_id}"
+        # Cloud (Phase 4): calls.source_ref is UNIQUE across the org, and two reps may each bring in the same
+        # export; the acting user goes into the key so each gets their own call (repo.user_source_ref).
+        ext_id = repo.user_source_ref(owner, parsed.ext_id) if identity.cloud() else f"{owner}:{parsed.ext_id}"
+        source_ref = ext_id if native else f"ext:{ext_id}"
     return NormalizedTranscript(source_kind=kind, source_ref=source_ref, title=title or parsed.title or "",
                                 started_at=parsed.started_at, ended_at=parsed.ended_at,
                                 participants=list(parsed.participants), turns=turns,
@@ -341,8 +344,16 @@ def existing_call(conn, source_ref) -> Optional[str]:
 
 
 def import_normalized(conn, nt: NormalizedTranscript, deal_id=None, history=False, lang_mode="auto",
-                      me_label=None, participant_ids=(), add_me=False, link: str = "all") -> ImportResult:
+                      me_label=None, participant_ids=(), add_me=False, link: str = "all",
+                      owner: Optional[str] = None) -> ImportResult:
     """Create the call for one transcript, or return the one already made from it. Commits.
+
+    owner (Phase 4): the user the call belongs to, which for a recorder import is the user whose
+    connection delivered it, never anything the payload says. The import runs AS that user (their
+    profile, aliases and remembered speaker labels decide who is 'me'; on Postgres the row-level
+    owner_id default and policies are theirs) and puts their own person row on the call, which is what
+    add_me=True did for the one seller of a local install. A connection already bound to the owner is
+    used as it is; one bound to anybody else is re-bound for the import (in service mode) and restored.
 
     history=True is for explicit backfills of old meetings: analysed and remembered, never given a
     drafted follow-up, not claimed for Jarvis. A recorder's new meeting is NOT history.
@@ -352,6 +363,13 @@ def import_normalized(conn, nt: NormalizedTranscript, deal_id=None, history=Fals
 
     Anything that goes wrong after the raw payload was written takes the payload back: a refused
     import leaves no file behind (and the caller rolls the transaction back)."""
+    if owner is not None:
+        bound = getattr(conn, "actor", None) or identity.current_actor(required=False)
+        if bound is None or bound.user_id != owner:
+            with identity.as_user(conn, owner, mode=identity.SERVICE):
+                return import_normalized(conn, nt, deal_id, history, lang_mode, me_label, participant_ids,
+                                         True, link, owner)
+        add_me = True
     found = existing_call(conn, nt.source_ref)
     if found:
         held = repo.get_call(conn, found)["wf_state"] == NEEDS_SPEAKER

@@ -5,6 +5,7 @@
 <div class="page-head">
   <div class="eyebrow">Today · {{ today_label }}</div>
   <h1>What needs you</h1>
+  {% if cloud() %}<div class="meta"><a href="/me/meetings">My meetings</a>: your calendar next to what your recorder captured.</div>{% endif %}
 </div>
 
 <div class="today-grid">

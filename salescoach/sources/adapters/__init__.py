@@ -33,6 +33,20 @@ class SourceAuthError(SourceError):
     """The service refused the key."""
 
 
+class SourceNotFound(SourceError):
+    """HTTP 404: no such meeting, or (for a recorder that lists a meeting before its transcript is done)
+    not there YET. A per-rep poller retries it on a later poll while the meeting is recent."""
+
+
+class SourceRateLimited(SourceError):
+    """The service said "too many requests" (HTTP 429, or a GraphQL error saying so). retry_after is the
+    seconds it asked for when it said, else None. The poller backs off and remembers until when."""
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 @dataclass
 class MeetingRef:
     ext_id: str                                        # the meeting's id at the source

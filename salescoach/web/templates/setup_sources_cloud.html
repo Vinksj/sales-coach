@@ -1,0 +1,42 @@
+{% extends "setup_layout.html" %}
+{% import "setup_macros.html" as f %}
+{% block step_heading %}Which call recorders may your reps connect?{% endblock %}
+{% block step_intro %}Each rep connects their own recorder account on their profile page, with their own API key. A call belongs to the rep whose recorder delivered it, so two reps on one meeting each get their own copy, seen from their side. You choose which recorders are allowed; you never connect an account for anyone.{% endblock %}
+
+{% block step %}
+<form method="post" action="/setup/sources/allowed" class="stack" id="allowed">
+  <section class="section first">
+    <div class="section-head"><h2>Allowed recorders</h2><span class="purpose">{% if allowed_default %}Nothing chosen yet: every recorder below is allowed until you save a choice.{% else %}Only the ticked recorders can be connected.{% endif %}</span></div>
+    {% for r in recorders %}
+    <div class="card source-row" id="src-{{ r.kind }}">
+      <div>
+        <label class="check h3" for="f-allow-{{ r.kind }}"><input type="checkbox" id="f-allow-{{ r.kind }}" name="kinds" value="{{ r.kind }}"{% if r.allowed %} checked{% endif %}> {{ r.label }}{% if not r.verified %} <span class="tag tag-block" title="Written from the service's public documentation and tested against sample data only">untested against the live API</span>{% endif %}</label>
+        <p class="meta">Plan: {{ r.plan }}{% if r.rate_note %} Rate limit: {{ r.rate_note }}{% endif %}</p>
+        <p class="meta">Each rep's key: {{ r.where_key }} Checked every {{ r.poll_minutes }} minutes{% if r.webhook_scheme == 'standard' %}, or pushed at once with the recorder's signed webhook{% else %}, or pushed through a relay with the connection's own webhook token{% endif %}.</p>
+      </div>
+      <div class="source-side">{% if r.allowed %}<span class="pill pill-good"><i></i>allowed</span>{% else %}<span class="pill pill-muted"><i></i>not allowed</span>{% endif %}</div>
+    </div>
+    {% endfor %}
+    <div class="actions"><button class="btn btn-primary">Save the allowed recorders</button></div>
+    <p class="meta">Switching a recorder off stops it for every rep at the next check (their webhooks stop answering too); their keys stay stored until each rep disconnects.</p>
+  </section>
+</form>
+
+<section class="section">
+  <div class="section-head"><h2>Always available</h2><span class="purpose">Nothing to allow.</span></div>
+  <div class="card source-row">
+    <div><div class="h3">Upload or paste a transcript</div><p class="meta">Any rep can upload an export (text, .vtt, .srt, Fireflies or Fathom JSON) or paste one on the Import page. It becomes that rep's call.</p></div>
+    <div class="source-side"><span class="pill pill-good"><i></i>always on</span></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Not supported in a cloud install</h2></div>
+  <div class="card">
+    <p class="meta">{{ org_level_only|join(', ') }}: their APIs give one admin key over everyone's calls, not a key per rep, so they cannot deliver a call to the rep it belongs to. {{ later|join(' and ') }} come later. Until then, reps export the transcript and upload it.</p>
+    <p class="meta">Live capture on a laptop, the watched folder and one org-wide webhook are features of a local install.</p>
+  </div>
+</section>
+
+{{ f.link_footer(back_href, next_href) }}
+{% endblock %}

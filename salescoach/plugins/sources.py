@@ -4,10 +4,13 @@ What it attaches, through the plugin seam only:
   router            POST /import/file, POST /import/webhook, POST /calls/<id>/speaker. Built on
                     first access, so the CLI and the worker never import the web layer.
   register_cli      salescoach sources list | poll [KIND ...] | webhook-secret
-  start_background  the `sources` scheduler duty: every minute it polls whichever enabled
+  start_background  local: the `sources` scheduler duty: every minute it polls whichever enabled
                     adapters are due (the watched folder each minute, API adapters per their
                     poll_minutes). One adapter's failure is recorded against that adapter
                     (state sources:<kind>:last_error) and never stops the others.
+                    cloud: the per-user `recorders` duty (Phase 4): every minute, for each active
+                    user in their own service session, their own due recorder connections
+                    (sources/connections.py; cursors and errors in each connection's row).
 No tables of its own: calls.history and the rebuilt calls table are core migration 4.
 Settings: the user's sources.yaml (salescoach.sources.save). Keys: config.set_secret.
 """
@@ -31,10 +34,27 @@ def run_sources(conn) -> dict:
             for kind, r in results.items()}
 
 
+def run_recorders(conn) -> dict:
+    """The per-user `recorders` duty (cloud): the bound user's own due recorder connections, each on its
+    own (sources/connections.poll_user). Runs inside that user's service session (automation/scheduler)."""
+    from ..sources import connections
+    return connections.poll_user(conn)
+
+
+def background_duties() -> list:
+    """Local install: the org-level `sources` duty (the watched folder, the org's API keys), once, as the
+    local user, exactly as before. Cloud: the per-user `recorders` duty instead: every active user's own
+    connections in that user's session; the org-level poller does not exist there."""
+    from .. import identity
+    from ..automation.scheduler import Duty
+    if identity.cloud():
+        return [Duty("recorders", run_recorders, lambda: POLL_TICK_S, first_delay_s=80, per_user=True)]
+    return [Duty("sources", run_sources, lambda: POLL_TICK_S, first_delay_s=75, per_user=False)]
+
+
 def start_background(db_path, stop):
-    from ..automation.scheduler import Duty, start
-    # Org-level until Phase 4 makes recorder connections per user: runs once, as the local user.
-    start(db_path, stop, duties=[Duty("sources", run_sources, lambda: POLL_TICK_S, first_delay_s=75, per_user=False)])
+    from ..automation.scheduler import start
+    start(db_path, stop, duties=background_duties())
 
 
 # ---- CLI ----------------------------------------------------------------------------------------

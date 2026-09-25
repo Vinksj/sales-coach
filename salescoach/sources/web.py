@@ -3,6 +3,11 @@
   POST /import/file              upload a transcript file (any format parsers.parse_any reads)
   POST /import/webhook           a recorder's automation posts the generic JSON; shared secret
   POST /calls/{id}/speaker       the answer to "which speaker are you?" for a held import
+  (and, from sources/me_web.py, the per-rep recorder routes of Phase 4: /me/recorders/..., /me/connections/...,
+  /me/meetings and POST /import/webhook/{connection_id})
+
+The org-level POST /import/webhook is a LOCAL install's: in cloud mode there is no org secret to post
+with (Setup no longer offers one) and each rep's recorder pushes to its own connection's URL instead.
 
 /import/file and /calls/{id}/speaker are ordinary browser POSTs behind the same-origin guard.
 /import/webhook is the one route a non-browser client may call: web/app.py lets a request past
@@ -104,6 +109,10 @@ async def _read_capped(request: Request, limit: int):
 
 @router.post("/import/webhook")
 async def import_webhook(request: Request):
+    from .. import identity
+    if identity.cloud():                       # cloud: each rep's connection has its own URL (me_web.py)
+        return JSONResponse({"error": "not found: post to your connection's own /import/webhook/<id>"},
+                            status_code=404)
     if not webhook.secret_configured():
         return JSONResponse({"error": "the webhook is off: no WEBHOOK_SECRET is set"}, status_code=403)
     if not webhook.authorised(request.headers.get(webhook.HEADER)):
@@ -147,3 +156,8 @@ def _import_webhook_body(db_path, body: bytes):
     return JSONResponse({"call_id": outcome.call_id, "created": outcome.created,
                          "needs_speaker": outcome.needs_speaker}, status_code=201 if outcome.created else 200)
 
+
+# Phase 4: the rep's own recorder connections, their meetings, and the per-connection webhook.
+from .me_web import router as _me_router  # noqa: E402
+
+router.include_router(_me_router)

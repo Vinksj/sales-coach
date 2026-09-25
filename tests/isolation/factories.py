@@ -65,6 +65,10 @@ VALUES = {
     ("followup_decisions", "stage"): "rules",
     ("embeddings", "dim"): 1,
     ("embeddings", "vector"): b"\x00\x00\x00\x00",
+    # Phase 4: a rep's recorder connection carries a (fake) ciphertext and key id, as the app writes it.
+    # `kind` is left to the unique-text rule: UNIQUE(owner_id, kind), and the matrix makes two per owner.
+    ("source_connections", "secret_enc"): "Y2lwaGVydGV4dA==",
+    ("source_connections", "key_id"): "k1",
 }
 _CHECK = re.compile(r"CHECK\s*\(\s*(\w+)\s+IN\s*\(([^)]*)\)", re.S | re.I)
 
@@ -148,7 +152,8 @@ def columns_to_fill(table: str) -> list:
     for col in catalog.tables()[table]:
         identity_pk = col.pk and col.name == "id" and col.type == "INTEGER"
         needed = (col.notnull or col.pk) and col.default is None and not identity_pk
-        if needed or col.name == "owner_id" or col.name in PARENTS or col.name in DIRECTORY:
+        if (needed or col.name == "owner_id" or col.name in PARENTS or col.name in DIRECTORY
+                or (table, col.name) in VALUES):
             out.append(col)
     return out
 

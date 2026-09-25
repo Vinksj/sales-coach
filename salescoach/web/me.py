@@ -36,13 +36,21 @@ def _web():
     return webapp
 
 
-def _page(request: Request, values: dict, style: str, errors=None, status: int = 200):
+def _recorders(conn) -> dict:
+    """The "Your call recorder" cards (Phase 4, sources/connections.py): cloud only; public fields only."""
+    if not identity.cloud():
+        return {}
+    from ..sources import connections
+    return connections.card_context(conn)
+
+
+def _page(request: Request, values: dict, style: str, errors=None, status: int = 200, **extra):
     webapp = _web()
     with webapp._db(request) as conn:
         response = webapp.render(request, conn, "me_setup.html", p=values, style=style, errors=errors or {},
                                  timezones=forms.timezones(), default_timezone=seller.DEFAULT_TIMEZONE,
                                  configured=seller.user_configured(), usage=budget.usage_today(conn, mine_only=True),
-                                 **_connections(conn, identity.current_actor()))
+                                 **_connections(conn, identity.current_actor()), **_recorders(conn), **extra)
     response.status_code = status
     response.headers["Cache-Control"] = "no-store"
     return response

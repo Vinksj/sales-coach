@@ -673,6 +673,56 @@ def _ops(conn):
 MIGRATIONS[9] = _ops
 
 
+# ---- 10 (2026-09-25, Phase 4: per-rep recorder connections) ----------------------------------------
+# One row per (rep, recorder kind): the rep's own encrypted API key, the poll bookkeeping and the push
+# webhook's secret. The tail of schema-sales.sql verbatim; the Postgres side is store/pg/0006_sources.sql.
+SOURCES_TABLES_V10 = """
+CREATE TABLE IF NOT EXISTS source_connections (
+  id                 TEXT PRIMARY KEY,
+  owner_id           TEXT NOT NULL DEFAULT 'local',
+  kind               TEXT NOT NULL,
+  label              TEXT,
+  secret_enc         TEXT,
+  key_id             TEXT,
+  status             TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','error','disconnected')),
+  account_email      TEXT,
+  state              TEXT NOT NULL DEFAULT '{}',
+  last_poll_at       TEXT,
+  last_ok_at         TEXT,
+  next_poll_at       TEXT,
+  failures           INTEGER NOT NULL DEFAULT 0,
+  last_error         TEXT,
+  webhook_token_hash TEXT,
+  webhook_secret_enc TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT,
+  UNIQUE(owner_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_source_connections_owner_id ON source_connections(owner_id);
+"""
+
+
+def _sources(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 10:     # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        for statement in SOURCES_TABLES_V10.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 10")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[10] = _sources
+
+
 def run(conn):
     """Apply every step above the database's version, in order; the version ends at the highest step
     applied."""

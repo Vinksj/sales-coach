@@ -28,6 +28,11 @@ Decisions worth a line:
     in, who may sign in, a user's Google grant), never a rep's work; store/rls.py polices each.
   * org_settings (Phase 6) is SYSTEM: the org's settings overlay, one row per settings file; raw_payloads
     is OWNED: what one user's source delivered (top-level: no parent, no trigger).
+  * source_connections (Phase 4) is OWNED: a rep's own recorder account and its encrypted key. The
+    rep's managers may read the row (status, last import), as for any OWNED row; nothing renders the
+    ciphertext, and only a session bound to the owner decrypts it (sources/connections.py filters on
+    owner_id = the actor as well). The push webhook resolves a connection's owner with nobody bound
+    through app_source_connection_owner() (store/rls.py), an id, never content.
 """
 
 OWNED = "OWNED"
@@ -65,6 +70,8 @@ TABLE_CLASS = {
     "nudges": OWNED, "coach_state": OWNED,
     # -- Phase 6: the org settings overlay is machinery; a raw payload is what one user's source delivered
     "org_settings": SYSTEM, "raw_payloads": OWNED,
+    # -- Phase 4: one rep's own recorder account; what it delivers is that rep's
+    "source_connections": OWNED,
 }
 
 # Tables that exist on one backend only, and why.

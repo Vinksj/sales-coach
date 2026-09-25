@@ -5,7 +5,7 @@ patched to read (the login mechanism itself is tests/isolation/test_actor_gate.p
 tests/test_google_auth.py; this
 file is about what a route does once it knows who is asking). Rep A owns a call, a deal, a loop,
 a follow-up email, a nudge, a reply, a prep brief, a learned pattern, a proposal, a calendar
-meeting, an agent run, a memory conflict, a live-coach nudge and a bus event; B asks for each of
+meeting, an agent run, a memory conflict, a live-coach nudge, a recorder connection and a bus event; B asks for each of
 them through every route that takes their id, with GET and with the route's methods and a minimal
 valid form body. A 200 would be a leak, a 403 would confirm the object exists, a 500 is a route
 that trips over a missing row instead of saying 404: only 404 passes.
@@ -37,7 +37,11 @@ NOT_A_USERS_OBJECT = {
     "/setup/method/custom/{key}": "an org methodology definition",
     "/setup/method/custom/{editing}": "an org methodology definition",
     "/setup/method/custom/{key}/delete": "an org methodology definition",
-    "/setup/sources/{kind}": "an org-level source connection (per user from Phase 4)",
+    "/setup/sources/{kind}": "a local install's org-level source (refused in cloud mode; reps connect their own)",
+    "/me/recorders/{kind}/connect": "acts on the ACTING rep's own connection of that recorder kind; names nobody's id",
+    "/import/webhook/{connection_id}": ("a recorder's push, no session: authenticated by the connection's own secret "
+                                        "or signature and imported as that connection's owner only "
+                                        "(tests/test_recorders_web.py)"),
     "/admin/teams/{team_id}": "a team of the org directory (admin only)",
     "/admin/teams/{team_id}/managers": "a team of the org directory (admin only)",
     "/admin/users/{user_id}": "a person in the org directory (admin only)",
@@ -127,12 +131,17 @@ def objects(db, two_reps):
         db.commit()
         wf_event = db.execute("SELECT id FROM wf_events WHERE dedupe_key='crawl:1'").fetchone()[0]
         person = own.node("person")
+        connection_id = "rc-" + "a" * 32                  # A's recorder connection, with a real-shaped id
+        db.execute("INSERT INTO source_connections(id,owner_id,kind,secret_enc,key_id,created_at) "
+                   "VALUES (?,?,?,?,?,?)", (connection_id, A, "fireflies", "Y2lwaGVy", "k1", "2026-09-24T00:00:00+00:00"))
+        db.commit()
     return {
         "call_id": made["calls"]["node_id"], "deal_id": made["deals"]["node_id"], "loop_id": made["loops"]["node_id"],
         "email_id": made["emails"]["id"], "nudge_email_id": nudge_email["id"], "reply_id": made["email_replies"]["id"],
         "proposal_id": made["learning_proposals"]["id"], "run_id": made["agent_runs"]["id"],
         "conflict_id": made["memory_conflicts"]["id"], "nudge_id": made["nudges"]["id"], "person_id": person,
         "meeting_event_id": made["calendar_meetings"]["event_id"], "wf_event_id": wf_event,
+        "connection_id": connection_id,
         "element": "metrics", "risk_type": "budget", "decision": "accept",
     }
 

@@ -5,7 +5,8 @@ What it attaches through the plugin seam:
   router         /admin and its forms, built on first access (module __getattr__) so the CLI and the
                  worker never import the web layer
   register_cli   `salescoach tokens new-key` (a SALESCOACH_TOKEN_KEYS entry) and
-                 `salescoach tokens rotate` (re-encrypt every OAuth grant under the newest key; on
+                 `salescoach tokens rotate` (re-encrypt every OAuth grant and every rep's recorder key
+                 (source_connections, Phase 4) under the newest key; on
                  Postgres explicitly as the owner role, DATABASE_MIGRATE_URL, or --as an active admin)
 No tables of its own: users, teams, team_managers (users.py), invites, sessions and oauth_tokens
 (schema-sales.sql) are core, because sign-in needs them with SALESCOACH_NO_PLUGINS=1 too.
@@ -93,13 +94,19 @@ def _cli_tokens(args):
     try:
         with opener as conn:
             report = tokens.rotate(conn)
+            from ..sources import connections
+            recorders = connections.rotate(conn)          # the reps' recorder keys share the ring (Phase 4)
     except PermissionError as exc:
         print(f"tokens rotate: {exc}", file=sys.stderr)
         return 2
     print(f"re-encrypted {report['rotated']} grant(s) under key {report['key']!r}; {report['skipped']} already on it")
     for item in report["unreadable"]:
         print(f"  could not read {item}: its key is no longer in SALESCOACH_TOKEN_KEYS (the user must reconnect)")
-    return 1 if report["unreadable"] else 0
+    print(f"re-encrypted {recorders['rotated']} recorder connection(s); {recorders['skipped']} already on it or "
+          "holding no key")
+    for item in recorders["unreadable"]:
+        print(f"  could not read recorder connection {item}: the rep must reconnect it")
+    return 1 if (report["unreadable"] or recorders["unreadable"]) else 0
 
 
 def register_cli(subparsers):

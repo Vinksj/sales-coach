@@ -2,7 +2,8 @@
 
 Password mode (unchanged from the first hosted build). On when SALESCOACH_PASSWORD (or the hash)
 is set and SALESCOACH_MODE is not cloud; otherwise inert. Every request needs a valid session
-cookie except /login, /logout, /static/*, /health and POST /import/webhook (its own secret). The
+cookie except /login, /logout, /static/*, /health, POST /import/webhook (its own secret) and, in cloud
+mode, POST /import/webhook/{connection_id} (the connection's own secret or the recorder's signature). The
 password is compared in constant time (hosted.verify_password), never logged, never echoed back;
 failures are counted per client address (hosted.LoginLimiter); the cookie is signed, HttpOnly,
 SameSite=Lax, Secure over https, rotated on every login.
@@ -78,8 +79,18 @@ def is_open(method: str, path: str) -> bool:
         return True
     if method == "POST":
         from ..sources.adapters import webhook
-        return path == webhook.PATH
+        return path == webhook.PATH or connection_webhook(path)
     return False
+
+
+_CONNECTION_WEBHOOK = re.compile(r"/import/webhook/rc-[0-9a-f]{32}")
+
+
+def connection_webhook(path: str) -> bool:
+    """POST /import/webhook/{connection_id} (Phase 4, sources/me_web.py), cloud only: a recorder's push
+    for one rep's connection. It carries no session; the handler authenticates it (the recorder's
+    signature or the connection's own token) and the connection's owner is the only identity it takes."""
+    return identity.cloud() and bool(_CONNECTION_WEBHOOK.fullmatch(path or ""))
 
 
 def _wants_page(method: str, path: str, headers: dict) -> bool:

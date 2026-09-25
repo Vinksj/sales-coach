@@ -244,7 +244,7 @@ looked up in `users`, a stub Phase 3 replaces with Google sign-in). Thread entry
 | Thread | Actor |
 |---|---|
 | worker (`orchestrator/worker.py`) | the connection is opened as nobody (`activate(None)`); `workflow.handle` wraps each event in `as_user(owner_of_event(...), mode="service")`: entity `user:<id>` says the owner, a call/deal/loop id resolves through `nodes.owner_id`, else `payload.owner_id`, else `wf_events.owner` (what `bus.publish` resolved from the publisher's actor), else the local user (local mode) or `UnknownOwner` (cloud). `bus.claim_next` hands out the highest-priority, oldest event whose owner has nothing running (a per-owner advisory lock on Postgres); a `worker` process runs `WORKER_CONCURRENCY` such loops (`ops.py`, docs/deploy-cloud.md) |
-| scheduler (`automation/scheduler._loop`) | a per-user duty runs once per `users.active()` inside `as_user(..., service)`; bookkeeping goes to `user_state`. An org-level duty (`per_user=False`: the sources poller until Phase 4) runs once as the local user and not at all in cloud. In the split deploy the duties (and the embed loop below) run only in the `scheduler` role's leader process (`ops.run_scheduler`, a Postgres advisory lock) |
+| scheduler (`automation/scheduler._loop`) | a per-user duty runs once per `users.active()` inside `as_user(..., service)`; bookkeeping goes to `user_state`. An org-level duty (`per_user=False`: the local install's sources poller) runs once as the local user and not at all in cloud, where the per-user `recorders` duty (Phase 4) polls each rep's own recorder connections. In the split deploy the duties (and the embed loop below) run only in the `scheduler` role's leader process (`ops.run_scheduler`, a Postgres advisory lock) |
 | heartbeats (`ops.Heartbeat`) | nobody (`activate(None)`): `state` is SYSTEM. `ops:worker:<host>:heartbeat`, `ops:scheduler:<host>:heartbeat`, `ops:scheduler:leader` |
 | intel embed (`plugins/intelligence.py`) | per active user, `as_user(..., service)` |
 | learning daily (`plugins/learning.py`) | a per-user scheduler duty |
@@ -298,8 +298,11 @@ and the table stays SYSTEM.
 (owner_id, message_id)`, `learned_patterns UNIQUE (owner_id, family, key, scope)` with ids
 `lp:<family>:u:<owner>:<key>` (rewritten in `merged_into`, `learning_proposals`, `field_provenance`
 and `memory_conflicts`), `coach_reports.owner_id`. A user's own paste or upload gets
-`paste:<owner>:<sha>` / `upload:<owner>:<sha>` (`repo.user_source_ref`); recorder-native and
-folder/webhook refs are unchanged until Phase 4. Ownerless events name their user: `FOLLOW_UP_RUN`
+`paste:<owner>:<sha>` / `upload:<owner>:<sha>` (`repo.user_source_ref`). Phase 4: a recorder
+connection's import is `<kind>:<owner>:<id>` (the owner is the connection's user, `import_normalized(owner=)`,
+never inferred from the payload), and in cloud mode an uploaded export's own id is keyed on the uploader
+too (`fireflies:<owner>:<id>`, `ext:<source>:<owner>:<id>`); a local install's folder/webhook/org-adapter
+refs are unchanged. Ownerless events name their user: `FOLLOW_UP_RUN`
 and `CALENDAR_REFRESH_REQUESTED` carry `entity_id = user:<owner>`, `COACH_REPORT_REQUESTED` too, and
 every timestamp-based dedupe key carries the owner. `sources.yaml me_labels` became
 `user_speaker_labels` (adopted for the local user on first open).
@@ -310,6 +313,8 @@ is the acting user's (`user_id` from `conn.actor`):
 | Org-wide (`state`) | Per user (`user_state`) |
 |---|---|
 | `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:calendar:sync_token` (the Google sync cursor, cloud), `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
+
+| `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (a local install's org-level poller; in cloud a rep's recorder connection keeps its cursor and errors in its own `source_connections` row); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
 | `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard); `ops:worker:<host>:heartbeat`, `ops:scheduler:<host>:heartbeat`, `ops:scheduler:leader` (process liveness, `ops.py`) | `setup:card_dismissed` (the Today card) |
 | `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
 
@@ -370,7 +375,9 @@ DEFINER so the `users` policies cannot recurse), `app_visible_owners()` (the act
 the ids of every member of every team they manage, `team_managers` + `users.team_id`, read live so a
 demotion or a disabling takes effect on the next query; empty for nobody, for an inactive user and
 for an admin who manages no team), `app_can_write(owner)` (the row is the acting user's own, they are
-active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, `app_org_spend_since(since)` and
+active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, `app_source_connection_owner(id)`
+(Phase 4: the per-connection webhook learns whose connection it is before it can bind them; an id, never
+content; NULL for a disconnected connection or an inactive owner), `app_org_spend_since(since)` and
 `app_spend_by_owner_since(since)` (Phase 6's budgets: the org cap must count every rep's runs, which no
 rep may read; sums per owner, never a row; per owner only for an admin or the owners one may read), and
 `app_child_owner()` (the 0002 trigger, made SECURITY DEFINER so it sees another user's parent row and

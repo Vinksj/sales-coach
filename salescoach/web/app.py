@@ -225,6 +225,13 @@ class SameOriginGuard:
         if scope["type"] == "http":
             headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
             host = headers.get("host", "")
+            if scope["method"].upper() == "POST" and self._connection_webhook(scope.get("path")):
+                # Cloud (Phase 4): a recorder's push to ONE rep's connection, /import/webhook/{connection_id}.
+                # Not a browser request and never cookie-authenticated: the handler verifies the recorder's
+                # signature or the connection's own token, and acts only as that connection's owner, so a
+                # cross-site POST gains nothing a direct one would not. Only this exact path shape passes.
+                await self.app(scope, receive, send)
+                return
             webhook_call = self._webhook_call(scope, headers)
             if webhook_call == "open":
                 # The ONE non-browser door: a recorder's automation posting a transcript. It is let past
@@ -294,6 +301,11 @@ class SameOriginGuard:
             return ""
         client = scope.get("client")
         return "open" if webhook.reachable(client[0] if client else None, headers) else "remote"
+
+    @staticmethod
+    def _connection_webhook(path) -> bool:
+        from . import auth
+        return auth.connection_webhook(path or "")
 
     @staticmethod
     def _forwarded(headers) -> bool:

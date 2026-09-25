@@ -86,7 +86,8 @@ def test_settings_is_in_the_nav_and_setup_shows_the_review_once_configured(clien
 def test_every_setup_post_is_refused_without_an_origin(client, db):
     posts = ["/setup/you", "/setup/method", "/setup/method/custom", "/setup/method/custom/x",
              "/setup/method/custom/x/delete", "/setup/model/models", "/setup/model/test", "/setup/model/use",
-             "/setup/sources/fireflies", "/setup/sources/webhook/secret", "/setup/finish", "/setup/dismiss-card"]
+             "/setup/sources/fireflies", "/setup/sources/webhook/secret", "/setup/sources/allowed", "/setup/finish",
+             "/setup/dismiss-card"]
     for url in posts:
         assert client.post(url, data={"provider": "anthropic", "api_key": FAKE_KEY}).status_code == 403, url
         assert client.post(url, data={}, headers={"origin": "http://evil.example"}).status_code == 403, url
