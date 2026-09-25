@@ -416,3 +416,17 @@ def test_the_calendar_module_has_no_write_path():
     for verb in (*connector.WRITE_TOOLS, "invite", "insert_event", "patch_event"):
         assert not any(verb in n for n in names), verb
     assert not connector.READ_TOOLS & connector.WRITE_TOOLS
+
+
+def test_event_kinds_count_in_either_spelling(db, world, clock):
+    """Google's REST API says outOfOffice/workingLocation; the connector has been seen to say
+    OUT_OF_OFFICE/WORKING_LOCATION. Busy time and the stored meetings treat both alike."""
+    day = TUESDAY.date() + timedelta(days=1)
+    events = [ev(datetime.combine(day, time(9), IST), minutes=600, id=f"wl-{spelling}", event_type=spelling, title="Office")
+              for spelling in ("workingLocation", "WORKING_LOCATION")]
+    events += [ev(datetime.combine(day, time(0), IST), minutes=24 * 60, id=f"ooo-{spelling}", all_day=True,
+                  event_type=spelling, title="Away") for spelling in ("outOfOffice", "OUT_OF_OFFICE")]
+    busy = calendar.busy_intervals(events)
+    assert len(busy) == 2 and all(e - s == timedelta(days=1) for s, e in busy)            # both OOO days, no office
+    calendar.sync_events(db, calendar=FakeCalendar(events))
+    assert db.execute("SELECT COUNT(*) FROM calendar_meetings").fetchone()[0] == 0
