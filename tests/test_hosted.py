@@ -362,6 +362,7 @@ def test_serve_in_cloud_mode_binds_the_network_without_a_password(local, monkeyp
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(kw))
     monkeypatch.setattr("salescoach.web.app.create_app", lambda *a, **k: object())
     monkeypatch.setattr(stores, "db_path", lambda: "postgresql://app@db:5432/salescoach")
+    monkeypatch.setattr(cli, "serving_role_problems", lambda url: [])            # no database here; tested in test_sec_serve_role
     monkeypatch.setenv(identity.MODE_ENV, "cloud")
     monkeypatch.setenv("SALESCOACH_SESSION_SECRET", "a long random string for the tests")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "1234.apps.googleusercontent.com")
