@@ -5,7 +5,7 @@ https://pasta.tldv.io/v1alpha1. Pro plans and above only (research table).
          (onlyParticipated: the meetings the key's owner was in, not the whole workspace's)
   fetch  GET /meetings/{id} (organizer{email}, invitees[]) + GET /meetings/{id}/transcript
          -> {data: [{speaker, text, startTime, endTime}]}; a 404 on the transcript means "not ready yet"
-  test   GET /meetings?pageSize=1 (the API has no "who am I"; "connected as" stays empty)
+  test   GET /meetings?onlyParticipated=true&pageSize=1 (the API has no "who am I"; "connected as" stays empty)
 
 Speakers carry names only: the owner's aliases and remembered labels decide which one is the rep.
 
@@ -61,7 +61,7 @@ class TldvRecorder(RecorderAdapter):
                             transport=self._transport)
 
     def test(self) -> Account:
-        self._get("/meetings", {"pageSize": 1})
+        self._get("/meetings", {"onlyParticipated": "true", "pageSize": 1})
         return Account()
 
     def list_recent(self, since=None, cursor: Optional[str] = None) -> list:
