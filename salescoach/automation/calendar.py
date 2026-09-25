@@ -22,7 +22,7 @@ entries are ignored, and an all-day event counts only if it is out-of-office.
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .. import config, identity, seller
@@ -67,6 +67,15 @@ class CalEvent:
     transparency: str = "opaque"
     declined_by_me: bool = False
     meeting_url: str | None = None                     # Meet / Zoom / Teams link, if the event has one
+    organized_by_me: bool = False                      # the calendar owner is the organizer
+
+
+def accepted_by_me(e: CalEvent) -> bool:
+    """The calendar's owner organised the meeting or accepted it. An invitation nobody answered (anyone can
+    put one on a Google calendar) is shown, but asks for no prep brief: a brief is a paid model run."""
+    if e.organized_by_me or not e.attendees:
+        return True
+    return any(a.get("self") and a.get("response") == "accepted" for a in e.attendees)
 
 
 def scheduling(overrides: dict | None = None) -> dict:
@@ -193,7 +202,7 @@ def parse_page(text: str) -> tuple[list[CalEvent], str | None]:
             attendees=attendees, status=e.get("status") or "confirmed", event_type=e.get("eventType") or "DEFAULT",
             transparency=e.get("transparency") or "opaque",
             declined_by_me=any(a["self"] and a["response"] == "declined" for a in attendees),
-            meeting_url=_meeting_url(e)))
+            meeting_url=_meeting_url(e), organized_by_me=bool((e.get("organizer") or {}).get("self"))))
     return out, (token or None)
 
 
@@ -474,16 +483,18 @@ def last_fill(conn, email_id: int):
 def _deal_matchers(conn) -> tuple[dict, dict]:
     own = own_domains()
     by_domain, by_email = {}, {}
+    me = _owner(conn)             # the calendar owner's own deals: a manager reads the team's, and must not link to them
     for r in conn.execute(
             "SELECT d.node_id, a.domains FROM deals d JOIN accounts a ON a.node_id=d.account_id "
-            "WHERE d.status='active' ORDER BY d.updated_at DESC"):
+            "WHERE d.owner_id=? AND d.status='active' ORDER BY d.updated_at DESC", (me,)):
         for dom in json.loads(r["domains"] or "[]"):
             dom = dom.lower().strip()
             if dom and dom not in own:
                 by_domain.setdefault(dom, r["node_id"])
     for r in conn.execute(
             "SELECT dp.deal_id, p.email FROM deal_people dp JOIN people p ON p.node_id=dp.person_id "
-            "JOIN deals d ON d.node_id=dp.deal_id WHERE d.status='active' AND p.is_me=0 AND p.email IS NOT NULL"):
+            "JOIN deals d ON d.node_id=dp.deal_id WHERE d.owner_id=? AND d.status='active' AND p.is_me=0 "
+            "AND p.email IS NOT NULL", (me,)):
         by_email.setdefault(r["email"].lower(), r["deal_id"])
     return by_domain, by_email
 
@@ -494,8 +505,9 @@ SKIP_TYPES = {"workingLocation", "birthday", "outOfOffice", "focusTime"}
 SKIP_KINDS = {kind(t) for t in SKIP_TYPES}           # compared through kind(): either spelling
 MEETING_COLUMNS = {           # added after the table first shipped; ensure_columns() adds them to older databases
     "record": "TEXT NOT NULL DEFAULT 'no'", "call_id": "TEXT", "meeting_url": "TEXT",
-    "last_seen_at": "TEXT", "record_error": "TEXT",
+    "last_seen_at": "TEXT", "record_error": "TEXT", "accepted": "INTEGER NOT NULL DEFAULT 1",
 }
+PREP_PER_DEAL_PER_DAY = 3     # calendar.prep_per_deal_per_day: prep briefs a deal's meetings may ask for in 24 hours
 LAST_SYNC_KEY = "automation:calendar:last_sync"        # per user (user_state): a calendar is one rep's
 
 
@@ -535,12 +547,24 @@ def _match(guests, by_domain, by_email) -> tuple[str | None, list[str]]:
     return deal, domains
 
 
-def _announce(conn, owner, event_id, deal, title, start, guests) -> None:
-    """A meeting just got linked to a deal: ask for a prep brief (once per owner and event)."""
-    bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal, dedupe_key=f"NEXT_CALL:{owner}:{event_id}",
-                            payload={"event_id": event_id, "deal_id": deal, "title": title, "start": start,
-                                     "attendees": guests}))
+def _announce(conn, owner, event_id, deal, title, start, guests) -> bool:
+    """A meeting of the owner's (organised or accepted: accepted_by_me) is linked to a deal: ask for a prep
+    brief, once per owner and event (the bus dedupes, so asking again on a later sync is a no-op), and at most
+    calendar.prep_per_deal_per_day per deal in 24 hours: a stream of invitations on one deal must not become
+    a stream of paid model runs. The bus carries ids only: prep_meeting reads the meeting's title and guests
+    from calendar_meetings. Returns whether it was published."""
+    cap = int(common.cfg("calendar").get("prep_per_deal_per_day", PREP_PER_DEAL_PER_DAY))
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+    recent = conn.execute("SELECT COUNT(*) FROM wf_events WHERE type='NEXT_CALL_SCHEDULED' AND entity_id=? "
+                          "AND owner=? AND created_at>=?", (deal, owner, since)).fetchone()[0]
+    if recent >= cap:
+        return False
+    if not bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal,
+                                   dedupe_key=f"NEXT_CALL:{owner}:{event_id}",
+                                   payload={"event_id": event_id, "deal_id": deal})):
+        return False
     engine._emit(conn, ACTOR, "deal_meeting_seen", node_id=deal, after={"event_id": event_id, "title": title, "start": start})
+    return True
 
 
 def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime | None = None) -> list[dict]:
@@ -579,18 +603,19 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
             continue
         guests = [a["email"] for a in e.attendees if a["email"] and not a["self"] and a["email"] not in mine]
         deal, domains = _match(guests, by_domain, by_email)
+        accepted = accepted_by_me(e)
         existing = conn.execute("SELECT event_id, deal_id FROM calendar_meetings WHERE owner_id=? AND event_id=?",
                                 (owner, e.id)).fetchone()
         conn.execute(
             "INSERT INTO calendar_meetings(event_id,deal_id,title,start_at,end_at,attendees,matched_domains,"
-            "meeting_url,first_seen_at,last_seen_at,updated_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "meeting_url,first_seen_at,last_seen_at,updated_at,accepted,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(owner_id,event_id) DO UPDATE SET deal_id=COALESCE(excluded.deal_id, calendar_meetings.deal_id), "
             "title=excluded.title, start_at=excluded.start_at, end_at=excluded.end_at, attendees=excluded.attendees, "
             "matched_domains=excluded.matched_domains, meeting_url=excluded.meeting_url, "
-            "last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at",
+            "last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at, accepted=excluded.accepted",
             (e.id, deal, e.title, e.start.isoformat(), e.end.isoformat(), json.dumps(guests), json.dumps(domains),
-             e.meeting_url, stamp, seen, stamp, owner))
-        if deal and (existing is None or not existing["deal_id"]):
+             e.meeting_url, stamp, seen, stamp, int(accepted), owner))
+        if deal and accepted:            # once accepted (the bus dedupes a second ask); never for a bare invitation
             _announce(conn, owner, e.id, deal, e.title, e.start.isoformat(), guests)
         found.append({"event_id": e.id, "deal_id": deal, "title": e.title, "start": e.start.isoformat(),
                       "end": e.end.isoformat(), "attendees": guests, "meeting_url": e.meeting_url,
@@ -613,7 +638,7 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
 
 def _relink(conn, owner, window_start, window_end, by_domain, by_email) -> None:
     """Stored meetings with no deal yet, matched against today's deals from their stored guests."""
-    for r in conn.execute("SELECT event_id, title, start_at, attendees FROM calendar_meetings WHERE owner_id=? "
+    for r in conn.execute("SELECT event_id, title, start_at, attendees, accepted FROM calendar_meetings WHERE owner_id=? "
                           "AND deal_id IS NULL AND start_at>=? AND start_at<=?",
                           (owner, window_start.isoformat(), window_end.isoformat())).fetchall():
         guests = json.loads(r["attendees"] or "[]")
@@ -621,7 +646,8 @@ def _relink(conn, owner, window_start, window_end, by_domain, by_email) -> None:
         if deal:
             conn.execute("UPDATE calendar_meetings SET deal_id=?, matched_domains=?, updated_at=? WHERE owner_id=? "
                          "AND event_id=?", (deal, json.dumps(domains), now(), owner, r["event_id"]))
-            _announce(conn, owner, r["event_id"], deal, r["title"], r["start_at"], guests)
+            if r["accepted"]:
+                _announce(conn, owner, r["event_id"], deal, r["title"], r["start_at"], guests)
 
 
 def upcoming_deal_meetings(conn, days: int | None = None, calendar=None, now_dt: datetime | None = None) -> list[dict]:

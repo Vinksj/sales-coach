@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS calendar_meetings (
   last_seen_at    TEXT,                         -- last calendar sync that still listed it
   record_error    TEXT,
   owner_id        TEXT NOT NULL DEFAULT 'local',
+  accepted        INTEGER NOT NULL DEFAULT 1,   -- organised or accepted by the owner: only then a prep brief
   PRIMARY KEY (owner_id, event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_calendar_meetings_owner_id ON calendar_meetings(owner_id);

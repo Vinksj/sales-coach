@@ -12,6 +12,8 @@
 --                      a rep's follow-up nudge (email) and of a rep's Coach / Learning pages (coaching, entity_id
 --                      = the rep's user id) is logged too (manager/views.READ_PATHS, REP_PAGES). The insert
 --                      policy's app_entity_owner() already answers for both kinds.
+--   calendar_meetings  + accepted (INTEGER NOT NULL DEFAULT 1): the owner organised or accepted the meeting. Only then
+--                      does a deal meeting ask for a prep brief (a paid model run); a bare invitation is shown only.
 --
 -- Rows are untouched: every existing row already has its owner, the new key is wider than the old, and the
 -- new CHECK allows every value the old one did.
@@ -23,3 +25,5 @@ ALTER TABLE derived_outcomes ADD CONSTRAINT derived_outcomes_owner_id_kind_subje
 ALTER TABLE access_log DROP CONSTRAINT IF EXISTS access_log_entity_type_check;
 ALTER TABLE access_log ADD CONSTRAINT access_log_entity_type_check
   CHECK (entity_type IN ('call','deal','email','coaching'));
+
+ALTER TABLE calendar_meetings ADD COLUMN IF NOT EXISTS accepted INTEGER NOT NULL DEFAULT 1;

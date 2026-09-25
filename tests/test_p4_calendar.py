@@ -430,3 +430,32 @@ def test_event_kinds_count_in_either_spelling(db, world, clock):
     assert len(busy) == 2 and all(e - s == timedelta(days=1) for s, e in busy)            # both OOO days, no office
     calendar.sync_events(db, calendar=FakeCalendar(events))
     assert db.execute("SELECT COUNT(*) FROM calendar_meetings").fetchone()[0] == 0
+
+
+# ---- security review F: an invitation is not a prep brief -------------------------------------------------
+
+def test_an_unanswered_invitation_asks_for_no_prep_until_accepted_and_the_bus_carries_ids_only(db, world, clock):
+    """Anyone can put an invitation on a Google calendar; a deal meeting used to ask for a prep brief (a paid
+    model run) whatever the owner's answer. Now only an organised or accepted meeting does, at most
+    calendar.prep_per_deal_per_day per deal in 24 hours, and the event names ids, not titles or guests."""
+    invited = dict(ME, response="needsAction")
+    fake = FakeCalendar([ev(at(WED, "11:00"), id="inv", title="Pricing chat", attendees=[invited, _guest(ARJUN)]),
+                         ev(at(WED, "12:00"), id="tent", title="Maybe", attendees=[dict(ME, response="tentative"),
+                                                                                    _guest(ARJUN)]),
+                         ev(at(WED, "13:00"), id="org", title="Mine", attendees=[dict(ME, response="needsAction"),
+                                                                                 _guest(ARJUN)], organized_by_me=True)])
+    calendar.sync_events(db, calendar=fake)
+    assert [e["payload"] for e in events_of(db, "NEXT_CALL_SCHEDULED")] == [{"event_id": "org", "deal_id": world.deal}]
+    assert db.execute("SELECT deal_id, accepted FROM calendar_meetings WHERE event_id='inv'").fetchone()[1] == 0
+    fake._events[0] = ev(at(WED, "11:00"), id="inv", title="Pricing chat", attendees=[ME, _guest(ARJUN)])
+    calendar.sync_events(db, calendar=fake)                                       # accepted since: now it asks
+    assert sorted(e["payload"]["event_id"] for e in events_of(db, "NEXT_CALL_SCHEDULED")) == ["inv", "org"]
+
+
+def test_prep_briefs_per_deal_are_capped_per_day(db, world, clock, monkeypatch):
+    monkeypatch.setattr(calendar, "PREP_PER_DEAL_PER_DAY", 2)
+    fake = FakeCalendar([ev(at(WED, f"{10 + i}:00"), id=f"m{i}", title=f"Meeting {i}", attendees=[ME, _guest(ARJUN)])
+                         for i in range(5)])
+    calendar.sync_events(db, calendar=fake)
+    calendar.sync_events(db, calendar=fake)
+    assert len(events_of(db, "NEXT_CALL_SCHEDULED")) == 2
