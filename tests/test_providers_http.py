@@ -146,7 +146,8 @@ def test_anthropic_happy_path_forces_the_tool_and_parses_its_input():
     assert "temperature" not in body and "thinking" not in body
     assert result.output == Verdict(label="hot", score=7)
     assert json.loads(result.raw_text) == {"label": "hot", "score": 7, "note": None}
-    assert (result.provider, result.model, result.cost_usd) == ("anthropic", "claude-sonnet-5-echo", None)
+    # usage 10 in / 5 out at the shipped claude-sonnet-5 price (the -echo suffix matches by dash-prefix)
+    assert (result.provider, result.model, result.cost_usd) == ("anthropic", "claude-sonnet-5-echo", 7e-05)
     assert isinstance(result.duration_ms, int)
 
 

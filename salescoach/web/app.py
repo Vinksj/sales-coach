@@ -23,6 +23,8 @@ import asyncio
 import html
 import io
 import json
+import logging
+import threading
 import queue
 import re
 import shutil
@@ -40,7 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .. import config, hosted, identity, repo, seller
+from .. import config, hosted, identity, ops, repo, seller
 from ..execution import policy, tokens
 from ..memory import patterns
 from ..orchestrator import bus, context, review, workflow
@@ -441,17 +443,30 @@ def _live_status(app) -> dict:
     return status
 
 
+def worker_on(app, conn=None) -> bool:
+    """Is anything going to handle the queue? The worker thread in this process, or, when this process
+    is the `web` role, a worker process with a fresh heartbeat (ops.read_heartbeats)."""
+    thread = getattr(app.state, "worker_thread", None)
+    if thread is not None and thread.is_alive():
+        return True
+    if getattr(app.state, "role", "all") == "web" and conn is not None:
+        try:
+            return any(not b["stale"] for b in ops.read_heartbeats(conn)["workers"])
+        except Exception:
+            return False
+    return False
+
+
 def _chrome(request: Request, conn) -> dict:
     counts = {r["status"]: r["n"] for r in conn.execute(
         "SELECT status, COUNT(*) AS n FROM wf_events WHERE status!='done' GROUP BY status")}
     worker = request.app.state.worker
-    thread = getattr(request.app.state, "worker_thread", None)
     current = getattr(worker, "current", None) if worker is not None else None
     return {
         "path": request.url.path,
         "nav_queued": counts.get("pending", 0) + counts.get("running", 0),
         "nav_failed": counts.get("failed", 0),
-        "nav_worker_on": thread is not None and thread.is_alive(),
+        "nav_worker_on": worker_on(request.app, conn),
         "nav_current": f"{current.type} {current.entity_id or ''}".strip() if current else None,
         "live": _live_status(request.app),
         "flash_msg": request.query_params.get("msg"),
@@ -570,7 +585,8 @@ def _publish_process(conn, call_id, step, force=False) -> bool:
     # The step is in the key so a double click dedupes but Redraft then Retry in the same second does not.
     return bus.publish(conn, Event(type="PROCESS_CALL", entity_id=call_id,
                                    dedupe_key=f"PROCESS:{identity.actor_of(conn).user_id}:{call_id}:{step}:{stores.now()}",
-                                   payload={"from": step, "force": bool(force)}))
+                                   payload={"from": step, "force": bool(force)}),
+                       priority=bus.PRIORITY_INTERACTIVE)   # a redraft or a retry: someone is waiting
 
 
 def _parse_addrs(raw) -> list:
@@ -690,6 +706,8 @@ def _background_duties(app, stop):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    """Role `all` (start_worker=True): the worker thread, the duties and the heartbeats live here. Role
+    `web`, or start_worker=False: HTTP only; a worker and a scheduler process do the rest (ops.py)."""
     import threading
     worker, thread = None, None
     stop = threading.Event()
@@ -699,6 +717,8 @@ async def _lifespan(app: FastAPI):
         thread = threading.Thread(target=worker.run, name="salescoach-worker", daemon=True)
         thread.start()
         _background_duties(app, stop)
+        if app.state.heartbeats:
+            _heartbeats(app, worker, stop)
     app.state.worker, app.state.worker_thread = worker, thread
     try:
         yield
@@ -708,6 +728,31 @@ async def _lifespan(app: FastAPI):
             worker.stop()
             thread.join(timeout=5)
         app.state.worker, app.state.worker_thread = None, None
+
+
+def _heartbeats(app, worker, stop):
+    """The single-process deploy says it is alive the same way the split roles do, so /health and
+    `salescoach health` read one shape whatever the topology."""
+    ops.Heartbeat(app.state.db_path, "worker", stop,
+                  fields=lambda: {"concurrency": 1, "handled": worker.handled, "busy": int(worker.current is not None)}).start()
+
+    def leader():
+        conn = None
+        while not stop.is_set():
+            try:
+                if conn is None:
+                    with identity.activate(None):
+                        conn = stores.sales(app.state.db_path)
+                ops._write_leader(conn, app.state.started_at)
+                ops.write_heartbeat(conn, "scheduler", started_at=app.state.started_at, leader=True)
+            except Exception:
+                logging.getLogger("salescoach.web").exception("scheduler heartbeat failed")
+                conn = None
+            if stop.wait(ops.HEARTBEAT_S):
+                break
+        if conn is not None:
+            conn.close()
+    threading.Thread(target=leader, name="salescoach-heartbeat-scheduler", daemon=True).start()
 
 
 async def _http_error(request: Request, exc: StarletteHTTPException):
@@ -721,14 +766,21 @@ async def _http_error(request: Request, exc: StarletteHTTPException):
 
 
 def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live_factory=_UNSET,
-               hub=_UNSET, trusted_origins=None) -> FastAPI:
+               hub=_UNSET, trusted_origins=None, role: str = "all", heartbeats: bool = False) -> FastAPI:
     """The web app. Tests pass start_worker=False and inject gmail_factory / live_factory / hub.
 
     start_worker=False also skips every background duty (scheduler, Jarvis sync), which is how
-    `serve --no-worker` previews a database copy without anything acting on it.
+    `serve --no-worker` previews a database copy without anything acting on it. role="web" does the
+    same for the split deploy (ops.py): this process serves HTTP and nothing else, whatever
+    start_worker says. heartbeats=True (serve, role all) writes the worker/scheduler heartbeats.
     """
+    if role not in ("all", "web"):
+        raise ValueError(f"create_app serves HTTP: role must be all or web, not {role!r}")
     app = FastAPI(title="Sales Coach", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.start_worker = start_worker
+    app.state.role = role
+    app.state.start_worker = start_worker and role == "all"
+    app.state.heartbeats = heartbeats
+    app.state.started_at = stores.now()
     # Tests post from a fixed origin to TestClient's "testserver" host; a real server trusts only itself.
     if trusted_origins is None:
         trusted_origins = set() if start_worker else {"http://127.0.0.1:8140", "http://localhost:8140"}
@@ -784,8 +836,17 @@ def health(request: Request):
     except Exception as exc:                        # a broken volume is exactly what this must report
         db_state = f"error: {type(exc).__name__}"
     thread = getattr(request.app.state, "worker_thread", None)
+    processes = {"workers": [], "schedulers": [], "leader": None}
+    if db_state == "ok":
+        try:
+            with _db(request) as conn:
+                processes = ops.read_heartbeats(conn)
+        except Exception:                           # the store answered SELECT 1 a moment ago; do not 503 on this
+            pass
     body = {"status": "ok" if db_state == "ok" else "error", "version": _version(), "db": db_state,
+            "role": getattr(request.app.state, "role", "all"),
             "worker": "running" if thread is not None and thread.is_alive() else "off",
+            "processes": processes,
             "configured": bool(seller.is_configured())}
     return JSONResponse(body, status_code=200 if db_state == "ok" else 503)
 

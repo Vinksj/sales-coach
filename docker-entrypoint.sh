@@ -4,10 +4,15 @@
 #   2. drop root. `setpriv` is in util-linux, which python:slim ships.
 # If the container is already running as a non-root user (the platform chose one), there is nothing
 # to chown and nothing to drop: exec straight away.
+#
+# SALESCOACH_ROLE (all | web | worker | scheduler, docs/deploy-cloud.md "Processes") picks what the
+# default command runs: the CMD in the Dockerfile passes it to `salescoach serve --role`, so one image
+# serves as the web service, the worker and the scheduler. A worker or scheduler ignores --port.
 set -eu
 
 DATA="${SALESCOACH_DATA:-/data}"
 RUNTIME="${SALESCOACH_RUNTIME:-$DATA/runtime}"
+export SALESCOACH_ROLE="${SALESCOACH_ROLE:-all}"
 
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$DATA" "$RUNTIME"

@@ -16,12 +16,25 @@ A user file that cannot be read (a YAML typo, a permission) is NOT an error the 
 3): load() falls back to the tracked defaults for that file, load_user() to nothing, and the problem
 (file, line, message) is on record in user_problems() for the banner on /setup and Today. A TRACKED
 file that fails to parse is a broken install and still raises.
+
+Cloud mode (SALESCOACH_MODE=cloud with a Postgres store): the overlay lives in the `org_settings`
+table instead of the yaml files, one row per name, `body` the same shape the file would have and a
+`version` that every save bumps. load() asks the database for the row's version on every call and
+caches the merged result by (name, version, tracked file stamp), so three processes (web, worker,
+scheduler) all see a change on their next read with no restart and no file to share; a miss costs one
+more query for the body. save_user() writes the row; load_user() reads it; user_problems() is empty
+(there is no file to be broken). text() / save_user_text() (style.md) and user_file() (accounts.yaml)
+stay on disk: the per-user style is in users.style since Phase 1, and secrets stay in the environment
+or secrets.env, never in the table.
 """
+import json
 import logging
 import os
 import tempfile
+import threading
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -69,9 +82,108 @@ def deep_merge(base, over):
 
 def load(name: str) -> dict:
     """config/<name>.yaml with the user's <name>.yaml merged over it, cached per version of BOTH files:
-    an edit (auto-send off, a new policy, a saved profile) is honoured on the next read, no restart."""
+    an edit (auto-send off, a new policy, a saved profile) is honoured on the next read, no restart.
+    Cloud mode: the org_settings row is the overlay, cached by its version (module docstring)."""
     tracked, user = Path(CONFIG_DIR) / f"{name}.yaml", user_dir() / f"{name}.yaml"
+    url = _org_store()
+    if url is not None:
+        return _load_org(url, name, str(tracked), _stamp(tracked))
     return _load_cached(str(tracked), _stamp(tracked), str(user), _stamp(user))
+
+
+# ------------------------------------------------------------------------- org settings (cloud)
+
+_org_lock = threading.Lock()
+_org_cache: dict = {}          # name -> ((version, tracked_stamp), merged dict)
+
+
+def _org_store() -> Optional[str]:
+    """The Postgres URL when settings live in the database (cloud mode with a Postgres store), else None
+    (local mode; or cloud mode pointed at a file, which stores.sales() refuses anyway)."""
+    from . import identity
+    if not identity.cloud():
+        return None
+    from .store import db, stores
+    target = stores.db_path()
+    return target if isinstance(target, str) and db.is_postgres_url(target) else None
+
+
+def _org_conn(url: str):
+    """A pooled connection with the right search_path and no actor (org_settings is SYSTEM)."""
+    from . import identity
+    from .store import stores
+    with identity.activate(None):
+        return stores._postgres(url)
+
+
+def _org_version(url: str, name: str) -> Optional[int]:
+    conn = _org_conn(url)
+    try:
+        row = conn.execute("SELECT version FROM org_settings WHERE name=?", (name,)).fetchone()
+    finally:
+        conn.close()
+    return int(row["version"]) if row is not None else None
+
+
+def _org_body(url: str, name: str) -> tuple[Optional[int], dict]:
+    conn = _org_conn(url)
+    try:
+        row = conn.execute("SELECT version, body FROM org_settings WHERE name=?", (name,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None, {}
+    try:
+        body = json.loads(row["body"] or "{}")
+    except ValueError:
+        log.warning("org_settings %s holds invalid JSON; using the defaults", name)
+        body = {}
+    return int(row["version"]), body if isinstance(body, dict) else {}
+
+
+def _load_org(url: str, name: str, tracked: str, tracked_stamp: int) -> dict:
+    version = _org_version(url, name)
+    key = (version, tracked_stamp)
+    with _org_lock:
+        hit = _org_cache.get(name)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    stored, body = _org_body(url, name) if version is not None else (None, {})
+    base = _read_yaml(tracked) if tracked_stamp >= 0 else {}
+    merged = deep_merge(base, body)
+    with _org_lock:
+        _org_cache[name] = ((stored, tracked_stamp), merged)
+    return merged
+
+
+def _save_org(url: str, name: str, data: dict) -> None:
+    from . import identity
+    from .store.stores import now
+    actor = identity.current_actor(required=False)
+    conn = _org_conn(url)
+    try:
+        conn.execute(
+            "INSERT INTO org_settings(name,body,version,updated_at,updated_by) VALUES (?,?,1,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET body=excluded.body, version=org_settings.version+1, "
+            "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (name, json.dumps(data, ensure_ascii=False, default=str), now(), actor.user_id if actor else None))
+        conn.commit()
+    finally:
+        conn.close()
+    with _org_lock:
+        _org_cache.pop(name, None)
+
+
+def org_settings_versions() -> dict:
+    """{name: version} of every stored overlay (cloud mode), for tests and support; {} locally."""
+    url = _org_store()
+    if url is None:
+        return {}
+    conn = _org_conn(url)
+    try:
+        return {r["name"]: int(r["version"]) for r in conn.execute("SELECT name, version FROM org_settings").fetchall()}
+    finally:
+        conn.close()
 
 
 @lru_cache(maxsize=256)
@@ -118,7 +230,10 @@ def _user_yaml(path: str, stamp: int) -> dict:
 
 def load_user(name: str) -> dict:
     """Only what the user saved for <name> (no tracked defaults). For settings forms. A file that
-    cannot be read counts as nothing saved (and is on record in user_problems())."""
+    cannot be read counts as nothing saved (and is on record in user_problems()). Cloud: the row."""
+    url = _org_store()
+    if url is not None:
+        return _org_body(url, name)[1]
     path = user_dir() / f"{name}.yaml"
     return _user_yaml(str(path), _stamp(path))
 
@@ -127,6 +242,8 @@ def user_problems() -> list:
     """Every user settings file that cannot be read right now: [{file, name, line, message}], for the
     banner. Checked against the files' current versions, so a fixed file drops off at once."""
     out = []
+    if _org_store() is not None:
+        return out                                  # rows, not files: nothing to be unreadable
     try:
         paths = sorted(user_dir().glob("*.yaml"))
     except OSError:
@@ -167,11 +284,17 @@ class _Dumper(yaml.SafeDumper):
 _Dumper.add_representer(str, lambda d, v: d.represent_scalar("tag:yaml.org,2002:str", v, style="|" if "\n" in v else None))
 
 
-def save_user(name: str, data: dict) -> Path:
+def save_user(name: str, data: dict) -> Optional[Path]:
     """Replace the user's <name>.yaml. The tracked file is never written. A file that could not be
-    read is kept beside the new one as <name>.yaml.broken-<stamp>: a save must not destroy hand edits."""
+    read is kept beside the new one as <name>.yaml.broken-<stamp>: a save must not destroy hand edits.
+    Cloud mode: the org_settings row instead (its version bumps; every process sees it next read);
+    returns None, there is no path."""
     if not isinstance(data, dict):
         raise TypeError("settings must be a mapping")
+    url = _org_store()
+    if url is not None:
+        _save_org(url, name, data)
+        return None
     path = user_dir() / f"{name}.yaml"
     if _user_problem(str(path), _stamp(path)):
         try:

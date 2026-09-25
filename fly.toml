@@ -1,5 +1,13 @@
-# Fly.io configuration for a hosted Sales Coach: one machine, one volume, one seller.
-# Walkthrough: docs/deploy.md. Replace the two placeholders before `fly launch`.
+# Fly.io configuration for a hosted Sales Coach. Walkthrough: docs/deploy.md (one seller, one volume)
+# and docs/deploy-cloud.md (a team on Postgres). Replace the two placeholders before `fly launch`.
+#
+# Three process groups from one image, told apart by the `--role` each one passes to `salescoach serve`:
+#   web        HTTP; scale it as you like            fly scale count web=2
+#   worker     the bus loops; scale it as you like   fly scale count worker=2
+#   scheduler  the duties; one is enough, two elect a leader on Postgres
+# The single-seller install keeps only `app` (below, role all) with the volume; a team install
+# (SALESCOACH_MODE=cloud) uses web + worker + scheduler with DATABASE_URL and no volume:
+#   fly scale count app=0 web=1 worker=1 scheduler=1
 #
 # Secrets are never written here. After `fly launch --no-deploy`, set them once:
 #
@@ -8,6 +16,7 @@
 #     SALESCOACH_PUBLIC_URL='https://<app>.fly.dev' \
 #     ANTHROPIC_API_KEY='sk-ant-...' \
 #     WEBHOOK_SECRET="$(openssl rand -hex 24)"
+#   # a team install adds: SALESCOACH_MODE=cloud DATABASE_URL=postgres://... LLM_BUDGET_ORG_USD_DAY=...
 #
 # (ANTHROPIC_API_KEY is for the `anthropic` provider; use OPENAI_API_KEY, XAI_API_KEY or the key
 # your OpenAI-compatible gateway needs instead. WEBHOOK_SECRET is optional: it switches the
@@ -23,21 +32,29 @@ primary_region = "REPLACE-ME"          # e.g. "bom" (Mumbai), "sin", "fra", "iad
   SALESCOACH_DATA = "/data"
   SALESCOACH_RUNTIME = "/data/runtime"
   PORT = "8140"
+  WORKER_CONCURRENCY = "2"
 
-# One volume, mounted where everything persistent lives (the database, settings, secrets.env,
-# imported transcripts, the runtime folder). A volume pins the app to one machine, which is right:
-# SQLite has one writer, and the scheduler must run exactly once.
+[processes]
+  app = "salescoach serve --role all --host 0.0.0.0 --port 8140"
+  web = "salescoach serve --role web --host 0.0.0.0 --port 8140"
+  worker = "salescoach serve --role worker"
+  scheduler = "salescoach serve --role scheduler"
+
+# One volume, for the single-seller `app` process only (SQLite has one writer, so one machine). The
+# team install keeps everything in Postgres and mounts nothing.
 [[mounts]]
   source = "salescoach_data"
   destination = "/data"
   initial_size = "3gb"
+  processes = ["app"]
 
 [http_service]
   internal_port = 8140
   force_https = true
-  auto_stop_machines = "off"           # the scheduler (follow-ups, reply polling) runs inside the server
+  auto_stop_machines = "off"           # the scheduler (follow-ups, reply polling) runs inside `app`
   auto_start_machines = true
   min_machines_running = 1
+  processes = ["app", "web"]
 
   [http_service.concurrency]
     type = "requests"
@@ -51,6 +68,22 @@ primary_region = "REPLACE-ME"          # e.g. "bom" (Mumbai), "sin", "fra", "iad
     timeout = "5s"
     path = "/health"
 
+# A worker or a scheduler serves no HTTP; `salescoach health` reads its heartbeat row instead.
+[checks]
+  [checks.heartbeat]
+    type = "script"
+    command = "salescoach health"
+    interval = "30s"
+    timeout = "10s"
+    grace_period = "30s"
+    processes = ["worker", "scheduler"]
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "1gb"
+  processes = ["app", "web", "scheduler"]
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"
+  processes = ["worker"]

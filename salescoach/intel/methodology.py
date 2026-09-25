@@ -666,7 +666,8 @@ def switch(conn, key: str) -> int:
             continue                                  # nothing analysed yet: the first call will use the new one
         if bus.publish(conn, Event(type="STRATEGY_REQUESTED", entity_id=deal_id,
                                    payload={"reason": "methodology_switch", "methodology": key},
-                                   dedupe_key=f"STRATEGY_REQUESTED:{deal_id}:methodology:{key}:{stamp}")):
+                                   dedupe_key=f"STRATEGY_REQUESTED:{deal_id}:methodology:{key}:{stamp}"),
+                       priority=bus.PRIORITY_NORMAL):       # normal, not backfill: a deal's events must keep their order
             queued += 1
     conn.commit()
     return queued

@@ -31,6 +31,7 @@ import httpx
 from pydantic import ValidationError
 
 from .. import config
+from . import pricing
 from .base import LLMResult, ProviderError, RateLimited, SchemaViolation, json_schema_for
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -186,13 +187,21 @@ class _HTTPProvider:
                                 f"base URL: {detail}")
         raise RequestRejected(f"{self.label} rejected the request (HTTP {status}): {detail}", status, detail)
 
-    def _result(self, schema, raw, text: str, model: str, started: float) -> LLMResult:
+    def _result(self, schema, raw, text: str, model: str, started: float, cost: Optional[float] = None) -> LLMResult:
         try:
             output = schema.model_validate(raw)
         except ValidationError as exc:
             raise SchemaViolation(str(exc), text[:4000]) from None
         return LLMResult(output=output, raw_text=text, provider=self.name, model=model,
-                         duration_ms=int((time.monotonic() - started) * 1000), cost_usd=None, isolation="n/a")
+                         duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost, isolation="n/a")
+
+    @staticmethod
+    def _cost(model: str, usage, key_in: str, key_out: str) -> Optional[float]:
+        """pricing.cost_usd from the usage block the API returned; None when it returned none, or the
+        model is not in the price table. Never raises: a cost is bookkeeping, not the answer."""
+        if not isinstance(usage, dict):
+            return None
+        return pricing.cost_usd(model, usage.get(key_in), usage.get(key_out))
 
 
 def _api_message(resp: httpx.Response) -> str:
@@ -272,7 +281,9 @@ class AnthropicProvider(_HTTPProvider):
         text = json.dumps(call.get("input"), ensure_ascii=False)
         if data.get("stop_reason") == "max_tokens":
             raise SchemaViolation(f"the answer was cut off at max_tokens={self.max_tokens}", text[:4000])
-        return self._result(schema, call.get("input"), text, data.get("model") or model, started)
+        used = data.get("model") or model
+        return self._result(schema, call.get("input"), text, used, started,
+                            cost=self._cost(used, data.get("usage"), "input_tokens", "output_tokens"))
 
     def generate(self, *, system, prompt, model, effort=None, timeout=None) -> str:
         data = self._messages(system, prompt, model, effort, timeout, None)
@@ -318,7 +329,8 @@ class OpenAICompatProvider(_HTTPProvider):
             headers["authorization"] = f"Bearer {key}"
         return headers
 
-    def _chat(self, system, prompt, model, response_format, timeout) -> tuple[str, str]:
+    def _chat(self, system, prompt, model, response_format, timeout) -> tuple[str, str, Optional[float]]:
+        """(text, the model the API named, the cost from its usage block or None)."""
         body = {"model": model, "messages": [{"role": "system", "content": system},
                                              {"role": "user", "content": prompt}]}
         if response_format:
@@ -337,7 +349,8 @@ class OpenAICompatProvider(_HTTPProvider):
         text = content if isinstance(content, str) else ""
         if choice.get("finish_reason") == "length":
             raise SchemaViolation("the answer was cut off at the model's output limit", text[:4000])
-        return text, data.get("model") or model
+        used = data.get("model") or model
+        return text, used, self._cost(used, data.get("usage"), "prompt_tokens", "completion_tokens")
 
     def extract_structured(self, *, system, prompt, schema, model, effort=None, timeout=None) -> LLMResult:
         started = time.monotonic()
@@ -347,16 +360,16 @@ class OpenAICompatProvider(_HTTPProvider):
         loose_system = (system + "\n\nReturn ONLY one JSON object, with no prose and no code fences, that "
                         "validates against this JSON Schema:\n" + json.dumps(full, ensure_ascii=False))
         if self.structured == "json_object" or model in self._json_object:
-            text, used = self._chat(loose_system, prompt, model, {"type": "json_object"}, timeout)
+            text, used, cost = self._chat(loose_system, prompt, model, {"type": "json_object"}, timeout)
         else:
             try:
-                text, used = self._chat(system, prompt, model, strict, timeout)
+                text, used, cost = self._chat(system, prompt, model, strict, timeout)
             except RequestRejected as exc:
                 if exc.status != 400:
                     raise
                 # Remembered only once json_object has worked: a 400 about something else
                 # (context length, a bad parameter) fails again here and changes nothing.
-                text, used = self._chat(loose_system, prompt, model, {"type": "json_object"}, timeout)
+                text, used, cost = self._chat(loose_system, prompt, model, {"type": "json_object"}, timeout)
                 self._json_object.add(model)
         text = _strip_fences(text)
         if not text:
@@ -365,7 +378,7 @@ class OpenAICompatProvider(_HTTPProvider):
             raw = json.loads(text)
         except json.JSONDecodeError as exc:
             raise SchemaViolation(f"the answer was not valid JSON: {exc}", text[:4000]) from None
-        return self._result(schema, raw, text, used, started)
+        return self._result(schema, raw, text, used, started, cost=cost)
 
     def generate(self, *, system, prompt, model, effort=None, timeout=None) -> str:
         return self._chat(system, prompt, model, None, timeout)[0]

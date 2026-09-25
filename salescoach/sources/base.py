@@ -20,9 +20,11 @@ asks. A transcript with one label or with no seller-side ambiguity behaves as it
 
 Everything in a transcript is untrusted text. It is parsed and stored, never followed.
 """
+import base64
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -229,10 +231,16 @@ def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._")[:120] or "payload"
 
 
-def save_raw(nt: NormalizedTranscript):
-    """data/inbox/<kind>/<id>.json|.txt: what arrived, before anything interpreted it.
+def save_raw(nt: NormalizedTranscript, conn=None):
+    """What arrived, before anything interpreted it. Locally a file, data/inbox/<kind>/<id>.json|.txt|.bin;
+    in cloud mode (a container with no volume to keep) a raw_payloads row on `conn`, in the caller's
+    transaction, so a refused import rolls it back with everything else. Nothing in the pipeline reads
+    a payload back; `salescoach payloads export` does, for support.
     Returns the path when this call CREATED the file (so a failed import can take it back), else None."""
     if nt.raw is None:
+        return None
+    if conn is not None and identity.cloud():
+        _save_raw_row(conn, nt)
         return None
     folder = config.DATA_DIR / "inbox" / _slug(nt.source_kind)
     folder.mkdir(parents=True, exist_ok=True)
@@ -248,6 +256,67 @@ def save_raw(nt: NormalizedTranscript):
     existed = path.exists()
     write(path)
     return None if existed else path
+
+
+def encode_raw(raw) -> tuple[str, str]:
+    """(encoding, body text) for a payload: bytes as base64, a str as is, anything else as JSON."""
+    if isinstance(raw, bytes):
+        return "base64", base64.b64encode(raw).decode("ascii")
+    if isinstance(raw, str):
+        return "text", raw
+    return "json", json.dumps(raw, ensure_ascii=False, default=str)
+
+
+def decode_raw(encoding: str, body: str):
+    if encoding == "base64":
+        return base64.b64decode(body.encode("ascii"))
+    if encoding == "json":
+        return json.loads(body)
+    return body
+
+
+def _save_raw_row(conn, nt: NormalizedTranscript) -> None:
+    """One row per distinct payload per owner (UNIQUE(owner_id, sha256)): the same transcript delivered
+    twice is stored once. owner_id is the acting user's by column default."""
+    encoding, body = encode_raw(nt.raw)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    conn.execute(
+        "INSERT INTO raw_payloads(source_kind,source_ref,encoding,body,sha256,created_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(owner_id, sha256) DO NOTHING",
+        (nt.source_kind, nt.source_ref, encoding, body, digest, now()))
+
+
+_EXT = {"json": ".json", "text": ".txt", "base64": ".bin"}
+
+
+def export_payloads(conn, out_dir=None, since: Optional[str] = None, as_json: bool = False, out=None) -> int:
+    """`salescoach payloads export`: every raw_payloads row the connection can see (its owner's, or all
+    on a local install), oldest first. With `out_dir`, each lands as <out_dir>/<kind>/<id><ext> (bytes
+    decoded); otherwise, or with as_json, one JSON line per row on `out` (body included). Returns the count."""
+    from pathlib import Path
+    out = out or sys.stdout
+    if since:
+        rows = conn.execute("SELECT * FROM raw_payloads WHERE created_at >= ? ORDER BY id", (since,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM raw_payloads ORDER BY id").fetchall()
+    written = 0
+    for row in rows:
+        if out_dir:
+            folder = Path(out_dir) / _slug(row["source_kind"])
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"{row['id']}{_EXT.get(row['encoding'], '.txt')}"
+            if row["encoding"] == "base64":
+                target.write_bytes(decode_raw("base64", row["body"]))
+            else:
+                target.write_text(row["body"])
+        if as_json or not out_dir:
+            record = {k: row[k] for k in ("id", "owner_id", "source_kind", "source_ref", "encoding", "sha256", "created_at")}
+            record["body"] = row["body"]
+            print(json.dumps(record, ensure_ascii=False), file=out)
+        written += 1
+    if out_dir:
+        print(f"exported {written} payload{'' if written == 1 else 's'} to {out_dir}", file=sys.stderr)
+    return written
 
 
 # ------------------------------------------------------------------------------------------ import
@@ -307,7 +376,7 @@ def import_normalized(conn, nt: NormalizedTranscript, deal_id=None, history=Fals
                          "them the coach cannot tell your commitments from the buyer's.")
     mapped, hold = map_speakers(nt, me_label, conn)
     seller.require_configured()
-    raw_path = save_raw(nt)
+    raw_path = save_raw(nt, conn)
     try:
         return _create(conn, nt, mapped, hold, labels, deal_id, history, lang_mode, participant_ids, add_me, link)
     except BaseException:
@@ -346,7 +415,8 @@ def _create(conn, nt, mapped, hold, labels, deal_id, history, lang_mode, partici
                               {"source": nt.source_kind, "trust": "third_party_inference", "text": nt.summary,
                                "captured_at": now()})
     if not hold:
-        bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"))
+        bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"),
+                    priority=bus.PRIORITY_BACKFILL if history else bus.PRIORITY_NORMAL)
     conn.commit()
     return ImportResult(call_id, True, hold, labels)
 
@@ -403,7 +473,9 @@ def resolve_speaker(conn, call_id, label: Optional[str], remember: bool = True, 
         repo.add_participant(conn, call_id, repo.ensure_me(conn))
     engine._emit(conn, actor, "speaker_resolved", node_id=call_id, after={"me_label": label or None, "turns": moved})
     repo.set_call_state(conn, call_id, "diarized", actor=actor)
-    bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"))
+    history = bool(repo.get_call(conn, call_id)["history"])
+    bus.publish(conn, Event(type="CALL_ENDED", entity_id=call_id, dedupe_key=f"CALL_ENDED:{call_id}"),
+                priority=bus.PRIORITY_BACKFILL if history else bus.PRIORITY_NORMAL)
     if remember and label and label != NOT_PRESENT:
         remember_me_label(label, conn)
     conn.commit()

@@ -220,8 +220,9 @@ def test_health_is_open_cheap_and_names_no_secret(client, db, password, monkeypa
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"status", "version", "db", "worker", "configured"}
+    assert set(body) == {"status", "version", "db", "worker", "configured", "role", "processes"}
     assert body["status"] == "ok" and body["db"] == "ok" and body["worker"] == "off" and body["configured"] is True
+    assert body["role"] == "all" and body["processes"] == {"workers": [], "schedulers": [], "leader": None}
     assert body["version"] and body["version"] != "unknown"
     assert PASSWORD not in r.text and "DISTINCTIVE" not in r.text
     assert "set-cookie" not in r.headers

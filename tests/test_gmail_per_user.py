@@ -211,10 +211,10 @@ def test_in_cloud_only_the_owner_at_the_keyboard_may_send(db, monkeypatch):
     monkeypatch.setenv(identity.MODE_ENV, "cloud")                                          # the store is open already
     manager = identity.Actor("u-mani", identity.INTERACTIVE, "manager", {"name": "Mani", "emails": ["m@tessel.test"]})
     with identity.as_actor(db, manager):
-        with pytest.raises(policy.SendRefused, match="a manager reads, never sends"):
+        with pytest.raises(policy.SendRefused, match="belongs to another user; only its owner can act on it"):
             policy.approve_and_send(db, eid, OkGmail())
     with identity.as_actor(db, identity.LOCAL_ACTOR.as_service()):
-        with pytest.raises(policy.SendRefused, match="own session"):
+        with pytest.raises(policy.SendRefused, match="owner at the keyboard"):
             policy.approve_and_send(db, eid, OkGmail())
     assert db.execute("SELECT status FROM emails WHERE id=?", (eid,)).fetchone()[0] == "drafted"   # untouched
     owner = OkGmail()

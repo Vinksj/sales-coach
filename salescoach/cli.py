@@ -2,6 +2,9 @@
 
   salescoach serve                        web UI + workflow worker on 127.0.0.1:8140
   salescoach serve --host 0.0.0.0         hosted: needs SALESCOACH_PASSWORD (docs/deploy.md)
+  salescoach serve --role web|worker|scheduler   one image, three processes (docs/deploy-cloud.md)
+  salescoach health                       the container health check for whatever role this is
+  salescoach payloads export              raw payloads (cloud mode) to files, for support
   salescoach password-hash                a SALESCOACH_PASSWORD_HASH for the password on stdin
   salescoach call --title "NWP weekly"    capture a call in the foreground; Ctrl-C ends it
   salescoach import-audio FILE ...        process an existing recording
@@ -48,12 +51,14 @@ def _loopback(host: str) -> bool:
         return False
 
 
-def cloud_problems() -> list:
-    """What a cloud install cannot start without: the session secret, the Google client, the token keys."""
+def cloud_problems(role: str = "all") -> list:
+    """What a cloud process cannot start without: the session secret (a process that serves HTTP: role
+    web or all), the Google client and the token keys (every role: a worker refreshes and uses the reps'
+    grants)."""
     from . import googleauth, hosted
     from .execution import tokens
     out = []
-    if not os.environ.get(hosted.SESSION_SECRET_ENV):
+    if role in ("all", "web") and not os.environ.get(hosted.SESSION_SECRET_ENV):
         out.append(f"{hosted.SESSION_SECRET_ENV} is not set (a long random string; it signs the session cookie)")
     out.extend(googleauth.problems())
     if not tokens.keys_configured():
@@ -72,21 +77,31 @@ def cmd_serve(args):
         if not db.is_postgres_url(str(stores.db_path())):
             print(stores.CLOUD_NEEDS_POSTGRES, file=sys.stderr)
             return 2
-        missing = cloud_problems()
+        missing = cloud_problems(args.role)
         if missing:
             print("refusing to start in cloud mode:\n  " + "\n  ".join(missing) + "\n(see docs/deploy-cloud.md)",
                   file=sys.stderr)
             return 2
-    if not _loopback(args.host) and not hosted.auth_enabled() and not args.allow_unauthenticated:
+    if args.role in ("all", "web") and not _loopback(args.host) and not hosted.auth_enabled() and not args.allow_unauthenticated:
         print(UNAUTHENTICATED_BIND.format(host=args.host), file=sys.stderr)
         return 2
+    from . import ops
+    role = args.role
+    if role in ("worker", "scheduler"):
+        # No HTTP here: the process runs its loops until SIGTERM and the container health check reads
+        # its heartbeat (ops.check_health). A worker needs no port; a scheduler needs no password.
+        if role == "worker":
+            ops.run_worker(n=args.concurrency or None)
+        else:
+            ops.run_scheduler()
+        return 0
     import uvicorn
     from .web.app import create_app
     if args.no_worker:
         # A read-mostly preview: no worker, no scheduler, no Jarvis sync, and only this origin trusted.
-        app = create_app(start_worker=False, trusted_origins=set())
+        app = create_app(start_worker=False, trusted_origins=set(), role="web" if role == "web" else "all")
     else:
-        app = create_app()
+        app = create_app(role=role, heartbeats=(role == "all"))
     options = {}
     trusted = hosted.trusted_proxies()
     if trusted:
@@ -94,6 +109,26 @@ def cmd_serve(args):
         # the scheme from them, so the login rate limit counts real addresses and the Secure cookie fits.
         options.update(proxy_headers=True, forwarded_allow_ips=trusted)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", **options)
+
+
+def cmd_health(args):
+    """Exit 0 when this process's role is healthy: HTTP /health for web/all, a fresh heartbeat row for a
+    worker or a scheduler (they serve no HTTP). The Dockerfile's HEALTHCHECK runs this."""
+    from . import ops
+    ok, why = ops.check_health(args.role, port=args.port)
+    print(f"{args.role}: {'ok' if ok else 'NOT OK'} ({why})", file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
+def cmd_payloads(args):
+    """`payloads export`: every raw payload the store holds (cloud mode writes them; a local install keeps
+    files under data/inbox instead) to <out>/<kind>/<id>.<ext>, or as JSON lines on stdout with --json."""
+    from . import identity
+    from .sources import base
+    if args.as_user:
+        with identity.session(args.as_user, mode=identity.SERVICE) as conn:
+            return base.export_payloads(conn, args.out, since=args.since, as_json=args.json, out=sys.stdout)
+    return base.export_payloads(_conn(), args.out, since=args.since, as_json=args.json, out=sys.stdout)
 
 
 def cmd_password_hash(args):
@@ -299,6 +334,13 @@ def cmd_status(args):
                            "WHERE status!='done' ORDER BY id").fetchall()
     for e in pending:
         print(f"event {e['type']} {e['entity_id']} {e['status']} x{e['attempts']} {e['error'] or ''}")
+    from .orchestrator import bus
+    depth = bus.queue_depth(conn)
+    if depth:
+        print("queue by owner:")
+        for d in depth:
+            print(f"  {d['owner'] or '(none)':<16} pending {d['pending']:<4} running {d['running']:<3} failed {d['failed']:<3}"
+                  + (f" oldest pending {d['oldest_pending']}" if d["oldest_pending"] else ""))
     if any(e["status"] in ("pending", "running") for e in pending) and not _worker_listening():
         print("note: events are queued but no worker is running on this database; start `salescoach serve` "
               "or run `salescoach work` to process them", file=sys.stderr)
@@ -352,7 +394,24 @@ def main(argv=None):
     s.add_argument("--no-worker", action="store_true", help="preview only: no worker, scheduler or Jarvis sync")
     s.add_argument("--allow-unauthenticated", action="store_true",
                    help="serve on a non-loopback --host without SALESCOACH_PASSWORD (a private network you trust)")
+    s.add_argument("--role", choices=["all", "web", "worker", "scheduler"], default=os.environ.get("SALESCOACH_ROLE") or "all",
+                   help="all (default: one process, as on a laptop), web (HTTP only), worker (WORKER_CONCURRENCY "
+                        "loops, no HTTP), scheduler (the duties under a leader election; no HTTP)")
+    s.add_argument("--concurrency", type=int, help="worker role: how many loops (default WORKER_CONCURRENCY or 2)")
     s.set_defaults(fn=cmd_serve)
+
+    h = sub.add_parser("health", help="exit 0 when this role's process is healthy (the container health check)")
+    h.add_argument("--role", choices=["all", "web", "worker", "scheduler"], default=os.environ.get("SALESCOACH_ROLE") or "all")
+    h.add_argument("--port", type=int)
+    h.set_defaults(fn=cmd_health)
+
+    pl = sub.add_parser("payloads", help="raw payloads kept in the store (cloud mode)")
+    pl.add_argument("action", choices=["export"])
+    pl.add_argument("--out", help="folder to write <kind>/<id>.<ext> into (default: JSON lines on stdout)")
+    pl.add_argument("--since", help="only payloads created at or after this ISO timestamp")
+    pl.add_argument("--json", action="store_true", help="JSON lines on stdout even with --out")
+    pl.add_argument("--as", dest="as_user", metavar="USER_ID", help="cloud mode: read as this user (service session)")
+    pl.set_defaults(fn=cmd_payloads)
 
     sub.add_parser("password-hash", help="print a SALESCOACH_PASSWORD_HASH for the password on stdin").set_defaults(
         fn=cmd_password_hash)

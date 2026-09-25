@@ -26,7 +26,7 @@ import re
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import config, providers, repo, seller, sources, users
+from .. import config, identity, providers, repo, seller, sources, users
 from ..intel import methodology
 from ..providers.base import ProviderError
 from ..store.stores import now, set_state, set_user_state
@@ -132,7 +132,8 @@ def you_save(request: Request, name: str = Form(""), emails: str = Form(""), com
             (config.user_dir() / "style.md").unlink(missing_ok=True)
     webapp = _web()
     with webapp._db(request) as conn:
-        users.sync_local(conn)
+        if not identity.cloud():                    # the local user's row shadows seller.yaml; cloud users have rows of their own
+            users.sync_local(conn)
         repo.sync_me(conn)
         conn.commit()
     return _go("you", go, msg="Profile saved.")
@@ -296,7 +297,9 @@ def _model_context(conn, selected_key, models=None, models_error=None, test=None
     if shown_test is None:
         last = state.last_test(conn)
         shown_test = last if last and last.get("provider") == selected["key"] else None
+    from .. import budget
     return {"catalog": catalog, "selected": selected, "copy": PROVIDER_COPY, "tier_help": TIER_HELP,
+            "usage": budget.usage_today(conn),
             "models": options, "models_loaded": models is not None, "models_error": models_error,
             "tiers": tiers, "base_url": form.get("base_url") if form.get("base_url") is not None else selected["base_url"],
             "test": shown_test, "key_error": key_error, "provider_state": state.provider_state(conn)}

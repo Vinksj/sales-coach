@@ -8,15 +8,17 @@ walkthrough; Railway and Render take the same container.
 ## SQLite or Postgres
 
 A single-seller hosted install keeps the volume and SQLite exactly as described here. Anything
-multi-user (a team, managers reviewing reps' calls: coming) needs Postgres and two roles: set
-`DATABASE_MIGRATE_URL` to the owner role's `postgresql://` URL (the role that owns the schema and has
-`BYPASSRLS`; it runs `salescoach migrate` before the first start and after every upgrade, and
-`salescoach migrate --check` says whether the database is behind the build) and `DATABASE_URL` to
-the app role's (`salescoach_app`: `CREATE ROLE salescoach_app LOGIN PASSWORD '…' NOSUPERUSER
-NOBYPASSRLS NOCREATEDB NOCREATEROLE; GRANT CONNECT ON DATABASE … TO salescoach_app;` once, before the
-first migrate, which grants it the tables). The app then serves from that database, as that role,
-under row-level security, instead of `/data/sales.db`. The volume is still needed for settings,
-secrets and imported transcripts. See "Two backends" and "Isolation" in [architecture.md](architecture.md).
+multi-user (a team, managers reviewing reps' calls) needs Postgres, `SALESCOACH_MODE=cloud` and two
+roles: set `DATABASE_MIGRATE_URL` to the owner role's `postgresql://` URL (the role that owns the
+schema and has `BYPASSRLS`; it runs `salescoach migrate` before the first start and after every
+upgrade, and `salescoach migrate --check` says whether the database is behind the build) and
+`DATABASE_URL` to the app role's (`salescoach_app`: `CREATE ROLE salescoach_app LOGIN PASSWORD '…'
+NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE; GRANT CONNECT ON DATABASE … TO salescoach_app;` once,
+before the first migrate, which grants it the tables). The app then serves from that database, as
+that role, under row-level security, instead of `/data/sales.db`; settings and raw payloads live in
+the database too, so no volume is needed. That install runs as three processes from this same image
+(`salescoach serve --role web|worker|scheduler`): [deploy-cloud.md](deploy-cloud.md), "Processes".
+See "Two backends" and "Isolation" in [architecture.md](architecture.md).
 
 ## Why not Vercel
 
@@ -52,8 +54,10 @@ The setup wizard's last step says the same, row by row, on a hosted install.
   user `salescoach` (uid 1000), port 8140, a health check on `/health`.
 - `docker-entrypoint.sh`: the image starts as root only long enough to make the volume writable
   by `salescoach` (platforms mount a fresh volume owned by root), then drops privileges with
-  `setpriv` and runs `salescoach serve --host 0.0.0.0 --port $PORT`. If the platform already
-  runs the container as a non-root user, it just execs.
+  `setpriv` and runs `salescoach serve --role $SALESCOACH_ROLE --host 0.0.0.0 --port $PORT`
+  (`SALESCOACH_ROLE` defaults to `all`: one process with the web app, the worker and the scheduler
+  inside, which is this page's install). If the platform already runs the container as a non-root
+  user, it just execs. The health check is `salescoach health`, which follows the role.
 - One volume at `/data`: `SALESCOACH_DATA=/data` and `SALESCOACH_RUNTIME=/data/runtime`, so the
   database (`/data/sales.db`), settings (`/data/settings/`), secrets saved from the wizard
   (`/data/settings/secrets.env`), imported transcripts (`/data/inbox/`) and the model sandboxes all
@@ -82,6 +86,8 @@ The setup wizard's last step says the same, row by row, on a hosted install.
 | `SALESCOACH_DATA` | yes | `/data`, the volume |
 | `SALESCOACH_RUNTIME` | yes | `/data/runtime` |
 | `PORT` | no | what the container listens on; 8140 unless the platform sets it (Render does) |
+| `SALESCOACH_ROLE` | no | `all` (this page). `web`, `worker`, `scheduler` split the process for a team install ([deploy-cloud.md](deploy-cloud.md)) |
+| `LLM_BUDGET_USER_USD_DAY`, `LLM_BUDGET_ORG_USD_DAY` | no | daily model-spend caps in USD; past one the worker defers the work ([deploy-cloud.md](deploy-cloud.md), "Model budgets") |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, ... | one model key | the provider's key. Secrets set in the environment win over `/data/settings/secrets.env`; you can also paste the key in the wizard instead, and it is saved on the volume. |
 | `WEBHOOK_SECRET` | no | switches the transcript webhook on; or create it in Settings |
 | `FIREFLIES_API_KEY`, `FATHOM_API_KEY` | no | or paste them in Settings |
@@ -131,7 +137,8 @@ image from your checkout; nothing is pulled from a registry).
    ```
 
    One volume, one machine: SQLite has one writer and the scheduler must run exactly once. Do not
-   scale to more than one machine.
+   scale the `app` process group to more than one machine (the `web`, `worker` and `scheduler`
+   groups in `fly.toml` are the team install's; leave them at zero here).
 
 4. Set the secrets. They are stored encrypted by Fly and appear to the app as environment
    variables; they are never in `fly.toml` or in git.
@@ -156,8 +163,9 @@ image from your checkout; nothing is pulled from a registry).
    curl https://<app>.fly.dev/health
    ```
 
-   `/health` answers `{"status":"ok","version":"0.1.0","db":"ok","worker":"running","configured":false}`
-   before the wizard has run.
+   `/health` answers `{"status":"ok","version":"0.1.0","db":"ok","role":"all","worker":"running",
+   "processes":{...},"configured":false}` before the wizard has run (`processes` lists the heartbeats
+   of worker and scheduler processes; in this install they are this one process's own).
 
 6. First run. Open `https://<app>.fly.dev`, log in with the password, and the setup wizard opens.
    In step 3 (Model) choose the provider whose key you set, or paste a key, and press **Test
@@ -184,8 +192,10 @@ your own), with `https://`. Railway sets `PORT`; the container listens on it. If
 writable by the app user, set `RAILWAY_RUN_UID=0` so the entrypoint starts as root and can make it
 so, or check Railway's current volume-permission guidance.
 
-**Render.** `render.yaml` describes one Docker web service with a persistent disk at `/data` (a
-disk needs a paid instance type and pins the service to one instance, which is right for this
+**Render.** `render.yaml` describes the team install (a web service, a worker and a scheduler
+from the one Dockerfile, plus a managed Postgres); for this page's single-seller install keep only
+the web service, set `SALESCOACH_ROLE=all`, drop the database and add a persistent disk at `/data`
+(a disk needs a paid instance type and pins the service to one instance, which is right for this
 app). Create a Blueprint from the repository, and fill in the secrets it asks for
 (`SALESCOACH_PASSWORD`, `SALESCOACH_PUBLIC_URL`, the model key, optionally `WEBHOOK_SECRET`).
 Render sets `PORT`; the container listens on it.

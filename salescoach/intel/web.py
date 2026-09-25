@@ -82,8 +82,9 @@ def _pending(conn, event_type, entity_id=None):
 
 
 def _worker_on(request) -> bool:
-    thread = getattr(request.app.state, "worker_thread", None)
-    return thread is not None and thread.is_alive()
+    from ..web import app as webapp
+    with webapp._db(request) as conn:
+        return webapp.worker_on(request.app, conn)
 
 
 def _queue(conn, event_type, entity_id, payload=None):
@@ -93,7 +94,8 @@ def _queue(conn, event_type, entity_id, payload=None):
     if entity_id == "coach":
         entity_id = f"user:{owner}"
     bus.publish(conn, Event(type=event_type, entity_id=entity_id, payload=payload or {},
-                            dedupe_key=f"{event_type}:{owner}:{entity_id}:{stores.now()}"))
+                            dedupe_key=f"{event_type}:{owner}:{entity_id}:{stores.now()}"),
+                priority=bus.PRIORITY_INTERACTIVE)          # a person is waiting for this one
     conn.commit()
 
 

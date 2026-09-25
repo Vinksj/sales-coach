@@ -346,3 +346,12 @@ select[multiple] { padding: 6px; }
   .topbar-status { margin-left: 0; }
   .meters { grid-template-columns: 1fr; }
 }
+
+/* Usage panel (Setup > Model, /me/setup): today's model spend, from agent_runs */
+.usage-panel { margin-top: 16px; }
+.usage-numbers { display: flex; gap: 28px; flex-wrap: wrap; margin: 8px 0 12px; }
+.usage-numbers div { display: flex; flex-direction: column; }
+.usage-numbers dt { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .7; }
+.usage-numbers dd { margin: 0; font-size: 22px; font-weight: 600; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.usage-table th, .usage-table td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }

@@ -1,0 +1,7 @@
+# Daily model-spend caps, USD (salescoach/budget.py). null or 0 = no cap. The environment
+# (LLM_BUDGET_USER_USD_DAY, LLM_BUDGET_ORG_USD_DAY) wins over this file; in cloud mode the org's
+# copy of this file lives in the org_settings table. "Today" is the acting user's calendar day.
+# When a cap is reached the worker defers the event (no attempt spent) and tries again later.
+llm:
+  user_usd_day: null
+  org_usd_day: null

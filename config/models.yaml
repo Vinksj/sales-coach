@@ -50,6 +50,23 @@ agents:
   longitudinal_coach:    {tier: light, effort: medium}
   prep_writer:           {tier: light, effort: low}
 
+# What a call costs, USD per million tokens, applied to the usage counts the API returns (Anthropic
+# usage.input_tokens/output_tokens, OpenAI prompt_tokens/completion_tokens) and recorded in
+# agent_runs.cost_usd, which the daily budgets (config/budget.yaml) add up. A model id matches its key
+# exactly or a key that is a dash-separated prefix of it (claude-sonnet-5 covers claude-sonnet-5-<date>).
+# A model without an entry costs None: never a guess. Edit freely; the Anthropic rows are the list
+# prices on 2026-06-24. OpenAI and xAI ship no rows: add your account's models and prices here.
+prices:
+  claude-opus-5:     {price_per_mtok_in: 5.00,  price_per_mtok_out: 25.00}
+  claude-opus-4-8:   {price_per_mtok_in: 5.00,  price_per_mtok_out: 25.00}
+  claude-opus-4-7:   {price_per_mtok_in: 5.00,  price_per_mtok_out: 25.00}
+  claude-opus-4-6:   {price_per_mtok_in: 5.00,  price_per_mtok_out: 25.00}
+  claude-sonnet-5:   {price_per_mtok_in: 2.00,  price_per_mtok_out: 10.00}
+  claude-sonnet-4-6: {price_per_mtok_in: 3.00,  price_per_mtok_out: 15.00}
+  claude-haiku-4-5:  {price_per_mtok_in: 1.00,  price_per_mtok_out: 5.00}
+  claude-fable-5-1:  {price_per_mtok_in: 10.00, price_per_mtok_out: 50.00}
+  claude-fable-5:    {price_per_mtok_in: 10.00, price_per_mtok_out: 50.00}
+
 # Used only for agents that set `fallback: true`, and only when the primary provider
 # errors (never on a rate limit, never for an invalid answer). No agent opts in: on
 # 2026-09-12 qwen2.5:14b timed out on every 20k-token call transcript.

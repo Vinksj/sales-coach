@@ -227,7 +227,8 @@ def followups_run(request: Request):
     with core._db(request) as conn:
         owner = identity.actor_of(conn).user_id           # whose follow-ups: the worker runs it as this user
         bus.publish(conn, Event(type="FOLLOW_UP_RUN", entity_id=f"user:{owner}",
-                                dedupe_key=f"FOLLOW_UP_RUN:{owner}:{now()}", payload={}))
+                                dedupe_key=f"FOLLOW_UP_RUN:{owner}:{now()}", payload={}),
+                    priority=bus.PRIORITY_INTERACTIVE)
         conn.commit()
     return core._redirect("/followups", msg="Queued. Decisions appear here as the worker gets to them.")
 
@@ -238,7 +239,7 @@ def followups_nudge(request: Request, loop_id: str, next_url: str = Form("", ali
         core._loop_or_404(conn, loop_id)
         bus.publish(conn, Event(type="FOLLOW_UP_NUDGE", entity_id=loop_id,
                                 dedupe_key=f"FOLLOW_UP_NUDGE:{identity.actor_of(conn).user_id}:{loop_id}:{now()}",
-                                payload={"loop_id": loop_id}))
+                                payload={"loop_id": loop_id}), priority=bus.PRIORITY_INTERACTIVE)
         conn.commit()
     return core._redirect(core._clean_next(next_url, "/followups"),
                           msg="Drafting a nudge. It appears under Nudges to send; nothing is sent until you press Send.")
