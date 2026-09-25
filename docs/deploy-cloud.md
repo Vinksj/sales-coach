@@ -25,7 +25,12 @@ nothing on a laptop install changes.
   needs a shared volume; see "Org settings and raw payloads".
 - The app runs as three kinds of process (web, worker, scheduler); see "Processes".
 - Every statement the app runs goes through Postgres row-level security as the app role; see
-  "Isolation" in [architecture.md](architecture.md).
+  "Isolation" in [architecture.md](architecture.md). The policies are `store/pg/rls.sql`, which
+  `salescoach migrate` re-applies whenever a build changes them; every process refuses to start until
+  it has.
+- Settings (the org's company, models, sources, method, budgets) are an admin's: in cloud mode
+  `/setup` answers 403 to anyone else, and the database refuses anyone else's save. A rep's own half
+  is their profile page (You).
 
 ## Environment
 
@@ -106,13 +111,18 @@ and reply polling for that person pause until they reconnect; nothing else is lo
 
 ```
 salescoach tokens new-key            # prints kid:base64; add it to the FRONT of SALESCOACH_TOKEN_KEYS
-# deploy with both keys listed, then:
-salescoach tokens rotate             # re-encrypts every grant under the newest key
+# deploy with both keys listed, then, with the owner role (as for `salescoach migrate`):
+DATABASE_MIGRATE_URL=postgresql://owner@.../db salescoach tokens rotate
+# or through the app role as an active admin:  salescoach tokens rotate --as <admin user id>
 # then drop the old key from SALESCOACH_TOKEN_KEYS and deploy again
 ```
 
-A grant whose key is no longer in the ring cannot be read; `rotate` names such rows and the person
-reconnects. The ring is never written to the database or to any file by the app.
+`rotate` re-encrypts every person's grant, and the row-level policy on `oauth_tokens` lets only a
+grant's owner or an active admin see it, so the command runs as exactly one of the two identities that
+can see them all and says so: the owner role (`DATABASE_MIGRATE_URL`, or `--url`), which bypasses row
+security as the migrator does, or `--as` an active admin. With neither it refuses and names both; `--as`
+a rep is refused. A grant whose key is no longer in the ring cannot be read; `rotate` names such rows
+and the person reconnects. The ring is never written to the database or to any file by the app.
 
 ## Sessions, offboarding, what a disabled user loses
 
@@ -124,6 +134,8 @@ reconnects. The ring is never written to the database or to any file by the app.
   in; they reconnect Google themselves.
 - Rotating `SALESCOACH_SESSION_SECRET` ends every session on the next request.
 - Housekeeping: `sessions.purge()` drops sessions expired or revoked more than a week ago.
+- The `sessions` table never holds a session id: its `id` column is sha256 of the id the cookie
+  carries, so a backup or a leaked copy of the table cannot be replayed as anyone's session.
 
 ## Roles
 
@@ -169,7 +181,9 @@ at 0 for that reason). Pooled connections drop every
 advisory lock when they go back to the pool. On SQLite the claim runs under the file's one write lock
 and checks running owners with a `NOT EXISTS`, which the write lock makes race-free.
 
-**Heartbeats.** Worker and scheduler processes write a row into the org-wide `state` table every 15 s:
+**Heartbeats.** Worker and scheduler processes write a row into the org-wide `state` table every 15 s,
+acting for nobody (the row-level policy on `state` lets any connection read and write the `ops:%` keys,
+and only those):
 
 | Key | Body |
 |---|---|
@@ -205,7 +219,11 @@ provider's 429, so the work resumes after the deferral (15 min) or the next day.
 usage counts the API returns and the price table in `config/models.yaml` (`prices:` per model id, USD
 per million input and output tokens; an unpriced model costs `None` and cannot be budgeted, so keep the
 table current for the models you pick). The `claude_code` provider reports the CLI's own figure. Setup
-> Model shows today's spend for the org and per user; `/me/setup` shows the user's own.
+> Model (admins) shows today's spend for the org and per user; `/me/setup` shows the user's own. Row
+security shows a rep only their own runs, so on Postgres the org total and the per-user sums come from
+two SECURITY DEFINER functions (`app_org_spend_since`, `app_spend_by_owner_since`) that return sums,
+never rows: every active user gets the org total (the cap needs it), an admin gets every user's sum,
+anyone else only the users they may read.
 
 ## Org settings and raw payloads
 
@@ -215,9 +233,13 @@ per name with a `version` that every save bumps. `config.load()` reads the row's
 and caches the merged settings by it, so web, worker and scheduler see a change on their next read with
 no restart and no shared file. Secrets (API keys) stay in the environment or `secrets.env`; the style
 guide is per user (`users.style`). Nothing in the wizard changes: it saves through the same function.
+Any connection may read the table (settings are read before anyone is bound: the scheduler's
+intervals, the sign-in page); only an active admin may write it.
 
 What a recorder, an upload, a paste or the webhook delivered is kept as it arrived: on a laptop under
 `data/inbox/<kind>/`, in cloud mode in the `raw_payloads` table (owned by the user whose import it was,
 one row per distinct payload per owner, written in the import's transaction so a refused import leaves
-nothing). Nothing in the pipeline reads a payload back; `salescoach payloads export --out DIR --as
-<user id>` (or without `--out`, JSON lines on stdout; `--since` to bound it) writes them out for support.
+nothing). The table is OWNED, under the same row-level policies as a call: its owner (and their
+managers) read it, nobody else. Nothing in the pipeline reads a payload back; `salescoach payloads
+export --out DIR --as <user id>` (or without `--out`, JSON lines on stdout; `--since` to bound it)
+writes one user's out for support.

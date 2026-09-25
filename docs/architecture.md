@@ -187,12 +187,17 @@ connections come from a `psycopg_pool` pool; `close()` returns one.
   statement aborts a Postgres transaction. Prefer `ON CONFLICT` to catching `IntegrityError`.
 - Catch `db.IntegrityError` / `db.OperationalError` / `db.Error`, never `sqlite3.*`.
 
-**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (9 today; 8 is
-Phase 3's and a missing number is skipped), run by
+**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (9 today: 8 is
+Phase 3's sign-in tables, 9 is Phase 6's ops tables), run by
 every connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
 `store/pgmigrate.py` applies the numbered files in `store/pg/` once, under `pg_advisory_lock`,
-recorded in `schema_migrations` (0002 and 0005 today; 0003 and 0004 are Phases 2 and 3); `salescoach migrate` (`--check` in CI) is the only thing
-that runs DDL, and `stores.sales()` refuses to serve a schema at the wrong version.
+recorded in `schema_migrations` (0001, 0002, 0004 and 0005 today: 0003 was the one-shot row-level
+security file, replaced by the repeatable `rls.sql` before anything was deployed, and the gap is
+kept so a database that did apply it moves on through 0004; the highest number is the version a build
+expects), then the REPEATABLE `store/pg/rls.sql` whenever its sha256 differs from the one recorded in
+`schema_repeatables` (in the same lock, in one transaction); `salescoach migrate` (`--check` in CI) is
+the only thing that runs DDL, and `stores.sales()` refuses to serve a schema at the wrong version or
+whose applied `rls.sql` is not this build's.
 `store/pg/0001_baseline.sql` was generated from the version-6 SQLite files by
 `scripts/gen_pg_baseline.py` (`INTEGER PRIMARY KEY AUTOINCREMENT` becomes an identity column,
 `REAL`/`BLOB` become `DOUBLE PRECISION`/`BYTEA`, PRAGMAs are dropped, everything else verbatim) and is
@@ -349,28 +354,41 @@ silently touching no rows. The test suite creates `salescoach_app` in the contai
 and hands the app that URL (`tests/conftest.py`); a deployment creates it once:
 `CREATE ROLE salescoach_app LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 GRANT CONNECT ON DATABASE … TO salescoach_app;` then `salescoach migrate` grants the rest
-(`store/pg/0003_rls.sql` refuses to apply if the role is missing or bypasses RLS).
+(`store/pg/rls.sql` refuses to apply if the role is missing or bypasses RLS).
 
 **The policies**, generated from `store/tenancy.py` by `store/rls.py` (`scripts/gen_pg_rls.py
---write`; `tests/isolation/test_rls_generated.py` fails when the committed `0003_rls.sql` differs).
+--write`; `tests/isolation/test_rls_generated.py` fails when the committed `rls.sql` differs). The file
+is a repeatable step and describes the WHOLE policy set, idempotently: a leading `DO` block drops every
+policy on every table of the schema (so a removed or renamed policy never lingers), functions are
+`CREATE OR REPLACE`, triggers are dropped before they are created, every table states `FORCE` or `NO
+FORCE`, and the app role's grants are re-issued. That is what lets a table created by a later numbered
+migration (Phase 3's `sessions`, `invites`, `oauth_tokens`; Phase 6's `org_settings`, `raw_payloads`)
+be policed: a numbered policy file could only ever cover the tables that existed when it ran.
 The helpers: `app_actor_id()` (the setting, NULL when empty), `app_mode_ok()` (a mode is bound),
 `app_actor_active()` / `app_actor_role()` (the acting user's row exists and is `active`, SECURITY
 DEFINER so the `users` policies cannot recurse), `app_visible_owners()` (the acting user's id plus
 the ids of every member of every team they manage, `team_managers` + `users.team_id`, read live so a
 demotion or a disabling takes effect on the next query; empty for nobody, for an inactive user and
 for an admin who manages no team), `app_can_write(owner)` (the row is the acting user's own, they are
-active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, and `app_child_owner()` (the
-0002 trigger, made SECURITY DEFINER so it sees another user's parent row and refuses the mismatch).
+active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, `app_org_spend_since(since)` and
+`app_spend_by_owner_since(since)` (Phase 6's budgets: the org cap must count every rep's runs, which no
+rep may read; sums per owner, never a row; per owner only for an admin or the owners one may read), and
+`app_child_owner()` (the 0002 trigger, made SECURITY DEFINER so it sees another user's parent row and
+refuses the mismatch).
 
 | Class | RLS | SELECT | INSERT / UPDATE / DELETE |
 |---|---|---|---|
 | OWNED | enabled + **forced** | `owner_id = ANY(app_visible_owners())`; `nodes` also lets any active user read a NULL owner (the directory's account and person nodes) | `app_can_write(owner_id)`: the owner, active, in a bound mode. A manager reads and never writes a rep's row; `UPDATE` cannot move a row to another owner (`WITH CHECK`) |
 | ORG: `accounts`, `people` | enabled | any active user | any active user in a bound mode (every rep contributes to the shared directory) |
-| ORG: `users`, `teams`, `team_managers` | enabled | every connection (a connection reads `users` to learn who it is) | admins; a user may `UPDATE` their own `users` row, and `trg_users_guard` refuses a non-admin changing `id`, `role`, `team_id` or `status`; the first row of an empty `users` may be inserted by anyone (the local user, the bootstrap admin) |
+| ORG: `users`, `teams`, `team_managers` | enabled | every connection (a connection reads `users` to learn who it is) | admins; a user may `UPDATE` their own `users` row, and `trg_users_guard` refuses a non-admin (on the app role) changing `id`, `role`, `team_id` or `status`, except accepting their own invite (`invited` → `active`) at their first sign-in; the first row of an empty `users` may be inserted by anyone (the local user, the bootstrap admin) |
 | SYSTEM: `wf_events` | enabled | every connection | every connection: the bus carries ids and step names, never content; interactive requests publish, the worker claims as nobody. Whose event it is, is decided in code (`event_retry` 404s another user's) |
-| SYSTEM: `state` | enabled | any active user | admins and service-mode duties |
+| SYSTEM: `state` | enabled | any active user; the `ops:%` heartbeat rows (host, pid, timestamps, counts) by every connection | admins and service-mode duties; the `ops:%` rows also by nobody (worker and scheduler processes act for nobody, `/health` reads them before sign-in); `DELETE` admins and duties only |
 | SYSTEM: `user_state`, `user_speaker_labels` | enabled | own rows (`user_id = app_actor_id()`) | own rows |
-| SYSTEM: `schema_migrations` | enabled | every connection | nobody (no privilege) |
+| SYSTEM: `schema_migrations`, `schema_repeatables` | enabled | every connection | nobody (no privilege) |
+| SYSTEM: `sessions` | enabled | every connection | every connection. The `AuthGate` resolves a session before anyone is bound, so no owner rule can apply; `sessions.id` is **sha256 of the session id** (`sessions.key`), the cookie keeps the raw id plus its HMAC, so the row is found only by someone holding the cookie's secret and a copy of the table replays nothing (the wf_events reasoning: machinery keyed by an unguessable value) |
+| SYSTEM: `invites` | enabled | every connection (the Google callback's allow-list, nobody bound) | `UPDATE` every connection (the callback marks it accepted); `INSERT` / `DELETE` admins |
+| SYSTEM: `oauth_tokens` | enabled | the acting user's own grant (`user_id = app_actor_id()`, active), or any grant for an active admin (disabling revokes grants; the admin page shows link status); nobody reads none | the same. `salescoach tokens rotate` runs as the owner role (`DATABASE_MIGRATE_URL`) or `--as` an active admin, explicitly |
+| SYSTEM: `org_settings` | enabled | every connection: `config.load()` reads the overlay from every thread, including before anyone is bound (the scheduler's intervals, the sign-in page's brand); it holds no per-user data and no secrets | active admins (Settings, which is admin-only in cloud mode: `setupui` answers 403 to anyone else) |
 
 Managers get **SELECT only**; "a manager can never send" is also a hard check in the code:
 `execution/policy.approve_and_send`, `mark_sent_manually` and `acknowledge_not_sent` raise
@@ -378,18 +396,21 @@ Managers get **SELECT only**; "a manager can never send" is also a hard check in
 auto-send executor, `approved_by='policy:…'`, is the owner's own service duty and is refused in cloud
 mode). The web layer's `ActorGate` answers a request with no valid session before any store is
 opened (a page is sent to `/login`, anything else gets 401), a session for a user who is not
-`active` gets 403, and open paths (`/login`, `/logout`, `/health`, `/static`, the webhook) pass with
-nobody bound and read the store as system.
+`active` counts for nothing (it binds nobody and is answered like no session: Phase 3's `AuthGate`), and
+open paths (`/login`, `/logout`, `/health`, `/static`, the webhook, the Google callback) pass with nobody
+bound and read the store as system.
 
 **Adding a table.** Classify it in `tenancy.TABLE_CLASS` (the catalog lint fails until you do). OWNED:
 give it `owner_id TEXT NOT NULL DEFAULT 'local'` with an index in the SQLite files, the Postgres
 default `NULLIF(current_setting('app.user_id', true), '')` and, when its owner is a parent row's,
-an entry in `tenancy.OWNER_PARENTS` with the `app_child_owner` trigger; then write the migration's
-policy block with `store/rls.table_block(table)` (the generator's output for that table) in a new
-numbered file, since 0003 is applied once. `tests/isolation/factories.py` derives the matrix row
+an entry in `tenancy.OWNER_PARENTS` with the `app_child_owner` trigger; then run
+`scripts/gen_pg_rls.py --write` and commit `rls.sql`: the next `salescoach migrate` applies the new
+numbered step and then re-applies the whole policy set, the new table included (no hand-written
+policy block, no edit to an earlier step). `tests/isolation/factories.py` derives the matrix row
 from the schema; if a column needs a value the rules cannot derive, add it to `factories.VALUES`, or
 the matrix fails with `NoFactory`. ORG / SYSTEM tables need a policy set in `rls.ORG_POLICIES` /
-`rls.SYSTEM_POLICIES`. Grants for new tables come from `ALTER DEFAULT PRIVILEGES` set in 0003.
+`rls.SYSTEM_POLICIES`. Grants for new tables come from `ALTER DEFAULT PRIVILEGES` and the grants
+`rls.sql` re-issues.
 
 **Adding a route.** A route with a path parameter must be placed in
 `tests/isolation/test_route_crawl.py`: either its parameter names resolve to rep A's objects (add an
@@ -410,8 +431,8 @@ sign-in (`web/auth.py`, `googleauth.py`): `/auth/google` keeps `state`, `nonce` 
 server-side; `/auth/callback` exchanges the code, parses the ID token with Authlib against Google's
 JWKS and verifies it again with google-auth, then checks `email_verified`, `hd` in
 `GOOGLE_ALLOWED_DOMAINS` and the invite list (`users.status = invited|active`, or
-`SALESCOACH_BOOTSTRAP_ADMIN` once). The session is a row in `sessions` (`salescoach/sessions.py`);
-the cookie is only its signed id, and the `AuthGate` reads the session and the `users` row on every
+`SALESCOACH_BOOTSTRAP_ADMIN` once). The session is a row in `sessions` (`salescoach/sessions.py`)
+keyed on sha256 of the session id; the cookie is only the id and its HMAC, and the `AuthGate` reads the session and the `users` row on every
 request (sliding thirty days; revoke, revoke all, disable are immediate), leaving the `Actor` in
 `scope["state"]` for the `ActorGate`. Password mode (`hosted.py`) is unchanged for a single-seller
 hosted install. Per-user OAuth grants live in `oauth_tokens` (`execution/tokens.py`: AES-256-GCM
