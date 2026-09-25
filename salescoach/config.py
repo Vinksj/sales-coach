@@ -109,17 +109,21 @@ def _org_store() -> Optional[str]:
 
 
 def _org_conn(url: str):
-    """A pooled connection with the right search_path and no actor (org_settings is SYSTEM)."""
+    """A pooled connection with the right search_path, bound to whoever is acting (possibly nobody).
+    org_settings is SYSTEM: any connection of the app role reads it (config.load runs before anyone is
+    bound: the scheduler's intervals, the sign-in page), only an active admin writes it (store/rls.py)."""
     from . import identity
     from .store import stores
-    with identity.activate(None):
-        return stores._postgres(url)
+    conn, _first = stores._postgres(url)
+    identity.bind(conn, identity.current_actor(required=False))
+    return conn
 
 
 def _org_version(url: str, name: str) -> Optional[int]:
     conn = _org_conn(url)
     try:
-        row = conn.execute("SELECT version FROM org_settings WHERE name=?", (name,)).fetchone()
+        with conn.as_system():                  # a settings read may run with nobody bound, on purpose
+            row = conn.execute("SELECT version FROM org_settings WHERE name=?", (name,)).fetchone()
     finally:
         conn.close()
     return int(row["version"]) if row is not None else None
@@ -128,7 +132,8 @@ def _org_version(url: str, name: str) -> Optional[int]:
 def _org_body(url: str, name: str) -> tuple[Optional[int], dict]:
     conn = _org_conn(url)
     try:
-        row = conn.execute("SELECT version, body FROM org_settings WHERE name=?", (name,)).fetchone()
+        with conn.as_system():
+            row = conn.execute("SELECT version, body FROM org_settings WHERE name=?", (name,)).fetchone()
     finally:
         conn.close()
     if row is None:
@@ -181,7 +186,8 @@ def org_settings_versions() -> dict:
         return {}
     conn = _org_conn(url)
     try:
-        return {r["name"]: int(r["version"]) for r in conn.execute("SELECT name, version FROM org_settings").fetchall()}
+        with conn.as_system():
+            return {r["name"]: int(r["version"]) for r in conn.execute("SELECT name, version FROM org_settings").fetchall()}
     finally:
         conn.close()
 

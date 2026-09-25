@@ -13,7 +13,9 @@ One image, three roles (`salescoach serve --role`, or SALESCOACH_ROLE):
              and take over when the holder's session ends (a crash, a deploy). On SQLite there is one
              process by construction (one file, one writer) and the election is a no-op.
 
-Every worker and scheduler process writes a heartbeat into the org-wide `state` table:
+Every worker and scheduler process writes a heartbeat into the org-wide `state` table (with nobody bound:
+the row-level policy on `state` lets any connection of the app role read and write the 'ops:%' keys, and
+only those; store/rls.py):
   ops:worker:<hostname>:heartbeat      {"at", "pid", "started_at", "concurrency", "handled"}
   ops:scheduler:<hostname>:heartbeat   {"at", "pid", "started_at", "leader": bool}
   ops:scheduler:leader                 {"host", "pid", "since", "at"}   (the holder refreshes it)
@@ -83,14 +85,16 @@ def heartbeat_key(kind: str, host: Optional[str] = None) -> str:
 def write_heartbeat(conn, kind: str, **fields) -> None:
     """One row per process kind and host, org-wide (`state` is SYSTEM: no actor needed)."""
     body = {"at": now(), "pid": os.getpid(), "host": hostname(), **fields}
-    set_state(conn, heartbeat_key(kind), json.dumps(body))
-    conn.commit()
+    with conn.as_system():                 # nobody's row: the state policy lets any connection write 'ops:%' keys
+        set_state(conn, heartbeat_key(kind), json.dumps(body))
+        conn.commit()
 
 
 def read_heartbeats(conn) -> dict:
     """{"workers": [...], "schedulers": [...], "leader": {...}|None}, each entry with age_s and stale."""
     out = {"workers": [], "schedulers": [], "leader": None}
-    rows = conn.execute("SELECT key, value FROM state WHERE key LIKE 'ops:%'").fetchall()
+    with conn.as_system():                 # /health and the health check read these before anyone signs in
+        rows = conn.execute("SELECT key, value FROM state WHERE key LIKE 'ops:%'").fetchall()
     for row in rows:
         try:
             body = json.loads(row["value"] or "{}")
@@ -208,6 +212,7 @@ class Leader:
 
     def _connect(self):
         conn = db.connect(self.target)
+        conn.system = True                   # advisory-lock statements only, never a table: nobody is bound
         schema = stores._pg_schema
         if schema:
             conn.execute(f'SET search_path TO "{schema}"')
@@ -335,9 +340,10 @@ def run_scheduler(db_path=None, stop: Optional[threading.Event] = None, start_du
 
 
 def _write_leader(conn, since) -> None:
-    set_state(conn, "ops:scheduler:leader", json.dumps({"host": hostname(), "pid": os.getpid(), "since": since,
-                                                         "at": now()}))
-    conn.commit()
+    with conn.as_system():
+        set_state(conn, "ops:scheduler:leader", json.dumps({"host": hostname(), "pid": os.getpid(), "since": since,
+                                                             "at": now()}))
+        conn.commit()
 
 
 def _wait_for_signal(stop: threading.Event) -> None:

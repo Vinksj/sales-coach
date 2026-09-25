@@ -63,9 +63,13 @@ def day_end_utc(zone=None) -> str:
 
 
 def spent_today(conn, owner_id: Optional[str] = None, since: Optional[str] = None) -> float:
-    """SUM(cost_usd) of runs started today by `owner_id` (None = everyone)."""
+    """SUM(cost_usd) of runs started today by `owner_id` (None = everyone). On Postgres "everyone" is the
+    SECURITY DEFINER app_org_spend_since (store/rls.py): row-level security shows a rep only their own runs,
+    and the org cap must count them all; the function returns the sum, never a row."""
     since = since or day_start_utc()
-    if owner_id is None:
+    if owner_id is None and conn.dialect == "postgres":
+        row = conn.execute("SELECT app_org_spend_since(?)", (since,)).fetchone()
+    elif owner_id is None:
         row = conn.execute("SELECT SUM(cost_usd) FROM agent_runs WHERE started_at >= ?", (since,)).fetchone()
     else:
         row = conn.execute("SELECT SUM(cost_usd) FROM agent_runs WHERE owner_id=? AND started_at >= ?",
@@ -97,11 +101,18 @@ def usage_today(conn, mine_only: bool = False) -> dict:
     since, until = day_start_utc(), day_end_utc()
     limits = caps()
     me = identity.actor_of(conn).user_id
-    rows = conn.execute(
-        "SELECT owner_id, SUM(cost_usd) AS spent, COUNT(*) AS runs, "
-        "SUM(CASE WHEN cost_usd IS NULL AND status='ok' THEN 1 ELSE 0 END) AS unpriced, "
-        "SUM(CASE WHEN error LIKE 'budget_deferred:%' THEN 1 ELSE 0 END) AS deferred "
-        "FROM agent_runs WHERE started_at >= ? GROUP BY owner_id ORDER BY owner_id", (since,)).fetchall()
+    if conn.dialect == "postgres":
+        # Row-level security shows a rep only their own runs; the per-owner sums come from the SECURITY
+        # DEFINER app_spend_by_owner_since (every owner for an admin, the visible owners for anyone else)
+        # and the org total from app_org_spend_since (store/rls.py). Numbers, never rows.
+        rows = conn.execute("SELECT owner_id, spent, runs, unpriced, deferred FROM app_spend_by_owner_since(?)",
+                            (since,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT owner_id, SUM(cost_usd) AS spent, COUNT(*) AS runs, "
+            "SUM(CASE WHEN cost_usd IS NULL AND status='ok' THEN 1 ELSE 0 END) AS unpriced, "
+            "SUM(CASE WHEN error LIKE 'budget_deferred:%' THEN 1 ELSE 0 END) AS deferred "
+            "FROM agent_runs WHERE started_at >= ? GROUP BY owner_id ORDER BY owner_id", (since,)).fetchall()
     per_user = [{"user_id": r["owner_id"], "spent": float(r["spent"] or 0.0), "runs": int(r["runs"] or 0),
                  "unpriced": int(r["unpriced"] or 0), "deferred": int(r["deferred"] or 0)} for r in rows]
     names = {}
@@ -111,7 +122,7 @@ def usage_today(conn, mine_only: bool = False) -> dict:
             names[u["id"]] = u["name"] or u["email"] or u["id"]
     for entry in per_user:
         entry["name"] = names.get(entry["user_id"], entry["user_id"])
-    org_total = sum(e["spent"] for e in per_user)
+    org_total = spent_today(conn, None, since) if conn.dialect == "postgres" else sum(e["spent"] for e in per_user)
     mine = next((e for e in per_user if e["user_id"] == me), None) or {"user_id": me, "spent": 0.0, "runs": 0,
                                                                         "unpriced": 0, "deferred": 0}
     return {"since": since, "until": until, "tz": seller.tz_label(), "caps": limits, "org": org_total,

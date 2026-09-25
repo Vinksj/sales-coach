@@ -14,6 +14,11 @@
 
 Every POST passes the app's same-origin guard like any other non-GET route.
 
+Cloud mode: these pages are the ORG's settings (the company, the models, the sources, the method,
+the budgets), which live in org_settings, and only an active admin may write that table (store/rls.py).
+So every route here answers 403 to anyone else, except the per-user Today-card dismissal; a user's own
+half is /me/setup.
+
 Secrets. An API key arrives in a POST body and goes straight to config.set_secret; an empty field
 leaves the stored key alone. No handler puts a key in a template, a redirect, a flash message, a
 log line or the state table, and provider error text is scrubbed of the key before it is shown.
@@ -23,7 +28,7 @@ shows it once (no-store), and nothing can show it again.
 import json
 import re
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import config, identity, providers, repo, seller, sources, users
@@ -32,7 +37,19 @@ from ..providers.base import ProviderError
 from ..store.stores import now, set_state, set_user_state
 from . import forms, state, words
 
-router = APIRouter()
+PER_USER_PATHS = ("/setup/dismiss-card",)
+NOT_AN_ADMIN = ("Settings are managed by an admin on this install. If the coach is not set up yet, ask your admin "
+                "to finish Settings; your own profile is under You.")
+
+
+def _admins_only_in_cloud(request: Request) -> None:
+    if identity.cloud() and request.url.path not in PER_USER_PATHS:
+        actor = identity.current_actor(required=False)
+        if actor is None or actor.role != "admin":
+            raise HTTPException(status_code=403, detail=NOT_AN_ADMIN)
+
+
+router = APIRouter(dependencies=[Depends(_admins_only_in_cloud)])
 
 PROVIDER_COPY = words.PROVIDER_COPY
 TIER_HELP = "Heavy does the analysis and the drafting; light does the quick checks and the live coach."

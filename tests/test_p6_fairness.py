@@ -24,8 +24,16 @@ def _publish(conn, owner, n=1, priority=bus.PRIORITY_NORMAL, kind="T"):
     return ids
 
 
-def test_publish_records_owner_and_priority(db):
-    db.execute("INSERT INTO nodes(id,type,owner_id) VALUES ('call-x','call','u-a')")
+def test_publish_records_owner_and_priority(db, dialect):
+    if dialect == "postgres":        # u-a's node, written as u-a (the policies refuse a row owned by someone else)
+        from salescoach import identity, users
+        users.create(db, "a@tessel.test", "Asha", role="rep", user_id="u-a")
+        db.commit()
+        with identity.as_actor(db, identity.Actor("u-a", role="rep")):
+            db.execute("INSERT INTO nodes(id,type,owner_id) VALUES ('call-x','call','u-a')")
+            db.commit()
+    else:
+        db.execute("INSERT INTO nodes(id,type,owner_id) VALUES ('call-x','call','u-a')")
     bus.publish(db, Event(type="CALL_ENDED", entity_id="call-x", dedupe_key="CE:x"))
     bus.publish(db, Event(type="X", entity_id="user:u-b", dedupe_key="X:b"), priority=bus.PRIORITY_INTERACTIVE)
     bus.publish(db, Event(type="Y", entity_id=None, payload={"owner_id": "u-c"}, dedupe_key="Y:c"),

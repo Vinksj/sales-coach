@@ -66,9 +66,10 @@ def owner_for(conn, event: Event) -> Optional[str]:
     if entity.startswith("user:"):
         return entity[len("user:"):]
     if entity:
-        row = conn.execute("SELECT owner_id FROM nodes WHERE id=?", (entity,)).fetchone()
-        if row is not None and row["owner_id"]:
-            return row["owner_id"]
+        from .. import repo
+        owner = repo.owner_of(conn, entity)      # Postgres: app_owner_of, whoever publishes (store/rls.py)
+        if owner:
+            return owner
     owner = (event.payload or {}).get("owner_id")
     if owner:
         return str(owner)

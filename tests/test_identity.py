@@ -10,6 +10,7 @@ import pytest
 
 from salescoach import identity, seller, users
 from salescoach.store import stores
+from conftest import seed_org_settings
 
 
 def test_local_mode_has_an_implicit_local_user(db):
@@ -21,7 +22,9 @@ def test_local_mode_has_an_implicit_local_user(db):
     assert seller.user_profile()["style"] == seller.style_guide()
 
 
-def test_cloud_mode_has_no_implicit_user(monkeypatch, seller_settings):
+def test_cloud_mode_has_no_implicit_user(monkeypatch, seller_settings, dialect, request):
+    if dialect == "postgres":                              # cloud mode on Postgres reads the org half from org_settings
+        seed_org_settings(request.getfixturevalue("db"))
     monkeypatch.setenv(identity.MODE_ENV, "cloud")
     assert identity.cloud()
     assert identity.current_actor(required=False) is None
@@ -134,10 +137,19 @@ def test_session_and_as_user_bind_the_user_everywhere(db, dialect):
 
 @pytest.mark.postgres_only
 def test_a_closed_pooled_connection_forgets_its_user(db):
+    """What goes back to the pool carries no user. Checked at the hand-back itself: once returned, the
+    pool's reset (stores._reset_pooled) runs on its own thread, so the raw connection is not ours to query."""
+    seen = {}
     with identity.session("local") as conn:
         raw = conn.raw
         assert raw.execute("SELECT current_setting('app.user_id', true)").fetchone()[0] == "local"
-    assert raw.execute("SELECT current_setting('app.user_id', true)").fetchone()[0] == ""
+        release = conn._release
+
+        def check_then_release(returned):
+            seen["user_id"] = returned.execute("SELECT current_setting('app.user_id', true)").fetchone()[0]
+            release(returned)
+        conn._release = check_then_release
+    assert seen["user_id"] == ""
 
 
 def test_teams_and_managers(db, dialect):

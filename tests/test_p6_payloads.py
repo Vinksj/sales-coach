@@ -32,7 +32,8 @@ def cloud_user(monkeypatch, db, dialect):
         pytest.skip("cloud mode is Postgres-only")
     monkeypatch.setenv(identity.MODE_ENV, "cloud")
     config._org_cache.clear()
-    config.save_user("seller", {"company": "Acme", "offering": "Widgets", "own_domains": ["acme.test"]})
+    with identity.activate(identity.LOCAL_ACTOR):              # an admin saves Settings (only an admin may)
+        config.save_user("seller", {"company": "Acme", "offering": "Widgets", "own_domains": ["acme.test"]})
     asha = users.create(db, "asha@acme.test", "Asha Rao", timezone="Asia/Kolkata")
     db.commit()
     yield asha["id"]

@@ -11,7 +11,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from salescoach import budget, config, identity, providers, repo
+from salescoach import budget, config, identity, providers, repo, users
 from salescoach.agents.base import Agent, AgentFailed
 from salescoach.orchestrator import bus, worker
 from salescoach.providers import pricing
@@ -142,7 +142,14 @@ def test_org_cap_is_independent_of_the_user_cap(db, monkeypatch, dialect):
     providers.set_override(counting)
     try:
         call = paste.import_text(db, "Me: hello.\nThem: hi.", "Org call")
-        _spend(db, "u-someone-else", 1.99)                     # another rep's spend counts for the org
+        if dialect == "postgres":        # a real rep, whose run only they may write (and no one else may read)
+            users.create(db, "else@tessel.test", "Someone Else", role="rep", user_id="u-someone-else")
+            db.commit()
+            with identity.as_actor(db, identity.Actor("u-someone-else", role="rep")):
+                _spend(db, "u-someone-else", 1.99)
+            assert db.execute("SELECT COUNT(*) FROM agent_runs WHERE owner_id='u-someone-else'").fetchone()[0] == 0
+        else:
+            _spend(db, "u-someone-else", 1.99)                 # another rep's spend counts for the org
         Quick().run(db, {"call_id": call})                     # 1.99 < 2: allowed, costs 0.5
         with pytest.raises(AgentFailed) as caught:
             Quick().run(db, {"call_id": call})
