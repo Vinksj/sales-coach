@@ -56,7 +56,7 @@ def plan(turns, duration_s: Optional[float] = None, wpm: float = WPM) -> list[di
 def replay(call_id: str, db_path=None, speed: float = 20.0, slow: bool = True, duration_s: Optional[float] = None,
            overrides: Optional[dict] = None, provider=None, publish_hub=None, publish_current: bool = False,
            session: Optional[str] = None, stop=None, on_engine: Optional[Callable] = None,
-           sleep: Callable = time.sleep) -> dict:
+           sleep: Callable = time.sleep, owner_id: Optional[str] = None) -> dict:
     conn = stores.sales(db_path)
     try:
         if repo.get_call(conn, call_id) is None:
@@ -70,7 +70,7 @@ def replay(call_id: str, db_path=None, speed: float = 20.0, slow: bool = True, d
     hub_in, clock = Hub(maxsize=100000), ReplayClock()
     engine = LiveCoach(call_id, db_path, hub=hub_in, provider=provider, overrides=overrides,
                        publish_hub=publish_hub or Hub(), clock=clock, mode="replay", slow=slow, slow_mode="sync",
-                       emit_events=False, publish_current=publish_current, session=session)
+                       emit_events=False, publish_current=publish_current, session=session, owner_id=owner_id)
     engine.attach(threaded=False, backfill=False)
     if on_engine:
         on_engine(engine)

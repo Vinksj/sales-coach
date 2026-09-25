@@ -3,7 +3,7 @@
   hub topic call:<id> --segment--> state -> fast detectors --+
                                         \-> slow pass (thread) -+-> ranker -> nudge
                                                                     |
-                    nudges table (every candidate, shown or not) <--+--> hub coach:<id>, coach:current
+                    nudges table (every candidate, shown or not) <--+--> hub coach:<id>, coach:current[:<owner>]
 
 Why it is shaped this way:
   * One engine thread owns the state, the ranker and the sqlite handle. The
@@ -45,6 +45,17 @@ log = logging.getLogger("salescoach.coach")
 CURRENT_TOPIC = "coach:current"
 
 
+def current_topic(user_id: Optional[str] = None) -> str:
+    """The overlay topic of ONE user: what their screen shows (status, the nudge on screen, a clear).
+    The hub is process-wide, so in a multi-user install every user needs their own topic: a replay of rep
+    A's call must never reach rep B's stream. The single local user keeps the historical name. With no
+    user given it is the acting user's (identity.NoActor in cloud mode when nobody is acting)."""
+    from .. import identity
+    if user_id is None:
+        user_id = identity.current_user_id()
+    return CURRENT_TOPIC if user_id == identity.LOCAL_USER else f"{CURRENT_TOPIC}:{user_id}"
+
+
 def coach_topic(call_id: str) -> str:
     return f"coach:{call_id}"
 
@@ -54,12 +65,13 @@ def call_topic(call_id: str) -> str:
 
 
 def publish_status(hub, state: str, call_id: Optional[str] = None, title: Optional[str] = None,
-                   mode: str = "live") -> None:
-    """idle | listening, on coach:current (the overlay and the live page read it)."""
+                   mode: str = "live", user_id: Optional[str] = None) -> None:
+    """idle | listening, on the user's current topic (the overlay and the live page read it). `user_id`
+    is whose screen it is: the acting user when not given."""
     msg = {"type": "status", "state": state, "mode": mode}
     if call_id:
         msg.update(call_id=call_id, title=title)
-    hub.publish(CURRENT_TOPIC, msg)
+    hub.publish(current_topic(user_id), msg)
 
 
 class LiveClock:
@@ -107,7 +119,7 @@ class LiveCoach:
                  overrides: Optional[dict] = None, publish_hub=None, clock=None, mode: str = "live",
                  slow: bool = True, slow_mode: str = "thread", emit_events: bool = True,
                  publish_current: bool = True, session: Optional[str] = None,
-                 classify: Optional[Callable] = None):
+                 classify: Optional[Callable] = None, owner_id: Optional[str] = None):
         if hub is None:
             from ..live import hub as hub_module
             hub = hub_module.hub
@@ -126,6 +138,9 @@ class LiveCoach:
         self.hub, self.out_hub = hub, publish_hub or hub
         self.clock = clock or LiveClock()
         self.slow_mode, self.emit_events, self.publish_current = slow_mode, emit_events, publish_current
+        # Whose overlay the shown nudges go to: fixed now, from the acting user (NoActor in cloud mode when
+        # nobody is acting: a nudge must never land on a shared topic).
+        self.current = current_topic(owner_id) if publish_current else None
         self.session = session or f"{mode}-{uuid.uuid4().hex[:8]}"
         self.state = ConversationState(self.cfg, self.vocab, known_people=self.deal["known_people"])
         self.detectors = FastDetectors(self.cfg, self.vocab)
@@ -343,8 +358,8 @@ class LiveCoach:
                "score": c.score, "confidence": c.confidence, "t_call": round(now, 1),
                "ttl_s": float(self.cfg["budget"]["display_s"])}
         self.out_hub.publish(coach_topic(self.call_id), msg)
-        if self.publish_current:
-            self.out_hub.publish(CURRENT_TOPIC, msg)
+        if self.current:
+            self.out_hub.publish(self.current, msg)
 
     def _persist(self, c, retired_at: Optional[float] = None) -> None:
         conn = self._db()

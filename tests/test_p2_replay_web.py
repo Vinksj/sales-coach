@@ -186,7 +186,7 @@ def test_replay_route_runs_in_the_background(web, db, stored_call):
     app, client, hub = web
     r = client.post(f"/coach/replay/{stored_call}", data={"speed": "0"}, headers=ORIGIN, follow_redirects=False)
     assert r.status_code == 303 and "session=replay-" in r.headers["location"]
-    live_coach._replay["thread"].join(10)
+    live_coach.replay_slot()["thread"].join(10)
     assert db.execute("SELECT COUNT(*) FROM nudges WHERE call_id=? AND mode='replay'", (stored_call,)).fetchone()[0]
     assert hub.latest(CURRENT_TOPIC)["status"]["state"] == "idle"
 

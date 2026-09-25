@@ -12,10 +12,14 @@
                     POST /coach/replay/{call_id}              replay a finished call (demo, tuning)
   CLI               salescoach coach-replay CALL_ID [--speed 20] [--no-slow] [--max-slow N]
 
-The stream follows the hub topic coach:current, which carries only what the
-screen needs: a status (idle | listening), the one nudge being shown, and a
-clear when it is dismissed. It sends the current status on connect, so an
-overlay that reconnects is right immediately.
+The stream follows the viewer's own current topic (coach/engine.current_topic:
+coach:current for the local user, coach:current:<user id> in a multi-user
+install), which carries only what that user's screen needs: a status (idle |
+listening), the one nudge being shown, and a clear when it is dismissed. It
+sends the current status on connect, so an overlay that reconnects is right
+immediately. The hub is process-wide; the topic is what keeps one rep's replay
+(its call id, title and nudges) off every other rep's screen. A replay slot is
+per user too: one rep's replay does not block, or show on, another's page.
 """
 import asyncio
 import json
@@ -34,12 +38,22 @@ log = logging.getLogger("salescoach.plugins.live_coach")
 
 NAV: list = []
 router = APIRouter()
-CURRENT_TOPIC = "coach:current"
+CURRENT_TOPIC = "coach:current"          # the local user's topic; see coach/engine.current_topic
 KEEPALIVE_S = 15.0
 STREAM_MAX_S = None            # tests bound the otherwise endless overlay stream
 _engines: dict = {}            # call_id -> LiveCoach currently running in this process
-_replay = {"thread": None, "call_id": None, "session": None}
+_replays: dict = {}            # user id -> {"thread", "call_id", "session"}: one replay per user at a time
 _lock = threading.Lock()
+
+
+def _actor_id() -> str:
+    return identity.current_user_id()
+
+
+def replay_slot(user_id: str | None = None) -> dict:
+    """The user's replay slot (the acting user's by default): {"thread", "call_id", "session"}."""
+    with _lock:
+        return _replays.setdefault(user_id or _actor_id(), {"thread": None, "call_id": None, "session": None})
 
 
 def _global_hub():
@@ -142,13 +156,15 @@ def _db(request: Request):
 
 @router.get("/coach/live/stream")
 async def coach_stream(request: Request):
+    from ..coach.engine import current_topic
     hub = _hub(request)
-    q = hub.subscribe(CURRENT_TOPIC, maxsize=200)
+    topic = current_topic(_actor_id())         # the viewer's own screen, never another user's
+    q = hub.subscribe(topic, maxsize=200)
 
     async def stream():
         try:
             yield "retry: 3000\n\n"
-            latest = hub.latest(CURRENT_TOPIC)
+            latest = hub.latest(topic)
             yield _sse(latest.get("status") or {"type": "status", "state": "idle"})
             nudge, clear = latest.get("nudge"), latest.get("clear")
             if nudge and time.time() < float(nudge.get("ts", 0)) + float(nudge.get("ttl_s", 12)) \
@@ -169,7 +185,7 @@ async def coach_stream(request: Request):
                 yield _sse(message)
                 last = time.monotonic()
         finally:
-            hub.unsubscribe(CURRENT_TOPIC, q)
+            hub.unsubscribe(topic, q)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -209,8 +225,9 @@ def coach_dismiss(request: Request, call_id: str, nudge_id: int):
         engine.dismiss(nudge_id)
     hub = _hub(request)
     clear = {"type": "clear", "id": nudge_id, "call_id": call_id}
+    from ..coach.engine import current_topic
     hub.publish(f"coach:{call_id}", clear)
-    hub.publish(CURRENT_TOPIC, clear)
+    hub.publish(current_topic(_actor_id()), clear)      # guard() above: the actor is the nudge's owner
     return {"ok": True, "id": nudge_id}
 
 
@@ -228,13 +245,14 @@ def coach_timeline(request: Request, call_id: str, session: str | None = None):
         has_turns = conn.execute("SELECT 1 FROM turns WHERE call_id=? LIMIT 1", (call_id,)).fetchone() is not None
         cfg = settings.load()
         labels = {k: v.get("label", k) for k, v in cfg["triggers"].items()}
+        slot = replay_slot()
         with _lock:
-            replaying = _replay["thread"] is not None and _replay["thread"].is_alive()
+            replaying = slot["thread"] is not None and slot["thread"].is_alive()
         return render(request, conn, "coach_live_timeline.html", call=call, session=chosen, rows=rows,
                       shown=[r for r in rows if r["shown"]], suppressed=[r for r in rows if not r["shown"]],
                       summary=report.summarise(rows), sessions=report.sessions(conn, call_id), labels=labels,
                       budget=cfg["budget"], has_turns=has_turns, replaying=replaying,
-                      replay_call=_replay["call_id"] if replaying else None)
+                      replay_call=slot["call_id"] if replaying else None)
     finally:
         conn.close()
 
@@ -260,9 +278,11 @@ def coach_replay(request: Request, call_id: str, speed: float = Form(20.0), slow
         return _redirect(back, err="This call has no transcript to replay.")
     if _live_status(request.app).get("active"):
         return _redirect(back, err="A call is live. Replays wait until it ends, so the overlay stays on the real call.")
+    user_id = _actor_id()                                  # the call's owner (guard() above)
+    slot = replay_slot(user_id)
     with _lock:
-        if _replay["thread"] is not None and _replay["thread"].is_alive():
-            return _redirect(back, err=f"A replay of {_replay['call_id']} is already running.")
+        if slot["thread"] is not None and slot["thread"].is_alive():
+            return _redirect(back, err=f"A replay of {slot['call_id']} is already running.")
         session = f"replay-{uuid.uuid4().hex[:8]}"
         hub, db_path = _hub(request), getattr(request.app.state, "db_path", None)
         use_slow = slow.lower() in ("1", "on", "true", "yes")
@@ -274,20 +294,20 @@ def coach_replay(request: Request, call_id: str, speed: float = Form(20.0), slow
         actor = identity.current_actor()                 # captured here: a new thread has no request context
 
         def run():
-            publish_status(hub, "listening", call_id, call["title"], mode="replay")
+            publish_status(hub, "listening", call_id, call["title"], mode="replay", user_id=user_id)
             try:
                 with identity.activate(actor):
                     replay_mod.replay(call_id, db_path=db_path, speed=max(0.0, speed), slow=use_slow, publish_hub=hub,
-                                      publish_current=True, session=session, on_engine=register)
+                                      publish_current=True, session=session, on_engine=register, owner_id=user_id)
             except Exception:
                 log.exception("replay of %s failed", call_id)
             finally:
                 with _lock:
                     _engines.pop(call_id, None)
-                publish_status(hub, "idle")
+                publish_status(hub, "idle", user_id=user_id)
 
         thread = threading.Thread(target=run, name=f"coach-replay-{call_id}", daemon=True)
-        _replay.update(thread=thread, call_id=call_id, session=session)
+        slot.update(thread=thread, call_id=call_id, session=session)
         thread.start()
     return _redirect(f"{back}?session={session}",
                      msg=f"Replay started at {speed:g}x{' with' if use_slow else ' without'} the slow pass. "

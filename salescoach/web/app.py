@@ -1076,6 +1076,9 @@ async def live_events(request: Request, call_id: str):
     hub = request.app.state.hub
     if hub is None:
         raise HTTPException(503, "live hub not available")
+    if identity.cloud():                   # the hub is process-wide: only a call the viewer can read streams
+        with _db(request) as conn:
+            _call_or_404(conn, call_id)
     topic = f"call:{call_id}"
     q = hub.subscribe(topic)
     keepalive = request.app.state.sse_keepalive_s
