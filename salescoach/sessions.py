@@ -10,6 +10,12 @@ page is not a write per request).
 
 In cloud mode the secret must be set explicitly: the password-mode fallback (a secret derived from
 the password) has nothing to derive from when there is no password.
+
+The table never holds a session id: `sessions.id` is sha256(session id) (key()). Every function here
+takes the RAW id (what the cookie carries) and hashes it before it touches the table, so a copy of
+the table (a backup, a leaked dump, an operator's query) names no cookie anyone could replay. The
+row-level policy on `sessions` is open to the app role (store/rls.py: the AuthGate looks a session up
+before anyone is bound), which is safe exactly because the lookup key is this unguessable hash.
 """
 import hashlib
 import hmac
@@ -64,6 +70,11 @@ def session_id_from_cookie(value: Optional[str]) -> Optional[str]:
     return session_id
 
 
+def key(session_id: str) -> str:
+    """What `sessions.id` holds for a session id: its sha256, hex. The raw id never reaches the table."""
+    return hashlib.sha256(session_id.encode()).hexdigest()
+
+
 def _ts(moment: Optional[datetime] = None) -> str:
     return (moment or datetime.now(timezone.utc)).isoformat(timespec="seconds")
 
@@ -75,23 +86,26 @@ def _parse(value: str) -> datetime:
 
 def create(conn, user_id: str, ip: Optional[str] = None, user_agent: Optional[str] = None,
            at: Optional[datetime] = None) -> tuple[str, str]:
-    """A new session for `user_id`. Returns (session id, cookie value). Commits."""
+    """A new session for `user_id`. Returns (session id, cookie value): the raw id, for the cookie; the
+    row is keyed on key(session id). Commits."""
     moment = at or datetime.now(timezone.utc)
     session_id = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO sessions(id,user_id,created_at,last_seen_at,expires_at,revoked_at,ip,user_agent) "
                  "VALUES (?,?,?,?,?,NULL,?,?)",
-                 (session_id, user_id, _ts(moment), _ts(moment), _ts(moment + timedelta(seconds=SLIDING_S)),
+                 (key(session_id), user_id, _ts(moment), _ts(moment), _ts(moment + timedelta(seconds=SLIDING_S)),
                   (ip or None) and str(ip)[:64], (user_agent or None) and str(user_agent)[:300]))
     conn.commit()
     return session_id, cookie_value(session_id)
 
 
 def resolve(conn, session_id: Optional[str], at: Optional[datetime] = None) -> Optional[dict]:
-    """The live session row for an id: not revoked, not expired, and its expiry slid forward when it
-    was last seen more than SLIDE_EVERY_S ago. None otherwise. Commits when it wrote."""
+    """The live session row for a (raw) id: not revoked, not expired, and its expiry slid forward when it
+    was last seen more than SLIDE_EVERY_S ago. None otherwise. The row's `id` is the hash. Commits when
+    it wrote."""
     if not session_id:
         return None
-    row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+    hashed = key(session_id)
+    row = conn.execute("SELECT * FROM sessions WHERE id=?", (hashed,)).fetchone()
     if row is None or row["revoked_at"]:
         return None
     moment = at or datetime.now(timezone.utc)
@@ -101,14 +115,14 @@ def resolve(conn, session_id: Optional[str], at: Optional[datetime] = None) -> O
     except ValueError:
         return None
     if expired:                                   # closed for good: a later (or earlier) clock cannot revive it
-        conn.execute("UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (_ts(moment), session_id))
+        conn.execute("UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (_ts(moment), hashed))
         conn.commit()
         return None
     out = dict(row)
     if (moment - seen).total_seconds() >= SLIDE_EVERY_S:
         out["last_seen_at"], out["expires_at"] = _ts(moment), _ts(moment + timedelta(seconds=SLIDING_S))
         conn.execute("UPDATE sessions SET last_seen_at=?, expires_at=? WHERE id=?",
-                     (out["last_seen_at"], out["expires_at"], session_id))
+                     (out["last_seen_at"], out["expires_at"], hashed))
         conn.commit()
     return out
 
@@ -116,17 +130,17 @@ def resolve(conn, session_id: Optional[str], at: Optional[datetime] = None) -> O
 def revoke(conn, session_id: Optional[str]) -> bool:
     if not session_id:
         return False
-    cur = conn.execute("UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (now(), session_id))
+    cur = conn.execute("UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (now(), key(session_id)))
     conn.commit()
     return bool(cur.rowcount)
 
 
 def revoke_all(conn, user_id: str, keep: Optional[str] = None) -> int:
     """Every live session of a user ("log out everywhere", an admin disabling them); `keep` spares
-    one (the session pressing the button). Returns how many were revoked."""
+    one (the session pressing the button; its raw id). Returns how many were revoked."""
     if keep:
         cur = conn.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL AND id != ?",
-                           (now(), user_id, keep))
+                           (now(), user_id, key(keep)))
     else:
         cur = conn.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now(), user_id))
     conn.commit()
@@ -134,6 +148,7 @@ def revoke_all(conn, user_id: str, keep: Optional[str] = None) -> int:
 
 
 def live_for(conn, user_id: str, at: Optional[datetime] = None) -> list[dict]:
+    """The user's live sessions, newest use first. Each row's `id` is the hash, never a usable id."""
     moment = _ts(at)
     return [dict(r) for r in conn.execute(
         "SELECT * FROM sessions WHERE user_id=? AND revoked_at IS NULL AND expires_at > ? ORDER BY last_seen_at DESC",
