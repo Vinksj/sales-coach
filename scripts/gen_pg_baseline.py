@@ -7,8 +7,7 @@ it (0002_owner.sql, ...), each hand-written to land the shape the SQLite files d
 version (tests/test_schema_parity.py checks a migrated database against them). Running this script
 today therefore prints the CURRENT schema to stdout for reading, or, with --write PATH, writes it
 as the baseline of a fresh re-baseline (a new numbered file that replaces everything before it;
-only ever done deliberately). `--check` fails when 0001 is not what the version-6 files produced,
-which is a check nothing else needs any more and is kept for a re-baseline.
+only ever done deliberately).
 
 The SQLite files (store/schema-sales.sql + plugins/*.sql) stay the source of truth. This script
 rewrites them for Postgres and nothing else:
@@ -19,8 +18,7 @@ rewrites them for Postgres and nothing else:
 
 CHECK constraints, defaults, UNIQUE, foreign keys, every index (partial ones included) and the
 column order are kept verbatim, which is what tests/test_schema_parity.py verifies on a live
-database. Run it after any schema change and commit the result; `--check` (CI) fails when the
-committed file is not what the sources produce.
+database (that test, not this script, is what CI relies on). Unknown arguments are refused.
 
     python scripts/gen_pg_baseline.py [--write PATH]
 """
@@ -74,6 +72,10 @@ def generate() -> str:
 
 
 def main(argv) -> int:
+    unknown = [a for i, a in enumerate(argv) if a != '--write' and (i == 0 or argv[i - 1] != '--write')]
+    if unknown:
+        print(f'unknown argument(s): {unknown}; usage: gen_pg_baseline.py [--write PATH]', file=sys.stderr)
+        return 2
     text = generate()
     if "--write" in argv:
         target = Path(argv[argv.index("--write") + 1])

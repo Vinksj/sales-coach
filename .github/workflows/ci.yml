@@ -102,10 +102,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Generated Postgres baseline and RLS policies are committed
-        run: |
-          python scripts/gen_pg_baseline.py --check
-          python scripts/gen_pg_rls.py --check
+      # The baseline (0001) is frozen; tests/test_schema_parity.py checks a migrated database against the
+      # tracked SQLite schema, which is the real guard. The RLS file is regenerated from tenancy.py.
+      - name: Generated RLS policies are committed
+        run: python scripts/gen_pg_rls.py --check
 
       - name: Create the app role (what a deployment does once; rls.sql grants it the tables)
         run: |
