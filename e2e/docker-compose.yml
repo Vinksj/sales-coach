@@ -29,6 +29,9 @@ x-app: &app
   image: sc-e2e-app:latest
   environment: *app-env
   networks: [e2e]
+  # tmpfs, not the image's anonymous /data volume: a cloud process keeps nothing on disk, and nothing is
+  # left behind if a container is recreated.
+  tmpfs: [/data]
   depends_on:
     migrate: {condition: service_completed_successfully}
     fakes: {condition: service_healthy}
@@ -56,6 +59,7 @@ services:
       DATABASE_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
       IMPORT_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach_import
     volumes: ["./migrate.py:/e2e/migrate.py:ro"]
+    tmpfs: [/data]
     entrypoint: ["python", "/e2e/migrate.py"]
     command: []
     depends_on:
@@ -78,6 +82,7 @@ services:
     volumes:
       - ./fakes:/e2e/fakes:ro
       - ../tests/recorder_fakes.py:/e2e-lib/recorder_fakes.py:ro
+    tmpfs: [/data]
     entrypoint: ["python", "/e2e/fakes/server.py"]
     command: []
     healthcheck:
