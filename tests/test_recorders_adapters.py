@@ -95,6 +95,23 @@ def test_fathom_test_401_429_and_the_transcript_fallback():
         build(fake, "fathom").fetch("rec-1")
 
 
+def test_fathom_tells_the_rep_from_a_colleague_by_the_reps_own_addresses():
+    fake = rf.FakeRecorders()
+    theirs = rf.fathom_meeting("rec-b", "bala@tessel.test", "Bala K")                  # Bala's, Asha not invited
+    attended = rf.fathom_meeting("rec-ab", "bala@tessel.test", "Bala K")               # Bala recorded, Asha was there
+    attended["calendar_invitees"].append({"name": "Asha Rao", "email": "asha@tessel.test"})
+    attended["transcript"].append({"speaker": {"display_name": "Asha Rao", "matched_calendar_invitee_email":
+                                               "asha@tessel.test"}, "text": "I own the pilot plan.", "timestamp": "00:01:00"})
+    own = rf.fathom_meeting("rec-a", "asha@tessel.test", "Asha Rao")
+    fake.account("fathom", "key-a", meetings=[theirs, attended, own])
+    adapter = recorders.build("fathom", "key-a", OWNER, transport=fake.transport(), me_emails=["asha@tessel.test"])
+    assert adapter.test() == Account(email="asha@tessel.test", name="Asha Rao")      # not the first listed recorder
+    assert [r.ext_id for r in adapter.list_recent(SINCE)] == ["rec-ab", "rec-a"]
+    nt = adapter.fetch("rec-ab")
+    assert [(t["speaker_label"], t.get("channel")) for t in nt.turns] == [
+        ("Bala (host)", None), ("Chen Wu", None), ("Asha Rao", "me")]                  # the recorder is not the rep
+
+
 def test_fathom_webhook_payload_embeds_the_transcript_and_names_no_owner():
     fake = rf.FakeRecorders()
     adapter = build(fake, "fathom", account=Account(email="asha@tessel.test"))

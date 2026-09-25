@@ -7,9 +7,10 @@
   test   GET /meetings (the first page); "connected as" is recorded_by.email of a listed meeting
 
 Speakers: each transcript item's speaker has display_name and matched_calendar_invitee_email; a speaker
-whose address is the recorder's own (recorded_by.email, the rep) is the rep: channel 'me'. A listing that
-also carries a colleague's shared recording (recorded_by someone else, the rep not on the invite) is
-skipped: this connection delivers the rep's own meetings only.
+whose address is one of the rep's own (their profile's addresses and the account's) is the rep: channel
+'me' (with nothing known about the rep, the meeting's recorded_by.email stands in). A listing that also
+carries a colleague's shared recording of a meeting the rep was not invited to is skipped: this
+connection delivers the rep's own meetings only.
 
 Webhook: Fathom signs its webhooks (research: "HMAC-signed"); verified here as Standard Webhooks
 (webhook-id / webhook-timestamp / webhook-signature) with the signing secret the rep pastes. The payload
@@ -54,23 +55,32 @@ class FathomRecorder(RecorderAdapter):
         return answer if isinstance(answer, dict) else {}
 
     def test(self) -> Account:
+        """The key's account, as far as a listing shows it: the recorder of a listed meeting who is one of
+        the owner's own addresses (a shared recording's recorder is a colleague, not the account)."""
         page = self._get("/meetings")
+        found = []
         for item in page.get("items") or []:
-            mine = _email(item.get("recorded_by")) if isinstance(item, dict) else None
-            if mine:
-                name = (item.get("recorded_by") or {}).get("name")
-                return Account(email=mine, name=name or None)
+            who = item.get("recorded_by") if isinstance(item, dict) else None
+            if _email(who):
+                found.append(Account(email=_email(who), name=(who or {}).get("name") or None))
+        for account in found:
+            if not self.me_emails or account.email in self.me_emails:
+                return account
         return Account()
 
     def _mine(self, item: dict) -> bool:
-        """The account's own meeting: recorded by the account, or the account was invited. Unknown account:
-        everything the key lists."""
-        me = (self.account.email or "").lower()
-        if not me:
+        """The rep's own meeting: recorded by them, or they were invited (a recording a colleague shared of
+        a meeting the rep was not on is not theirs). Nothing known about the rep: everything the key lists."""
+        if not self.me_emails:
             return True
-        if _email(item.get("recorded_by")) == me:
+        if _email(item.get("recorded_by")) in self.me_emails:
             return True
-        return any(_email(p) == me for p in item.get("calendar_invitees") or [])
+        return any(_email(p) in self.me_emails for p in item.get("calendar_invitees") or [])
+
+    def _me(self, meeting: dict) -> set:
+        """The addresses that are the rep on this meeting: theirs when known; else, with nothing known,
+        the recorder of the meeting (the key's own listing)."""
+        return set(self.me_emails) or ({_email(meeting.get("recorded_by"))} - {None})
 
     def list_recent(self, since=None, cursor: Optional[str] = None) -> list:
         params = {"include_transcript": "true"}
@@ -105,7 +115,7 @@ class FathomRecorder(RecorderAdapter):
         parsed = parsers.fathom_to_parsed(meeting)
         if not parsed.ext_id:
             raise SourceError("Fathom answered without a recording id")
-        me = {self.account.email or "", _email(meeting.get("recorded_by")) or ""} - {""}
+        me = self._me(meeting)
         labels = []
         for item in meeting.get("transcript") or []:
             who = item.get("speaker") if isinstance(item, dict) else None

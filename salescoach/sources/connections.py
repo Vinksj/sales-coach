@@ -218,10 +218,20 @@ def _require_kind(kind: str):
     return kinds()[kind]
 
 
+def _my_emails() -> list:
+    """The acting user's own addresses (their profile): how an adapter tells the rep from a colleague."""
+    from .. import seller
+    try:
+        return list(seller.emails())
+    except Exception:                                  # no profile yet: the adapter does not guess
+        return []
+
+
 def adapter_for(row: dict, api_key: Optional[str] = None):
     account = (row.get("state") or {}).get("account") or {}
     return recorders.build(row["kind"], api_key or api_key_of(row), row["owner_id"], transport=TRANSPORT,
-                           account=Account(email=account.get("email"), name=account.get("name")))
+                           account=Account(email=account.get("email"), name=account.get("name")),
+                           me_emails=_my_emails())
 
 
 def test_key(conn, kind: str, api_key: Optional[str] = None) -> Account:
@@ -235,7 +245,7 @@ def test_key(conn, kind: str, api_key: Optional[str] = None) -> Account:
         if row is None or not row.get("secret_enc"):
             raise ConnectionError_(f"Paste your {cls.label} API key first.")
         key = api_key_of(row)
-    return recorders.build(kind, key, _owner(conn), transport=TRANSPORT).test()
+    return recorders.build(kind, key, _owner(conn), transport=TRANSPORT, me_emails=_my_emails()).test()
 
 
 def save_key(conn, kind: str, api_key: str, account: Optional[Account] = None) -> dict:
@@ -404,8 +414,10 @@ def _fail(conn, row: dict, moment: datetime, error: str, status: str = "active",
     return {"error": error, "status": status}
 
 
-def reconnect_message(label: str, detail: str) -> str:
-    return f"{label} refused this key ({detail}). Reconnect: paste a new key under Your call recorder."
+def reconnect_message(label: str, exc: BaseException) -> str:
+    found = re.search(r"HTTP \d{3}", str(exc))
+    detail = f" ({found.group(0)})" if found else ""
+    return f"{label} refused this key{detail}. Reconnect: paste a new key under Your call recorder."
 
 
 def _entry(recent: dict, ref) -> dict:
@@ -457,8 +469,7 @@ def poll_connection(conn, row: dict, moment: Optional[datetime] = None) -> dict:
     try:
         refs = adapter.list_recent(since, state.get("cursor"))
     except SourceAuthError as exc:
-        return _fail(conn, row, moment, reconnect_message(label, str(exc).split("(")[-1].rstrip(")")[:60] or "401"),
-                     status="error")
+        return _fail(conn, row, moment, reconnect_message(label, exc), status="error")
     except SourceRateLimited as exc:
         wait = timedelta(seconds=exc.retry_after) if exc.retry_after else RATE_LIMIT_DEFAULT
         wait = max(wait, backoff(kind, int(row.get("failures") or 0) + 1))
@@ -505,7 +516,7 @@ def poll_connection(conn, row: dict, moment: Optional[datetime] = None) -> dict:
             result["pending"] += 1
         except SourceAuthError as exc:
             conn.rollback()
-            stop = ("error", reconnect_message(label, str(exc)[:60]))
+            stop = ("error", reconnect_message(label, exc))
             break
         except SourceRateLimited as exc:
             conn.rollback()

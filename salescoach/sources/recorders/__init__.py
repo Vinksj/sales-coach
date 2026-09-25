@@ -13,7 +13,7 @@ is built, from the connection row, and no payload can change it.
 
 The interface (sources/connections.py drives it):
 
-    cls(api_key, owner, transport=None, account=None)
+    cls(api_key, owner, transport=None, account=None, me_emails=())
     test() -> Account                      one cheap authenticated call; the account's address when the API says
     list_recent(since, cursor=None) -> [MeetingRef]   that account's recent meetings; self.cursor = where a
                                            capped listing stopped (resumed next poll), else None
@@ -55,7 +55,7 @@ class RecorderAdapter:
     webhook_scheme = "header"    # "standard": the recorder signs (Standard Webhooks HMAC); else our own token header
     verified = False
 
-    def __init__(self, api_key: str, owner: str, transport=None, account: Optional[Account] = None):
+    def __init__(self, api_key: str, owner: str, transport=None, account: Optional[Account] = None, me_emails=()):
         if not api_key:
             from ..adapters import SourceAuthError
             raise SourceAuthError(f"no {self.label} API key is stored for this connection")
@@ -65,6 +65,11 @@ class RecorderAdapter:
         self.owner = owner
         self._transport = transport
         self.account = account or Account()
+        # The owner's own addresses (their profile), plus the account's: how an adapter whose API names
+        # people by e-mail (Fathom) tells the rep from a colleague. Empty: the adapter does not guess.
+        self.me_emails = {str(e).strip().lower() for e in me_emails or () if e and "@" in str(e)}
+        if self.account.email:
+            self.me_emails.add(self.account.email.lower())
         self.cursor: Optional[str] = None
 
     def __repr__(self):                       # never the key
@@ -118,12 +123,13 @@ def classes() -> dict:
     return {c.kind: c for c in (FathomRecorder, FirefliesRecorder, TldvRecorder, GranolaRecorder)}
 
 
-def build(kind: str, api_key: str, owner: str, transport=None, account: Optional[Account] = None) -> RecorderAdapter:
+def build(kind: str, api_key: str, owner: str, transport=None, account: Optional[Account] = None,
+          me_emails=()) -> RecorderAdapter:
     try:
         cls = classes()[kind]
     except KeyError:
         raise SourceError(f"unknown recorder {kind!r}; one of {', '.join(classes())}") from None
-    return cls(api_key, owner, transport=transport, account=account)
+    return cls(api_key, owner, transport=transport, account=account, me_emails=me_emails)
 
 
 # Recorders whose APIs are org-level only (an admin key over everyone's calls): no per-rep connection is
