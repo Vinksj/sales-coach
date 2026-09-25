@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from . import SourceAuthError, SourceError
+from . import SourceAuthError, SourceError, SourceNotFound, SourceRateLimited
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
@@ -23,7 +23,10 @@ def request_json(service: str, method: str, url: str, headers: dict, params: Opt
     if response.status_code in (401, 403):
         raise SourceAuthError(f"{service} refused the API key (HTTP {response.status_code}); set a new key")
     if response.status_code == 429:
-        raise SourceError(f"{service} is rate limiting; the next poll will try again")
+        raise SourceRateLimited(f"{service} is rate limiting; the next poll will try again",
+                                retry_after=retry_after(response.headers.get("retry-after")))
+    if response.status_code == 404:
+        raise SourceNotFound(f"{service} answered HTTP 404")
     if response.status_code >= 300:
         raise SourceError(f"{service} answered HTTP {response.status_code}")
     if len(response.content) > MAX_RESPONSE_BYTES:
@@ -32,3 +35,22 @@ def request_json(service: str, method: str, url: str, headers: dict, params: Opt
         return response.json()
     except ValueError:
         raise SourceError(f"{service} did not answer with JSON") from None
+
+
+def retry_after(value) -> Optional[float]:
+    """Seconds from a Retry-After header (a number of seconds or an HTTP date); None when absent or unreadable."""
+    if value in (None, ""):
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        pass
+    from datetime import datetime, timezone
+    from email.utils import parsedate_to_datetime
+    try:
+        when = parsedate_to_datetime(str(value))
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())

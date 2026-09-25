@@ -16,8 +16,9 @@ user_state for a per-user duty, in state for an org-level one.
 Users. A duty is per user unless it says otherwise (Duty.per_user): each round
 runs it once for every active user (users.active), inside that user's service
 session, so a reply poll reads that user's mailbox and a follow-up run drafts
-in that user's voice. An org-level duty (the sources poller, until Phase 4)
-runs once, as the local user, and not at all in cloud mode.
+in that user's voice. An org-level duty (the local install's sources poller)
+runs once, as the local user, and not at all in cloud mode, where the per-user
+`recorders` duty (plugins/sources.py, Phase 4) polls each rep's own recorders.
 """
 import json
 import logging
@@ -113,7 +114,7 @@ def _loop(duty: Duty, db_path, stop: threading.Event):
                 with conn.as_system():                     # who to run for: read before anyone is bound
                     targets = [u["id"] for u in users.active(conn)]
             elif identity.cloud():
-                log.info("%s: an org-level duty does not run in cloud mode yet (Phase 4)", duty.name)
+                log.info("%s: an org-level duty does not run in cloud mode", duty.name)
                 continue
             else:
                 targets = [identity.LOCAL_USER]

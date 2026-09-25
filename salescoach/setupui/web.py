@@ -6,8 +6,9 @@
   GET  /setup/method/custom[/{key}]   POST /setup/method/custom[/{key}]   the builder (save_custom)
                              POST /setup/method/custom/{key}/delete
   GET  /setup/model          POST /setup/model/models | /test | /use  JSON for setup.js, a page without it
-  GET  /setup/sources        POST /setup/sources/{kind}               one source's choice
-                             POST /setup/sources/webhook/secret       create or replace; shown ONCE
+  GET  /setup/sources        POST /setup/sources/{kind}               one source's choice (local install)
+                             POST /setup/sources/webhook/secret       create or replace; shown ONCE (local)
+                             POST /setup/sources/allowed              cloud: the recorder kinds reps may connect
   GET  /setup/connections                                             read-only
   GET  /setup/review         POST /setup/finish
                              POST /setup/dismiss-card                 the Today card
@@ -518,14 +519,48 @@ def _sources_context(request, conn, live, new_secret=None):
             "min_poll": sources.MIN_POLL_MINUTES, "max_poll": sources.MAX_POLL_MINUTES}
 
 
+def _cloud_sources_context(conn):
+    """Cloud mode: the page is the org's ALLOW-LIST of recorder kinds (sources/connections.py). Each rep
+    connects their own account on /me/setup; no org-wide key is asked for or stored here."""
+    from ..sources import connections, recorders
+    return {"recorders": connections.catalog(), "allowed_default": connections.allowed_is_default(),
+            "org_level_only": recorders.ORG_LEVEL_ONLY, "later": recorders.LATER}
+
+
+CLOUD_NO_ORG_KEYS = ("In a cloud install each rep connects their own recorder account on their profile page; "
+                     "Settings only chooses which recorders are allowed.")
+
+
 @router.get("/setup/sources", response_class=HTMLResponse)
 def sources_page(request: Request):
+    if identity.cloud():
+        return _page(request, "setup_sources_cloud.html", "sources",
+                     build=lambda conn, live, rows: _cloud_sources_context(conn))
     return _page(request, "setup_sources.html", "sources",
                  build=lambda conn, live, rows: _sources_context(request, conn, live))
 
 
+@router.post("/setup/sources/allowed")
+def sources_allowed(request: Request, kinds: list[str] = Form(default=[]), go: str = Form("stay")):
+    """Cloud: which recorder kinds the org's reps may connect. A kind switched off stops being polled for
+    everyone at the next round and its webhooks answer 404; the reps' keys stay until they disconnect."""
+    from ..sources import connections
+    if not identity.cloud():
+        return _go("sources", "stay", err="The allow-list is for a cloud install; here, switch sources on below.")
+    try:
+        chosen = connections.set_allowed_kinds(kinds)
+    except connections.ConnectionError_ as exc:
+        return _go("sources", "stay", err=str(exc), anchor="allowed")
+    labels = [connections.kinds()[k].label for k in chosen]
+    return _go("sources", go, anchor="allowed",
+               msg=("Reps may connect: " + ", ".join(labels) + ".") if labels else
+               "No recorder is allowed now: reps can still upload or paste transcripts.")
+
+
 @router.post("/setup/sources/webhook/secret", response_class=HTMLResponse)
 def webhook_secret(request: Request):
+    if identity.cloud():
+        return _go("sources", "stay", err=CLOUD_NO_ORG_KEYS)
     secret = sources.new_webhook_secret()
     # Rendered straight into this one response, never redirected to: a redirect would need the secret in
     # a URL or in storage. Reloading the page cannot show it again.
@@ -548,6 +583,8 @@ def source_save(request: Request, kind: str, enabled: str = Form(""), poll_minut
                 api_key: str = Form(""), only_deals: str = Form(""), path: str = Form(""),
                 allow_remote: str = Form(""), remote_form: str = Form("")):
     anchor = f"src-{kind}" if re.fullmatch(r"[a-z_]+", kind) else None
+    if identity.cloud():                             # no org-wide recorder keys or org sources in cloud
+        return _go("sources", "stay", err=CLOUD_NO_ORG_KEYS)
     d = next((x for x in sources.catalog() if x["kind"] == kind and x["mode"] != "export"), None)
     if d is None:
         return _go("sources", "stay", err="That is not a source the coach can switch on.")

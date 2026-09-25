@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}My meetings{% endblock %}
+{% macro status(m) %}
+{% if m.status == 'upcoming' %}<span class="pill pill-muted"><i></i>Upcoming</span>
+{% elif m.status == 'imported' %}<span class="pill pill-good"><i></i>Recorded, imported</span>
+{% elif m.status == 'recorded' %}<span class="pill pill-alert"><i></i>Recorded, not imported yet</span>
+{% else %}<span class="pill pill-muted"><i></i>Not recorded</span>{% endif %}
+{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">You</div>
+  <h1>My meetings</h1>
+  <div class="meta">Your calendar next to what your own recorder captured, for the last two weeks and the week ahead. Every call here is yours: it came from your calendar or your recorder account. Nothing to assign or claim.</div>
+</div>
+
+{% if recorders %}
+<div class="actions">
+  {% for r in recorders %}{% if r.status == 'active' and r.kind in allowed %}
+  <form method="post" action="/me/connections/{{ r.id }}/poll"><input type="hidden" name="back" value="meetings"><button class="btn btn-sm">Import now from {{ r.label or r.kind }}</button></form>
+  {% endif %}{% endfor %}
+</div>
+{% elif cloud() %}
+<p class="meta">No recorder connected. <a href="/me/setup#recorders">Connect yours</a> and its meetings appear here.</p>
+{% endif %}
+
+<section class="section first">
+  <div class="section-head"><h2>Coming up</h2><span class="purpose">{{ upcoming|length }} on your calendar.</span></div>
+  {% for m in upcoming %}
+  <div class="card call-row">
+    <div class="call-row-main">
+      <div class="call-title">{{ m.title }}</div>
+      <div class="meta">{{ m.start|dt }}{% if m.attendees %} · {{ m.attendees|join(', ') }}{% endif %}</div>
+    </div>
+    <div class="source-side">{{ status(m) }}</div>
+  </div>
+  {% else %}
+  <p class="meta">Nothing on your calendar for the next seven days{% if cloud() %}, or your calendar is not connected yet (You > Google){% endif %}.</p>
+  {% endfor %}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Recent</h2><span class="purpose">{{ recent|length }} in the last two weeks.</span></div>
+  {% for m in recent %}
+  <div class="card call-row">
+    <div class="call-row-main">
+      <div class="call-title">{% if m.call_id %}<a href="/calls/{{ m.call_id }}">{{ m.title }}</a>{% else %}{{ m.title }}{% endif %}</div>
+      <div class="meta">{% if m.start %}{{ m.start|dt }}{% endif %}{% if m.recorder %} · {{ m.recorder }}{% endif %}{% if not m.calendar %} · not on your calendar{% endif %}{% if m.attendees %} · {{ m.attendees|join(', ') }}{% endif %}</div>
+      {% if m.note %}<div class="meta">{{ m.note }}</div>{% endif %}
+    </div>
+    <div class="source-side">{{ status(m) }}</div>
+  </div>
+  {% else %}
+  <p class="meta">No meetings in the last two weeks.</p>
+  {% endfor %}
+</section>
+{% endblock %}

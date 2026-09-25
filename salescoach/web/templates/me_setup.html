@@ -88,6 +88,86 @@
   {% endif %}
 </section>
 
+{% if recorder_cards is defined %}
+<section class="card" id="recorders">
+  <div class="eyebrow">Your call recorder</div>
+  <h2>Where your calls come from</h2>
+  <p class="meta">Connect your own recorder account with your own API key. The calls it records become yours, analysed from your side; nobody else's recorder puts a call on your list, and yours puts none on theirs. Your key is stored encrypted and never shown again. <a href="/me/meetings">My meetings</a> shows what came in.</p>
+  {% if new_webhook is defined %}
+  <div class="callout secret-once" id="webhook-token" role="alert" tabindex="-1">
+    <div class="label">{{ new_webhook.label }} webhook · shown once</div>
+    <p class="meta">Copy both now; the token cannot be shown again (you can only replace it). Send each push to the address with the header <code>X-Salescoach-Secret</code>.</p>
+    <dl class="facts">
+      <div><dt>Address</dt><dd><code id="webhook-url">{{ new_webhook.url }}</code> <button type="button" class="btn btn-sm btn-quiet" data-copy="#webhook-url">Copy</button></dd></div>
+      <div><dt>Token</dt><dd><code class="secret-value" id="webhook-secret">{{ new_webhook.token }}</code> <button type="button" class="btn btn-sm btn-quiet" data-copy="#webhook-secret">Copy</button></dd></div>
+    </dl>
+  </div>
+  {% endif %}
+  {% if not recorder_keys_ready %}<p class="meta">Not available yet on this install: SALESCOACH_TOKEN_KEYS is not set, so no key can be stored. Ask whoever runs it.</p>{% endif %}
+  {% if not recorder_cards %}<p class="meta">Your admin has not allowed any recorder yet. You can still upload or paste transcripts on the Import page.</p>{% endif %}
+  <div class="status-list">
+    {% for r in recorder_cards %}
+    {% set c = r.conn %}
+    {% set st = c.status if c else 'not_connected' %}
+    <div class="status-row status-{{ 'ok' if st == 'active' else 'off' }}" id="rec-{{ r.kind }}">
+      <div class="status-head">
+        <h3>{{ r.label }}{% if not r.verified %} <span class="tag tag-block" title="Written from the service's public documentation and tested against sample data only">untested against the live API</span>{% endif %}</h3>
+        {% if st == 'active' %}<span class="pill pill-good"><i></i>Connected{% if r.account.email %} as {{ r.account.email }}{% endif %}</span>
+        {% elif st == 'error' %}<span class="pill pill-alert"><i></i>Needs reconnect</span>
+        {% elif st == 'disconnected' %}<span class="pill pill-muted"><i></i>Disconnected</span>
+        {% else %}<span class="pill pill-muted"><i></i>Not connected</span>{% endif %}
+      </div>
+      <p class="meta">Your key: {{ r.where_key }} {{ r.plan }}</p>
+      {% if c and st != 'disconnected' %}
+      <p class="meta">{% if r.last_imported %}Last imported meeting {{ r.last_imported|dt }}. {% endif %}{% if c.last_poll_at %}Last checked {{ c.last_poll_at|dt }}.{% else %}Not checked yet; the first check runs within a minute or two.{% endif %}</p>
+      {% if c.last_error %}<p class="err-text">{{ c.last_error }}</p>{% endif %}
+      {% if r.rate_limited_until %}<p class="meta">{{ r.label }} asked the coach to slow down; the next check waits until {{ r.rate_limited_until|dt }}.</p>{% endif %}
+      {% endif %}
+      <form method="post" action="/me/recorders/{{ r.kind }}/connect" class="source-form" autocomplete="off">
+        <label for="f-rec-{{ r.kind }}">{% if c and st != 'disconnected' %}Replace the API key{% else %}API key{% endif %}
+          <input id="f-rec-{{ r.kind }}" name="api_key" type="password" value="" autocomplete="new-password" spellcheck="false"
+                 placeholder="{% if c and c.has_key %}Stored. Paste a new one to replace it{% else %}Paste your {{ r.label }} API key{% endif %}">
+        </label>
+        <div class="actions">
+          <button class="btn btn-sm btn-secondary" name="action" value="test">Test</button>
+          <button class="btn btn-sm btn-primary" name="action" value="save">Save</button>
+        </div>
+      </form>
+      {% if c and st != 'disconnected' %}
+      <div class="actions">
+        {% if st == 'active' %}<form method="post" action="/me/connections/{{ c.id }}/poll"><button class="btn btn-sm">Import now</button></form>{% endif %}
+        <form method="post" action="/me/connections/{{ c.id }}/disconnect"><button class="btn btn-sm btn-quiet" data-confirm="Disconnect {{ r.label }}? Its key is deleted; the calls it brought in stay yours.">Disconnect</button></form>
+      </div>
+      <details class="raw">
+        <summary>Push new meetings at once (webhook, optional)</summary>
+        <p class="meta">Checking every {{ r.poll_minutes }} minutes needs nothing more. To have meetings arrive as soon as the recorder finishes them, point a webhook at this connection's own address.</p>
+        {% if r.webhook_scheme == 'standard' %}
+        <p class="meta">{{ r.label }} signs its webhooks. Create the webhook in {{ r.label }} with the address below, then paste the signing secret it shows you here.{% if c.has_signing_secret %} A signing secret is stored.{% endif %}</p>
+        <form method="post" action="/me/connections/{{ c.id }}/signing-secret" class="source-form" autocomplete="off">
+          <input name="secret" type="password" value="" autocomplete="new-password" spellcheck="false" placeholder="whsec_..." aria-label="Signing secret">
+          <button class="btn btn-sm btn-secondary">Save the signing secret</button>
+        </form>
+        {% else %}
+        <p class="meta">{{ r.label }} does not sign its webhooks in a way the coach checks, so a push must carry this connection's own token in the <code>X-Salescoach-Secret</code> header, for example through Zapier or Make.</p>
+        {% endif %}
+        <form method="post" action="/me/connections/{{ c.id }}/webhook-token" class="actions">
+          <button class="btn btn-sm btn-quiet"{% if c.has_webhook_token %} data-confirm="Replace the webhook token? Anything posting with the old one stops working."{% endif %}>{% if c.has_webhook_token %}Replace the webhook token{% else %}Show the address and create a token{% endif %}</button>
+        </form>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% for c in recorder_disallowed %}
+    <div class="status-row status-off" id="rec-{{ c.kind }}">
+      <div class="status-head"><h3>{{ c.label }}</h3><span class="pill pill-muted"><i></i>Switched off by your admin</span></div>
+      <p class="meta">Your admin no longer allows {{ c.label }}; it is not checked. Disconnect it to delete your key.</p>
+      <form method="post" action="/me/connections/{{ c.id }}/disconnect" class="actions"><button class="btn btn-sm btn-quiet">Disconnect</button></form>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="card" id="sessions">
   <div class="eyebrow">Signed-in browsers</div>
   <p class="meta">{{ sessions_live }} browser{{ '' if sessions_live == 1 else 's' }} signed in as you. A session lasts thirty days from its last use; signing out everywhere ends all of them, this one included.</p>
