@@ -178,5 +178,11 @@
 </section>
 {% endif %}
 
+<section class="card" id="your-data">
+  <div class="eyebrow">Your data</div>
+  <p class="meta">Everything that is yours (your calls and transcripts, deals, loops, emails, coaching and the comments on your work) as a zip of JSON files, with a README saying what each file holds. Nobody else's work is in it.</p>
+  <p><a class="btn btn-sm btn-secondary" href="/me/export">Download my data</a></p>
+</section>
+
 {{ f.usage_panel(usage, mine_only=True) }}
 {% endblock %}

@@ -1,4 +1,4 @@
-"""/me/setup: the acting user's own profile (the USER half of seller.py).
+"""/me/setup: the acting user's own profile (the USER half of seller.py); /me/export: their own data.
 
 The local user's profile lives in seller.yaml and style.md, edited on /setup/you together with the
 org's; this page sends the local user there. Any other user (a cloud install) edits their `users`
@@ -112,3 +112,15 @@ def google_disconnect(request: Request):
         return webapp._redirect(PATH, msg="Google was not connected.")
     note = "" if outcome["revoked"] else " Google did not confirm the revocation; remove the coach under your Google account's third-party access too."
     return webapp._redirect(PATH, msg="Google disconnected." + note)
+
+
+@router.get("/me/export")
+def me_export(request: Request):
+    """The acting user's own rows as a zip of JSON files, streamed (lifecycle/export.py). Every query names the
+    user, so a manager downloads their own work, not their team's."""
+    from fastapi.responses import StreamingResponse
+    from ..lifecycle import export
+    actor = identity.current_actor()
+    return StreamingResponse(export.stream_as(actor), media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{export.filename(actor.user_id)}"',
+                                      "Cache-Control": "no-store"})

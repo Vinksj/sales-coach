@@ -427,6 +427,39 @@ def cmd_retention(args):
         conn.close()
 
 
+def cmd_export(args):
+    """One user's own data as a zip of JSON files (lifecycle/export.py). Postgres: the owner role
+    (DATABASE_MIGRATE_URL or --url), because an admin reads no rep's content through the app; every query
+    names the user. SQLite: the local store, whose one user is the only one there is."""
+    from . import identity, users
+    from .lifecycle import export, owner
+    from .store import db
+    target = stores.db_path()
+    if isinstance(target, str) and db.is_postgres_url(target) or args.url:
+        try:
+            opener = owner.connection(args.url)
+        except owner.NoOwnerURL as exc:
+            print(f"export: {exc}", file=sys.stderr)
+            return 2
+    else:
+        import contextlib
+
+        @contextlib.contextmanager
+        def local():
+            with identity.session(identity.LOCAL_USER) as conn:
+                yield conn
+        opener = local()
+    with opener as conn:
+        row = users.by_email(conn, args.user) or users.get(conn, args.user)
+        if row is None:
+            print(f"export: no user {args.user}", file=sys.stderr)
+            return 2
+        path = args.out or export.filename(row["id"])
+        size = export.write(conn, row["id"], path, row.get("email"))
+    print(f"wrote {path} ({size} bytes): {row.get('email') or row['id']}'s own data")
+    return 0
+
+
 def _worker_listening(port: int = 8140) -> bool:
     import socket
     try:
@@ -580,6 +613,12 @@ def main(argv=None):
     rt.add_argument("--dry-run", action="store_true", help="count what would be deleted; delete nothing")
     rt.add_argument("--days", type=int, help="override retention.days for this run")
     rt.set_defaults(fn=cmd_retention)
+
+    ex = sub.add_parser("export", help="one user's own data as a zip of JSON files (operators; users: /me/export)")
+    ex.add_argument("--user", required=True, metavar="EMAIL", help="the user's email (or id)")
+    ex.add_argument("--out", help="the zip to write (default salescoach-export-<id>-<date>.zip)")
+    ex.add_argument("--url", help="the owner role's postgresql:// URL (default: DATABASE_MIGRATE_URL)")
+    ex.set_defaults(fn=cmd_export)
 
     from . import plugins
     plugins.register_cli(sub)
