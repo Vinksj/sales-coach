@@ -46,7 +46,7 @@ log = logging.getLogger("salescoach.bus")
 
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_S = 30      # a failed event waits attempts x this before it is claimed again
-CLAIM_SCAN = 50           # Postgres: how many claimable candidates one claim looks at before giving up
+CLAIM_SCAN = 50           # Postgres: how many owners' best claimable events one claim looks at before giving up
 
 PRIORITY_INTERACTIVE = 10    # a person pressed a button and is waiting (redraft, retry, strategy, prep, coach)
 PRIORITY_NORMAL = 0          # a new call, an import, the daily duties
@@ -196,8 +196,13 @@ def _release_for_event(conn, event_id: str) -> None:
 
 
 def _claim_postgres(conn) -> Optional[Event]:
+    # One candidate per owner (that owner's best), then the best of those first. Listing the top CLAIM_SCAN
+    # events instead let one owner with CLAIM_SCAN or more events ahead of everyone else, one of them running
+    # under that owner's lock, fill the whole scan: every free worker found only locked candidates and other
+    # reps' events waited for the backlog to drain, the starvation the per-owner lock exists to prevent.
     candidates = conn.execute(
-        f"SELECT id, owner FROM wf_events WHERE {CLAIMABLE} ORDER BY priority DESC, id LIMIT ?",
+        f"SELECT id, owner FROM (SELECT DISTINCT ON (owner) id, owner, priority FROM wf_events WHERE {CLAIMABLE} "
+        f"ORDER BY owner, priority DESC, id) best ORDER BY priority DESC, id LIMIT ?",
         (MAX_ATTEMPTS, now(), CLAIM_SCAN)).fetchall()
     busy = set()
     for cand in candidates:
