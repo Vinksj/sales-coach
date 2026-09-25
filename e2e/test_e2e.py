@@ -548,6 +548,33 @@ def test_import_sqlite_round_trips_a_laptop_install(tmp_path):
     EVIDENCE["import_sqlite"] = S["import_counts"]
 
 
+# ---- 12. the other recorder: Fathom, for the rep who had none ------------------------------------------
+
+def test_a_rep_connecting_fathom_gets_their_own_call_from_it():
+    sys.path.insert(0, str(REPO / "tests"))
+    from recorder_fakes import fathom_meeting
+    when = datetime.fromtimestamp(time.time() - 1800, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    meeting = fathom_meeting("fm-77", C, NAMES[C], buyer=("Arjun Kumar", BUYER), when=when,
+                             title="Northwind follow-up")
+    fakes("POST", "/_control/recorder", json={"kind": "fathom", "key": "fathom-key-chitra", "meetings": [meeting]})
+    c = S[C]
+    r = c.post("/me/recorders/fathom/connect", {"api_key": "fathom-key-chitra"})
+    assert r.status_code == 303 and "Fathom connected" in flash(r), flash(r)
+    conn_id = q1("SELECT id FROM source_connections WHERE owner_id=%s AND kind='fathom'", uid(C))["id"]
+    r = c.post(f"/me/connections/{conn_id}/poll", {})
+    assert r.status_code == 303 and "1 imported" in flash(r), flash(r)
+    row = wait_until("C's Fathom call analysed", lambda: (lambda x: x if x and x["wf_state"] in
+                     ("awaiting_review", "failed") else None)(call_of(C)), timeout=120)
+    assert row["wf_state"] == "awaiting_review", row
+    assert row["source_ref"] == f"fathom:{uid(C)}:fm-77"
+    me = [t["text"] for t in q("SELECT channel, text FROM turns WHERE call_id=%s AND tier='final' ORDER BY idx",
+                               row["node_id"]) if t["channel"] == "me"]
+    assert me == ["Thanks for making time. I will send the pricing sheet by Friday."], me
+    assert S[M].get(f"/calls/{row['node_id']}").status_code == 200           # C is on M's team too
+    assert S[A].get(f"/calls/{row['node_id']}").status_code == 404
+    EVIDENCE["fathom"] = {"source_ref": row["source_ref"], "state": row["wf_state"]}
+
+
 EXPECTED_ERRORS = ("BudgetExceeded", "budget for today is used up")      # step 7's deferral, logged by the worker
 
 
