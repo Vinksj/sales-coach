@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from salescoach import config, repo
+from salescoach import config, identity, repo
 from salescoach.automation import common, replies, scheduler
 from salescoach.coach import settings
 from salescoach.coach.detectors import FastDetectors
@@ -126,14 +126,14 @@ def test_send_during_redraft_discards_the_new_draft(db, fake_llm, monkeypatch):
     call, v1 = _redrafting(db, fake_llm)
 
     def send_v1():
-        other = stores.sales()
-        try:
+        # The web thread's own connection and its own identity: the seller at the keyboard. It runs here
+        # inside the worker's call, whose context is the owner's background (service) session, so the
+        # web request's interactive session is opened explicitly, as the ActorGate would for a request.
+        with identity.session(identity.LOCAL_USER, mode=identity.INTERACTIVE) as other:
             review.update_email(other, v1["id"], v1["subject"], v1["body"].replace("[SLOTS]", "Tue 6 Oct, 11am"),
                                 ["arjun@northwind.test"], [])
             assert policy.approve_and_send(other, v1["id"], gmail)["status"] == "sent"
             review.email_done(other, call, sent=True)
-        finally:
-            other.close()
 
     monkeypatch.setattr(SecondDraftAgent, "during", staticmethod(send_v1))
     monkeypatch.setattr(workflow, "EmailAgent", SecondDraftAgent)

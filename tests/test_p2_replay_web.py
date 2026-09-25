@@ -100,8 +100,10 @@ def test_routes_are_registered(web, monkeypatch):
     monkeypatch.setattr(live_coach, "STREAM_MAX_S", 0.1)
     with client.stream("GET", "/coach/live/stream") as r:
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    # A call that does not exist answers 404, exactly like another rep's call: the isolation contract
+    # (docs/architecture.md, "Isolation") never lets a route say whether an id exists.
     r = client.get("/coach/live/call-nope/nudges")
-    assert r.status_code == 200 and r.json()["nudges"] == [] and r.json()["session"] is None
+    assert r.status_code == 404
     r = client.post("/coach/live/call-nope/nudges/1/dismiss", headers=ORIGIN)
     assert r.status_code == 404 and r.text == "no such nudge"
     r = client.get("/coach/live/call-nope")
