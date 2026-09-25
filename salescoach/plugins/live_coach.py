@@ -177,9 +177,12 @@ async def coach_stream(request: Request):
 
 @router.get("/coach/live/{call_id}/nudges")
 def coach_nudges(request: Request, call_id: str, session: str | None = None):
+    from .. import repo
     from ..coach import report
     conn = _db(request)
     try:
+        if repo.get_call(conn, call_id) is None:           # another user's call is no call (RLS): 404, not an empty list
+            raise HTTPException(404, "no such call")
         chosen, rows = report.rows(conn, call_id, session)
         return JSONResponse({"call_id": call_id, "session": chosen, "sessions": report.sessions(conn, call_id),
                              "summary": report.summarise(rows), "nudges": rows})

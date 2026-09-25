@@ -26,6 +26,8 @@ seller.render() put it there, which is the point.
 """
 import os
 import tempfile
+import threading
+import time
 import uuid
 import warnings
 from pathlib import Path
@@ -165,13 +167,19 @@ def _drop_leftover_schemas():
 def _create_test_schema(name):
     """As the OWNER role, the way a deployment migrates: CREATE SCHEMA, then every numbered migration."""
     from salescoach.store import pgmigrate
-    conn = _pg_admin()
-    try:
-        conn.execute(f'CREATE SCHEMA "{name}"')
-        conn.execute(f'SET search_path TO "{name}"')
-        pgmigrate.apply(conn)
-    finally:
-        conn.close()
+    for attempt in range(3):
+        conn = _pg_admin()
+        try:
+            conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{name}"')
+            conn.execute(f'SET search_path TO "{name}"')
+            pgmigrate.apply(conn)
+            return
+        except Exception as exc:                # a deadlock against another test's DROP SCHEMA: rare, retried
+            if attempt == 2 or "deadlock" not in str(exc).lower():
+                raise
+            time.sleep(0.2 * (attempt + 1))
+        finally:
+            conn.close()
 
 
 def _drop_test_schema(name):
@@ -202,12 +210,17 @@ def store_backend(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", APP_URL)               # the app connects as the app role ...
     monkeypatch.setenv("DATABASE_MIGRATE_URL", PG_URL)        # ... and migrates as the owner
     made = {}
+    lock = threading.Lock()
 
     def hook(url):
-        name = f"sc_test_{uuid.uuid4().hex[:12]}"
-        _create_test_schema(name)
-        stores._pg_schema = made["schema"] = name
-        return name
+        # One schema per test, whichever thread asks first (a duty thread a test started can race the
+        # test itself); a second caller gets the same schema, never a second one.
+        with lock:
+            if "schema" not in made:
+                name = f"sc_test_{uuid.uuid4().hex[:12]}"
+                _create_test_schema(name)
+                stores._pg_schema = made["schema"] = name
+            return made["schema"]
 
     monkeypatch.setattr(stores, "_pg_schema", None)
     monkeypatch.setattr(stores, "_pg_schema_hook", hook)
