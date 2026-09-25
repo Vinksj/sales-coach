@@ -28,7 +28,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from . import config
+from . import config, endpoints
 
 CLIENT_ID_ENV = "GOOGLE_CLIENT_ID"
 CLIENT_SECRET_ENV = "GOOGLE_CLIENT_SECRET"
@@ -39,6 +39,7 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs"          # google-auth's own default (x509)
 ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 
 SIGNIN_SCOPES = ("openid", "email", "profile")
@@ -108,6 +109,32 @@ def problems() -> list[str]:
     return out
 
 
+# ---- endpoints ------------------------------------------------------------------------------
+# The real URLs above, unless the end-to-end harness points them at its fake (salescoach/endpoints.py:
+# GOOGLE_OAUTH_BASE, honoured only with SALESCOACH_E2E=1; set without it, every call raises).
+
+def auth_url() -> str:
+    return endpoints.url(endpoints.GOOGLE_OAUTH_BASE, AUTH_URL, "/o/oauth2/v2/auth")
+
+
+def token_url() -> str:
+    return endpoints.url(endpoints.GOOGLE_OAUTH_BASE, TOKEN_URL, "/token")
+
+
+def revoke_url() -> str:
+    return endpoints.url(endpoints.GOOGLE_OAUTH_BASE, REVOKE_URL, "/revoke")
+
+
+def jwks_url() -> str:
+    return endpoints.url(endpoints.GOOGLE_OAUTH_BASE, JWKS_URL, "/oauth2/v3/certs")
+
+
+def certs_url() -> Optional[str]:
+    """google-auth's x509 certs URL when overridden; None = google-auth's own default (Google's)."""
+    base = endpoints.override(endpoints.GOOGLE_OAUTH_BASE)
+    return None if base is None else base + "/oauth2/v1/certs"
+
+
 # ---- HTTP ---------------------------------------------------------------------------------------
 
 def http() -> httpx.Client:
@@ -123,7 +150,7 @@ def exchange_code(code: str, redirect_uri: str, code_verifier: str) -> dict:
             "redirect_uri": redirect_uri, "grant_type": "authorization_code", "code_verifier": code_verifier}
     with http() as client:
         try:
-            response = client.post(TOKEN_URL, data=data)
+            response = client.post(token_url(), data=data)
         except httpx.HTTPError as exc:
             raise GoogleError(f"could not reach Google's token endpoint: {type(exc).__name__}") from exc
     return _token_response(response, "the code exchange")
@@ -136,7 +163,7 @@ def refresh_access_token(refresh_token: str) -> dict:
             "grant_type": "refresh_token"}
     with http() as client:
         try:
-            response = client.post(TOKEN_URL, data=data)
+            response = client.post(token_url(), data=data)
         except httpx.HTTPError as exc:
             raise GoogleError(f"could not reach Google's token endpoint: {type(exc).__name__}") from exc
     return _token_response(response, "the refresh")
@@ -147,7 +174,7 @@ def revoke(token: str) -> bool:
     longer knows: revoked already, or dead). Never raises: the row is deleted either way."""
     with http() as client:
         try:
-            response = client.post(REVOKE_URL, data={"token": token})
+            response = client.post(revoke_url(), data={"token": token})
         except httpx.HTTPError:
             return False
     return response.status_code == 200
@@ -169,7 +196,7 @@ def _token_response(response: httpx.Response, what: str) -> dict:
 def jwks() -> dict:
     with http() as client:
         try:
-            response = client.get(JWKS_URL)
+            response = client.get(jwks_url())
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -203,7 +230,7 @@ def authorization_url(redirect_uri: str, scopes, state: str, nonce: str, code_ch
         params["login_hint"] = login_hint
     if offline:
         params.update(access_type="offline", prompt="consent", include_granted_scopes="true")
-    return AUTH_URL + "?" + urlencode(params)
+    return auth_url() + "?" + urlencode(params)
 
 
 class Pending:
@@ -281,7 +308,15 @@ def independent_verify(id_token: str) -> dict:
     key fetch. It does NOT check hd or nonce; check_claims does. Tests replace this function."""
     from google.auth.transport.requests import Request
     from google.oauth2 import id_token as google_id_token
-    return google_id_token.verify_oauth2_token(id_token, Request(), client_id())
+    certs = certs_url()
+    if certs is None:
+        return google_id_token.verify_oauth2_token(id_token, Request(), client_id())
+    # The e2e harness's issuer: the same verification verify_oauth2_token does (signature, aud, exp, then
+    # the issuer), against the overridden certs URL.
+    info = google_id_token.verify_token(id_token, Request(), audience=client_id(), certs_url=certs)
+    if info.get("iss") not in ISSUERS:
+        raise GoogleError("the ID token did not verify: issuer")
+    return info
 
 
 def check_claims(claims: dict) -> dict:

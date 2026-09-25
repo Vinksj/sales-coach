@@ -1,0 +1,133 @@
+# End-to-end check of a cloud (team) install: the real image as web, worker and two schedulers against
+# Postgres, with every outside service faked in `fakes` (e2e/fakes/server.py). e2e/run.sh drives it:
+#   docker compose -p sc-e2e -f e2e/docker-compose.yml up -d --wait   (after `build`)
+# Host ports are bound to 127.0.0.1 only: web 18140, fakes 19000 (the "browser" reaches the fake Google
+# there), Postgres 15432 (the test inspects rows as the owner role). docs/deploy-cloud.md "End-to-end check".
+name: sc-e2e
+
+x-app-env: &app-env
+  SALESCOACH_MODE: cloud
+  DATABASE_URL: postgresql://salescoach_app:app-e2e@db:5432/salescoach
+  SALESCOACH_PUBLIC_URL: http://127.0.0.1:18140
+  SALESCOACH_SESSION_SECRET: e2e-session-secret-that-is-long-and-random-enough-0123456789
+  GOOGLE_CLIENT_ID: e2e-client.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET: e2e-client-secret
+  GOOGLE_ALLOWED_DOMAINS: tessel.test
+  SALESCOACH_BOOTSTRAP_ADMIN: admin@tessel.test
+  SALESCOACH_TOKEN_KEYS: "e2e1:ZTJlLXRva2VuLWtleS0zMi1ieXRlcy1sb25nLi4uLi4="
+  SALESCOACH_PG_POOL_SIZE: "6"
+  WORKER_CONCURRENCY: "2"
+  # The fakes. Honoured only because SALESCOACH_E2E=1 (salescoach/endpoints.py).
+  SALESCOACH_E2E: "1"
+  GOOGLE_OAUTH_BASE: http://fakes:9000
+  GOOGLE_API_BASE: http://fakes:9000
+  SALESCOACH_FIREFLIES_URL: http://fakes:9000/fireflies/graphql
+  SALESCOACH_FATHOM_BASE: http://fakes:9000/fathom/external/v1
+  LLM_API_KEY: e2e-llm-key
+
+x-app: &app
+  image: sc-e2e-app:latest
+  environment: *app-env
+  networks: [e2e]
+  # tmpfs, not the image's anonymous /data volume: a cloud process keeps nothing on disk, and nothing is
+  # left behind if a container is recreated.
+  tmpfs: [/data]
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+    fakes: {condition: service_healthy}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: salescoach_owner
+      POSTGRES_PASSWORD: owner-e2e
+      POSTGRES_DB: salescoach
+    ports: ["127.0.0.1:15432:5432"]
+    networks: [e2e]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salescoach_owner -d salescoach"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: sc-e2e-app:latest
+    build: {context: .., dockerfile: Dockerfile}
+    networks: [e2e]
+    environment:
+      DATABASE_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
+      IMPORT_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach_import
+    volumes: ["./migrate.py:/e2e/migrate.py:ro"]
+    tmpfs: [/data]
+    entrypoint: ["python", "/e2e/migrate.py"]
+    command: []
+    depends_on:
+      db: {condition: service_healthy}
+    restart: "no"
+
+  fakes:
+    image: sc-e2e-app:latest
+    networks:
+      e2e:
+        ipv4_address: 10.231.77.10      # the model provider's base URL must be a private address for plain http
+    ports: ["127.0.0.1:19000:9000"]
+    environment:
+      GOOGLE_CLIENT_ID: e2e-client.apps.googleusercontent.com
+      GOOGLE_CLIENT_SECRET: e2e-client-secret
+      GOOGLE_ALLOWED_DOMAINS: tessel.test
+      E2E_REDIRECT_PREFIX: http://127.0.0.1:18140/auth/
+      E2E_LIB: /e2e-lib
+      PORT: "9000"
+    volumes:
+      - ./fakes:/e2e/fakes:ro
+      - ../tests/recorder_fakes.py:/e2e-lib/recorder_fakes.py:ro
+    tmpfs: [/data]
+    entrypoint: ["python", "/e2e/fakes/server.py"]
+    command: []
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/_health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  web:
+    <<: *app
+    environment:
+      <<: *app-env
+      SALESCOACH_ROLE: web
+    ports: ["127.0.0.1:18140:8140"]
+    healthcheck:
+      test: ["CMD", "salescoach", "health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      SALESCOACH_ROLE: worker
+    healthcheck:
+      test: ["CMD", "salescoach", "health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  scheduler:
+    <<: *app
+    deploy: {replicas: 2}
+    environment:
+      <<: *app-env
+      SALESCOACH_ROLE: scheduler
+    healthcheck:
+      test: ["CMD", "salescoach", "health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  e2e:
+    ipam:
+      config:
+        - subnet: 10.231.77.0/24
