@@ -859,6 +859,64 @@ def _owner_keys(conn):
 MIGRATIONS[12] = _owner_keys
 
 
+# ---- 13 (2026-09-25, security review: derived outcomes are one owner's) ----------------------------------
+# derived_outcomes UNIQUE(kind, subject_type, subject_id) becomes UNIQUE(owner_id, kind, subject_type,
+# subject_id). outcomes.recompute reads and writes only the acting user's rows now; a row another user's
+# recompute wrote about the same subject (a manager's, before that fix) must not block or be overwritten by
+# the owner's own. Rebuilt like migration 12 (nothing references it by foreign key, no triggers, no views);
+# the DDL is frozen at version 13. The Postgres side is store/pg/0009_derived_outcomes_owner.sql.
+DERIVED_OUTCOMES_V13 = """CREATE TABLE derived_outcomes_v13 (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind         TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id   TEXT NOT NULL,
+  deal_id      TEXT,
+  value        INTEGER,
+  computed_at  TEXT NOT NULL,
+  details      TEXT NOT NULL DEFAULT '{}',
+  owner_id TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, kind, subject_type, subject_id)
+)"""
+DERIVED_OUTCOMES_V13_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_derived_outcomes_owner_id ON derived_outcomes(owner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON derived_outcomes(deal_id, kind)",
+)
+
+
+def _derived_outcomes_owner(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 13:     # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "derived_outcomes" in tables and not _unique_has_owner(conn, "derived_outcomes"):
+            new = "derived_outcomes_v13"
+            before = conn.execute("SELECT COUNT(*) FROM derived_outcomes").fetchone()[0]
+            conn.execute(f"DROP TABLE IF EXISTS {new}")
+            conn.execute(DERIVED_OUTCOMES_V13)
+            old = set(_columns(conn, "derived_outcomes"))
+            cols = [c for c in _columns(conn, new) if c in old]
+            conn.execute(f"INSERT INTO {new}({', '.join(cols)}) SELECT {', '.join(cols)} FROM derived_outcomes")
+            conn.execute("DROP TABLE derived_outcomes")
+            conn.execute(f"ALTER TABLE {new} RENAME TO derived_outcomes")
+            for index in DERIVED_OUTCOMES_V13_INDEXES:
+                conn.execute(index)
+            after = conn.execute("SELECT COUNT(*) FROM derived_outcomes").fetchone()[0]
+            if after != before:
+                raise sqlite3.IntegrityError(f"derived_outcomes rebuild copied {after} of {before} rows")
+        conn.execute("PRAGMA user_version = 13")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[13] = _derived_outcomes_owner
+
+
 def run(conn):
     """Apply every step above the database's version, in order; the version ends at the highest step
     applied."""

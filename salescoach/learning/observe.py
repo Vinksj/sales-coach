@@ -34,6 +34,13 @@ def _has(conn, table: str) -> bool:
     return conn.table_exists(table)
 
 
+def _me(conn) -> str:
+    """Whose observations these are: the ACTING user. Every collector reads only their rows: on Postgres a
+    manager's interactive session can read the team's rows too, and sync() would otherwise store a rep's
+    facts as the manager's own observations."""
+    return identity.actor_of(conn).user_id
+
+
 def _row(family, key, subject, **kw) -> dict:
     row = {c: None for c in COLUMNS}
     row.update(family=family, key=key, subject=subject, source_is_replay=0, evidence={})
@@ -46,7 +53,8 @@ def _row(family, key, subject, **kw) -> dict:
 def seller(conn) -> list[dict]:
     rows: dict[tuple, dict] = {}
     for o in conn.execute("SELECT o.*, c.deal_id, c.started_at FROM seller_observations o "
-                          "JOIN calls c ON c.node_id=o.call_id ORDER BY o.id"):
+                          "JOIN calls c ON c.node_id=o.call_id WHERE o.owner_id=? AND c.owner_id=? ORDER BY o.id",
+                          (_me(conn), _me(conn))):
         k = (o["tag"], o["call_id"])
         turns = json.loads(o["evidence_turns"] or "[]")
         if k in rows:
@@ -67,13 +75,13 @@ def final_snapshots(conn) -> dict:
     one, else the newest replay's (a replay reads the same transcript, so its numbers are the same facts)."""
     if not _has(conn, "coach_state"):
         return {}
-    modes = {}
+    modes, me = {}, _me(conn)
     if _has(conn, "nudges"):
         modes = {(r["call_id"], r["session"]): r["mode"] for r in conn.execute(
-            "SELECT DISTINCT call_id, session, mode FROM nudges")}
+            "SELECT DISTINCT call_id, session, mode FROM nudges WHERE owner_id=?", (me,))}
     best: dict[str, dict] = {}
-    for r in conn.execute("SELECT id, call_id, session, t_call, json FROM coach_state WHERE json LIKE '%\"final\"%' "
-                          "ORDER BY id"):
+    for r in conn.execute("SELECT id, call_id, session, t_call, json FROM coach_state WHERE owner_id=? "
+                          "AND json LIKE '%\"final\"%' ORDER BY id", (me,)):
         try:
             snap = json.loads(r["json"])
         except ValueError:
@@ -92,7 +100,8 @@ def _two_channel_calls(conn) -> dict:
     """Calls whose me/them split is real: live captures and stereo (me left) audio imports."""
     out = {}
     for c in conn.execute("SELECT c.node_id, c.deal_id, c.source, c.started_at, s.lineage FROM calls c "
-                          "LEFT JOIN sources s ON s.node_id=c.node_id WHERE c.source IN ('capture','audio_file')"):
+                          "LEFT JOIN sources s ON s.node_id=c.node_id WHERE c.owner_id=? "
+                          "AND c.source IN ('capture','audio_file')", (_me(conn),)):
         if c["source"] == "audio_file":
             try:
                 lineage = json.loads(c["lineage"] or "[]")
@@ -133,8 +142,8 @@ def seller_series(conn, snapshots=None) -> list[dict]:
 def email_voice(conn) -> list[dict]:
     settings, rows, seen = cfg("email_voice"), [], set()
     for e in conn.execute("SELECT ee.id, ee.email_id, ee.draft_body, ee.final_body, ee.created_at, m.deal_id, m.call_id, "
-                          "m.sent_at FROM email_edits ee JOIN emails m ON m.id=ee.email_id WHERE m.status='sent' "
-                          "ORDER BY ee.id DESC"):
+                          "m.sent_at FROM email_edits ee JOIN emails m ON m.id=ee.email_id WHERE ee.owner_id=? "
+                          "AND m.owner_id=? AND m.status='sent' ORDER BY ee.id DESC", (_me(conn), _me(conn))):
         if e["email_id"] in seen:                     # one edit per sent email: the last one
             continue
         seen.add(e["email_id"])
@@ -159,13 +168,13 @@ def gap_bucket(days: int, buckets) -> str | None:
 def followup(conn) -> list[dict]:
     if not _has(conn, "followup_decisions"):
         return []
-    buckets = cfg("followup").get("gap_buckets")
+    buckets, me = cfg("followup").get("gap_buckets"), _me(conn)
     replied = {r["subject_id"]: r["value"] for r in conn.execute(
-        "SELECT subject_id, value FROM derived_outcomes WHERE kind='email_replied'")}
-    nudges = conn.execute("SELECT * FROM emails WHERE kind='nudge' AND status='sent' AND sent_at IS NOT NULL "
-                          "ORDER BY sent_at, id").fetchall()
+        "SELECT subject_id, value FROM derived_outcomes WHERE owner_id=? AND kind='email_replied'", (me,))}
+    nudges = conn.execute("SELECT * FROM emails WHERE owner_id=? AND kind='nudge' AND status='sent' "
+                          "AND sent_at IS NOT NULL ORDER BY sent_at, id", (me,)).fetchall()
     loop_of = {r["email_id"]: r["loop_id"] for r in conn.execute(
-        "SELECT email_id, loop_id FROM followup_decisions WHERE email_id IS NOT NULL ORDER BY id")}
+        "SELECT email_id, loop_id FROM followup_decisions WHERE owner_id=? AND email_id IS NOT NULL ORDER BY id", (me,))}
     per_loop: dict[str, int] = {}
     rows = []
     for e in nudges:
@@ -177,12 +186,12 @@ def followup(conn) -> list[dict]:
             facts["seq"] = str(min(per_loop[loop_id], 4)) + ("+" if per_loop[loop_id] >= 4 else "")
         if e["deal_id"]:
             touches = [r[0] for r in conn.execute(
-                "SELECT sent_at FROM emails WHERE deal_id=? AND status='sent' AND id!=? AND sent_at<? "
-                "UNION ALL SELECT started_at FROM calls WHERE deal_id=? AND started_at<?",
-                (e["deal_id"], e["id"], e["sent_at"], e["deal_id"], e["sent_at"]))]
+                "SELECT sent_at FROM emails WHERE owner_id=? AND deal_id=? AND status='sent' AND id!=? AND sent_at<? "
+                "UNION ALL SELECT started_at FROM calls WHERE owner_id=? AND deal_id=? AND started_at<?",
+                (me, e["deal_id"], e["id"], e["sent_at"], me, e["deal_id"], e["sent_at"]))]
             if _has(conn, "email_replies"):
-                touches += [r[0] for r in conn.execute("SELECT received_at FROM email_replies WHERE deal_id=?",
-                                                       (e["deal_id"],))]
+                touches += [r[0] for r in conn.execute("SELECT received_at FROM email_replies WHERE owner_id=? "
+                                                       "AND deal_id=?", (me, e["deal_id"]))]
             before = [t for t in (common.ts(x) for x in touches) if t is not None and t < sent]
             if before:
                 gap = gap_bucket((common.ist_date(sent) - common.ist_date(max(before))).days, buckets)
@@ -191,7 +200,8 @@ def followup(conn) -> list[dict]:
             to = [a.lower() for a in json.loads(e["to_addrs"] or "[]")]
             if to:
                 role = conn.execute("SELECT dp.role_in_deal FROM deal_people dp JOIN people p ON p.node_id=dp.person_id "
-                                    "WHERE dp.deal_id=? AND lower(p.email)=?", (e["deal_id"], to[0])).fetchone()
+                                    "WHERE dp.owner_id=? AND dp.deal_id=? AND lower(p.email)=?",
+                                    (me, e["deal_id"], to[0])).fetchone()
                 slug = re.sub(r"[^a-z0-9]+", "_", (role[0] or "").lower()).strip("_") if role else ""
                 if slug:
                     facts["role"] = slug
@@ -212,7 +222,7 @@ def nudge_trigger(conn) -> list[dict]:
     rows = []
     for n in conn.execute("SELECT n.id, n.call_id, n.session, n.mode, n.trigger, n.outcome, n.dismissed, n.t_call, "
                           "n.shown_wall, n.created_at, c.deal_id FROM nudges n LEFT JOIN calls c ON c.node_id=n.call_id "
-                          "WHERE n.shown=1 ORDER BY n.id"):
+                          "WHERE n.owner_id=? AND n.shown=1 ORDER BY n.id", (_me(conn),)):
         outcome = "dismissed" if n["dismissed"] else (n["outcome"] or "unknown")
         rows.append(_row("nudge_trigger", n["trigger"], f"nudge:{n['id']}", nudge_id=n["id"], call_id=n["call_id"],
                          deal_id=n["deal_id"], outcome_kind="nudge_outcome", outcome_value=outcome,
@@ -234,7 +244,7 @@ def persona_bucket(title: str | None, buckets: dict | None = None) -> str | None
 def persona(conn) -> list[dict]:
     own, buckets, rows = _own_domains(conn), cfg("persona_buckets"), []
     for p in conn.execute("SELECT dp.deal_id, dp.role_in_deal, p.node_id, p.title, p.email FROM deal_people dp "
-                          "JOIN people p ON p.node_id=dp.person_id WHERE p.is_me=0"):
+                          "JOIN people p ON p.node_id=dp.person_id WHERE dp.owner_id=? AND p.is_me=0", (_me(conn),)):
         domain = (p["email"] or "").rsplit("@", 1)[-1].lower()
         if domain and domain in own:
             continue
@@ -248,7 +258,8 @@ def persona(conn) -> list[dict]:
 def objection(conn, snapshots=None) -> list[dict]:
     snapshots = final_snapshots(conn) if snapshots is None else snapshots
     rows: dict[tuple, dict] = {}
-    calls = {c["node_id"]: c for c in conn.execute("SELECT node_id, deal_id, started_at FROM calls")}
+    me = _me(conn)
+    calls = {c["node_id"]: c for c in conn.execute("SELECT node_id, deal_id, started_at FROM calls WHERE owner_id=?", (me,))}
     for call_id, held in snapshots.items():
         call = calls.get(call_id)
         if call is None:
@@ -267,8 +278,8 @@ def objection(conn, snapshots=None) -> list[dict]:
     subjects = cfg("objection").get("claim_subjects") or {}
     if subjects:
         marks = ",".join("?" * len(subjects))
-        for c in conn.execute(f"SELECT id, call_id, deal_id, subject, confidence FROM claims WHERE call_id IS NOT NULL "
-                              f"AND subject IN ({marks}) ORDER BY id", tuple(subjects)):
+        for c in conn.execute(f"SELECT id, call_id, deal_id, subject, confidence FROM claims WHERE owner_id=? "
+                              f"AND call_id IS NOT NULL AND subject IN ({marks}) ORDER BY id", (me, *subjects)):
             call = calls.get(c["call_id"])
             if call is None:
                 continue
@@ -301,8 +312,9 @@ def sync(conn) -> dict:
         for r in rows:
             wanted[(r["family"], r["key"], r["subject"])] = r
     # The acting user's own rows only: UNIQUE(owner_id, family, key, subject), and on Postgres the read policy
-    # also shows a manager their team's rows, which this sync must neither update nor delete.
-    owner = identity.actor_of(conn).user_id
+    # also shows a manager their team's rows, which this sync must neither update nor delete (and which the
+    # collectors above never read: every one of them is limited to _me(conn)).
+    owner = _me(conn)
     have = {(r["family"], r["key"], r["subject"]): r
             for r in conn.execute("SELECT * FROM pattern_observations WHERE owner_id=?", (owner,))}
     sid, stamp, added, updated = seller_id(conn), now(), 0, 0

@@ -8,7 +8,7 @@ Two halves:
                        explicit confirm; lost needs a reason.
 
   recompute()          derived_outcomes, rebuilt from rows already in the store. Code
-                       only, idempotent (UNIQUE(kind, subject_type, subject_id); a row is
+                       only, idempotent (UNIQUE(owner_id, kind, subject_type, subject_id); a row is
                        rewritten only when its value or details changed):
 
     email_replied        a buyer reply in the email's thread within N business days
@@ -145,14 +145,21 @@ def stage_history(conn, deal_id: str) -> list[dict]:
 
 # ---- derived outcomes -----------------------------------------------------------------
 
+def _me(conn) -> str:
+    """Whose outcomes these are: the ACTING user (never a viewed rep: recompute writes). Every read below is
+    limited to their rows. On Postgres a manager's interactive session can read the team's rows too, and a
+    recompute that saw them would write facts about a rep's email or call as the manager's own rows."""
+    return identity.actor_of(conn).user_id
+
+
 class _Writer:
     """Upserts that leave an unchanged row (and its computed_at) alone, and drop rows whose subject
-    no longer qualifies, so running recompute twice is a no-op."""
+    no longer qualifies, so running recompute twice is a no-op. The acting user's rows only."""
 
     def __init__(self, conn):
-        self.conn, self.seen, self.written = conn, set(), 0
+        self.conn, self.seen, self.written, self.owner = conn, set(), 0, _me(conn)
         self.have = {(r["kind"], r["subject_type"], r["subject_id"]): r
-                     for r in conn.execute("SELECT * FROM derived_outcomes")}
+                     for r in conn.execute("SELECT * FROM derived_outcomes WHERE owner_id=?", (self.owner,))}
 
     def put(self, kind, subject_type, subject_id, deal_id, value, details: dict):
         key = (kind, subject_type, str(subject_id))
@@ -162,16 +169,17 @@ class _Writer:
         if old is not None and old["value"] == value and old["details"] == blob and old["deal_id"] == deal_id:
             return
         self.conn.execute(
-            "INSERT INTO derived_outcomes(kind,subject_type,subject_id,deal_id,value,computed_at,details) "
-            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(kind,subject_type,subject_id) DO UPDATE SET "
+            "INSERT INTO derived_outcomes(kind,subject_type,subject_id,deal_id,value,computed_at,details,owner_id) "
+            "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(owner_id,kind,subject_type,subject_id) DO UPDATE SET "
             "deal_id=excluded.deal_id, value=excluded.value, computed_at=excluded.computed_at, details=excluded.details",
-            (*key, deal_id, value, now(), blob))
+            (*key, deal_id, value, now(), blob, self.owner))
         self.written += 1
 
     def prune(self) -> int:
         stale = [k for k in self.have if k not in self.seen and k[0] in KINDS]
         for k in stale:
-            self.conn.execute("DELETE FROM derived_outcomes WHERE kind=? AND subject_type=? AND subject_id=?", k)
+            self.conn.execute("DELETE FROM derived_outcomes WHERE owner_id=? AND kind=? AND subject_type=? AND subject_id=?",
+                              (self.owner, *k))
         return len(stale)
 
 
@@ -181,7 +189,8 @@ def business_deadline(sent: date, days: int) -> date:
 
 
 def _sent_emails(conn):
-    return conn.execute("SELECT * FROM emails WHERE status='sent' AND sent_at IS NOT NULL ORDER BY sent_at, id").fetchall()
+    return conn.execute("SELECT * FROM emails WHERE owner_id=? AND status='sent' AND sent_at IS NOT NULL "
+                        "ORDER BY sent_at, id", (_me(conn),)).fetchall()
 
 
 def _email_replied(conn, w: _Writer, today: date, emails) -> None:
@@ -191,7 +200,8 @@ def _email_replied(conn, w: _Writer, today: date, emails) -> None:
         if e["gmail_thread_id"]:
             by_thread.setdefault(e["gmail_thread_id"], []).append(e)
     credited: dict[int, list] = {}
-    for r in conn.execute("SELECT id, thread_id, email_id, received_at FROM email_replies ORDER BY received_at, id"):
+    for r in conn.execute("SELECT id, thread_id, email_id, received_at FROM email_replies WHERE owner_id=? "
+                          "ORDER BY received_at, id", (_me(conn),)):
         got = common.ts(r["received_at"])
         ours = [e for e in by_thread.get(r["thread_id"], []) if got and common.ts(e["sent_at"]) <= got]
         # A reply answers the latest email of ours that was already out when it arrived.
@@ -217,7 +227,7 @@ def _meeting_after_email(conn, w: _Writer, today: date, emails) -> None:
         return
     meetings: dict[str, list] = {}
     for m in conn.execute("SELECT event_id, deal_id, start_at, first_seen_at FROM calendar_meetings "
-                          "WHERE deal_id IS NOT NULL ORDER BY first_seen_at"):
+                          "WHERE owner_id=? AND deal_id IS NOT NULL ORDER BY first_seen_at", (_me(conn),)):
         meetings.setdefault(m["deal_id"], []).append(m)
     for e in emails:
         if not e["deal_id"]:
@@ -237,8 +247,8 @@ def _loop_on_time(conn, w: _Writer, today: date) -> dict:
     """Returns {loop_id: 1|0|None} for the call_advanced pass."""
     verdicts = {}
     for l in conn.execute("SELECT node_id, deal_id, owner, status, due_date, closed_at FROM loops "
-                          "WHERE due_date IS NOT NULL AND review_state!='rejected' "
-                          "AND status IN ('open','waiting','done')"):
+                          "WHERE owner_id=? AND due_date IS NOT NULL AND review_state!='rejected' "
+                          "AND status IN ('open','waiting','done')", (_me(conn),)):
         try:
             due = date.fromisoformat(l["due_date"][:10])
         except ValueError:
@@ -262,7 +272,7 @@ def _own_domains(conn) -> set:
 def _buyer_side(conn, call_id, own) -> dict:
     out = {}
     for p in conn.execute("SELECT p.node_id, p.email FROM call_participants cp JOIN people p ON p.node_id=cp.person_id "
-                          "WHERE cp.call_id=? AND p.is_me=0", (call_id,)):
+                          "WHERE cp.owner_id=? AND cp.call_id=? AND p.is_me=0", (_me(conn), call_id)):
         domain = (p["email"] or "").rsplit("@", 1)[-1].lower() if p["email"] else ""
         if not domain or domain not in own:
             out[p["node_id"]] = True
@@ -276,7 +286,7 @@ def _strategist_runs(conn) -> dict:
     """{deal_id: [(run_id, methodology key)]}, oldest first: the successful strategist runs of each deal."""
     out: dict[str, list] = {}
     for r in conn.execute("SELECT r.id, r.input_refs, c.deal_id FROM agent_runs r LEFT JOIN calls c ON c.node_id=r.call_id "
-                          "WHERE r.agent='deal_strategist' AND r.status='ok' ORDER BY r.id"):
+                          "WHERE r.owner_id=? AND r.agent='deal_strategist' AND r.status='ok' ORDER BY r.id", (_me(conn),)):
         try:
             refs = json.loads(r["input_refs"] or "{}")
         except ValueError:
@@ -305,29 +315,31 @@ def _created_under_same_methodology(ev, runs: list) -> bool:
 
 
 def _call_advanced(conn, w: _Writer, loop_verdicts: dict) -> None:
-    own = _own_domains(conn)
-    analysed = {r[0] for r in conn.execute("SELECT DISTINCT call_id FROM artifacts WHERE kind='analysis'")}
+    own, me = _own_domains(conn), _me(conn)
+    analysed = {r[0] for r in conn.execute("SELECT DISTINCT call_id FROM artifacts WHERE owner_id=? AND kind='analysis'",
+                                           (me,))}
     run_call = {f"run:{r['id']}": r["call_id"] for r in conn.execute(
-        "SELECT id, call_id FROM agent_runs WHERE call_id IS NOT NULL")}
+        "SELECT id, call_id FROM agent_runs WHERE owner_id=? AND call_id IS NOT NULL", (me,))}
     strategist_runs = _strategist_runs(conn)
     by_deal: dict[str, list] = {}
-    for c in conn.execute("SELECT node_id, deal_id, started_at FROM calls WHERE deal_id IS NOT NULL "
-                          "AND started_at IS NOT NULL ORDER BY started_at, node_id"):
+    for c in conn.execute("SELECT node_id, deal_id, started_at FROM calls WHERE owner_id=? AND deal_id IS NOT NULL "
+                          "AND started_at IS NOT NULL ORDER BY started_at, node_id", (me,)):
         by_deal.setdefault(c["deal_id"], []).append(c)
     has_intel = conn.table_exists("meddpicc")
 
     for deal_id, calls in by_deal.items():
         element_events, stakeholder_events = [], []
         if has_intel:
-            for ev in conn.execute("SELECT ts, kind, node_id, before, after, source_id FROM events WHERE node_id LIKE ? "
+            for ev in conn.execute("SELECT ts, kind, node_id, before, after, source_id FROM events WHERE owner_id=? "
+                                   "AND node_id LIKE ? "
                                    "AND kind IN ('meddpicc_status_changed','meddpicc_created','stakeholders_created') "
-                                   "ORDER BY id", (f"{deal_id}:%",)):
+                                   "ORDER BY id", (me, f"{deal_id}:%")):
                 (stakeholder_events if ev["kind"] == "stakeholders_created" else element_events).append(ev)
-        loops = conn.execute("SELECT node_id, call_id, owner, closed_at FROM loops WHERE deal_id=? AND owner='prospect' "
-                             "AND status='done'", (deal_id,)).fetchall()
+        loops = conn.execute("SELECT node_id, call_id, owner, closed_at FROM loops WHERE owner_id=? AND deal_id=? "
+                             "AND owner='prospect' AND status='done'", (me, deal_id)).fetchall()
         loop_prov = {r["entity_id"]: json.loads(r["provenance"] or "{}") for r in conn.execute(
-            "SELECT entity_id, provenance FROM field_provenance WHERE field='status' AND entity_id IN "
-            "(SELECT node_id FROM loops WHERE deal_id=?)", (deal_id,))}
+            "SELECT entity_id, provenance FROM field_provenance WHERE owner_id=? AND field='status' AND entity_id IN "
+            "(SELECT node_id FROM loops WHERE owner_id=? AND deal_id=?)", (me, me, deal_id))}
         seen_people: set = set()
         for i, call in enumerate(calls):
             here = _buyer_side(conn, call["node_id"], own)
@@ -380,7 +392,8 @@ def _call_advanced(conn, w: _Writer, loop_verdicts: dict) -> None:
 
 
 def recompute(conn, today: date | None = None) -> dict:
-    """Rebuild derived_outcomes. Safe to call any number of times; does not commit."""
+    """Rebuild the acting user's derived_outcomes from their own rows. Safe to call any number of times;
+    does not commit."""
     today = today or common.today_ist()
     w = _Writer(conn)
     emails = _sent_emails(conn)

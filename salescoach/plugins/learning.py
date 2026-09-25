@@ -41,13 +41,19 @@ def digest(conn, since) -> dict:
 
 def run_recompute(conn, trigger: str = "manual") -> dict:
     """outcomes.recompute then patterns.recompute, committed together. Never raises."""
+    from .. import identity
     from ..learning import outcomes, patterns
     from ..store.stores import now, set_user_state as set_state
     try:
         if conn.in_transaction:
             conn.commit()
-        result = {"trigger": trigger, "at": now(), "outcomes": outcomes.recompute(conn),
-                  "patterns": patterns.recompute(conn)}
+        # The acting user's own learning, whoever asked (a manager's button on their own Learning page too).
+        # A SERVICE binding makes the database agree: on Postgres a service session reads only the actor's own
+        # rows, so a collector that forgot its owner filter still cannot see (and copy) a team member's rows.
+        actor = identity.actor_of(conn)
+        with identity.as_actor(conn, actor.as_service()):
+            result = {"trigger": trigger, "at": now(), "outcomes": outcomes.recompute(conn),
+                      "patterns": patterns.recompute(conn)}
         set_state(conn, "learning:last_run", json.dumps(result, default=str)[:4000])
         set_state(conn, "learning:last_error", "")
         conn.commit()

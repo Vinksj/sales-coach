@@ -451,6 +451,8 @@ def resolved_weights() -> dict:
 
 
 def _propose_trigger_weights(conn) -> int:
+    if identity.cloud():                   # the weights are one org-wide setting there: nothing personal to propose
+        return 0
     rule = cfg("nudge_trigger")
     weights = resolved_weights()
     made = 0
@@ -487,9 +489,20 @@ def open_proposals(conn) -> list[dict]:
     return out
 
 
+TRIGGER_WEIGHT_ORG_WIDE = ("In a hosted install the live-coach weights are one setting for the whole org, not yours "
+                           "alone, so this proposal cannot be applied from here. Dismiss it; an admin can change the "
+                           "weight in Settings if the whole team should get it.")
+
+
 def _apply_trigger_weight(payload: dict) -> str:
     """Write the accepted weight into the user's settings overlay (live_coach.yaml under config.user_dir()),
-    keeping whatever else they set there. The tracked config is never edited."""
+    keeping whatever else they set there. The tracked config is never edited.
+
+    Cloud mode has no per-user overlay: config.save_user writes the ORG's settings row, which a rep may not
+    write (a 500) and an admin would change for everyone from a proposal about their own nudges. Refused there,
+    with a message; no trigger-weight proposal is opened in cloud mode in the first place."""
+    if identity.cloud():
+        raise ActionRefused(TRIGGER_WEIGHT_ORG_WIDE)
     overlay = config.load_user("live_coach")
     overlay.setdefault("scoring", {}).setdefault("weights", {})[payload["trigger"]] = payload["proposed_weight"]
     config.save_user("live_coach", overlay)

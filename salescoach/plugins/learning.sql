@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS derived_outcomes (
   computed_at  TEXT NOT NULL,
   details      TEXT NOT NULL DEFAULT '{}',
   owner_id TEXT NOT NULL DEFAULT 'local',
-  UNIQUE(kind, subject_type, subject_id)
+  UNIQUE(owner_id, kind, subject_type, subject_id)
 );
 CREATE INDEX IF NOT EXISTS idx_derived_outcomes_owner_id ON derived_outcomes(owner_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON derived_outcomes(deal_id, kind);
