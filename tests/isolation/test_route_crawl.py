@@ -48,6 +48,7 @@ NOT_A_USERS_OBJECT = {
     "/admin/users/{user_id}/disable": "a person in the org directory (admin only)",
     "/admin/users/{user_id}/enable": "a person in the org directory (admin only)",
     "/admin/users/{user_id}/logout": "a person in the org directory (admin only)",
+    "/admin/users/{user_id}/offboard": "a person in the org directory (admin only)",
 }
 
 # Minimal valid bodies for POST routes that validate their form before looking the object up.

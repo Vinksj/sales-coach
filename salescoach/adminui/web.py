@@ -6,6 +6,8 @@
   POST /admin/users/{id}/disable        ends every session and Google grant at once
   POST /admin/users/{id}/enable
   POST /admin/users/{id}/logout         log that user out everywhere
+  POST /admin/users/{id}/offboard       mode=reassign (to_user_id) | purge, confirm=<their email>: the rep
+                                        leaves (lifecycle/offboard.py); disabled, signed out, grants revoked
   POST /admin/teams                     name
   POST /admin/teams/{id}                name (rename)
   POST /admin/teams/{id}/managers       manager ids (multi)
@@ -92,6 +94,26 @@ def admin_user_enable(request: Request, user_id: str):
 def admin_user_logout(request: Request, user_id: str):
     return _do(request, lambda conn: ops.logout_everywhere(conn, user_id),
                lambda n: f"Signed out of {n} browser{'' if n == 1 else 's'}.", anchor="users")
+
+
+def _offboarded(result: dict) -> str:
+    moved = sum(result["counts"].values())
+    return (f"Offboarded: {moved} row{'' if moved == 1 else 's'} changed; signed out of {result['sessions_revoked']} "
+            f"browser{'' if result['sessions_revoked'] == 1 else 's'}, Google access revoked, user disabled.")
+
+
+@router.post(PATH + "/users/{user_id}/offboard")
+def admin_user_offboard(request: Request, user_id: str, mode: str = Form(""), to_user_id: str = Form(""),
+                        confirm: str = Form("")):
+    def act(conn):
+        from .. import users
+        row = users.get(conn, user_id)
+        if row is None:
+            raise ops.AdminError("no such user")
+        if (confirm or "").strip().lower() != (row["email"] or row["id"]).lower():
+            raise ops.AdminError("type the person's email address to confirm: offboarding cannot be undone")
+        return ops.offboard(conn, user_id, mode, to_user_id or None)
+    return _do(request, act, _offboarded, anchor="users")
 
 
 @router.post(PATH + "/teams")

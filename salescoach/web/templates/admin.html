@@ -48,6 +48,22 @@
         {% endif %}
         {% endif %}
         {% if u.sessions %}<form method="post" action="/admin/users/{{ u.id }}/logout" class="inline"><button class="btn btn-sm btn-quiet" type="submit">Log out everywhere</button></form>{% endif %}
+        {% if is_cloud and u.id != me_user_id() %}
+        <details class="offboard" id="offboard-{{ u.id }}">
+          <summary class="btn btn-sm btn-quiet">Offboard</summary>
+          <form method="post" action="/admin/users/{{ u.id }}/offboard" class="stack">
+            <label class="inline"><input type="radio" name="mode" value="reassign" checked> Hand their work to
+              <select name="to_user_id" aria-label="Who receives {{ u.email }}'s work">
+                <option value="">choose a rep</option>
+                {% for r in receivers if r.id != u.id %}<option value="{{ r.id }}">{{ r.name or r.email }}</option>{% endfor %}
+              </select></label>
+            <label class="inline"><input type="radio" name="mode" value="purge"> Delete all of their work</label>
+            <p class="meta">Either way they are disabled, signed out everywhere and their Google access is revoked. Handing over moves every call, deal, loop and email (with the comments on them) to that rep; what describes the person (their coaching patterns, calendar, recorder account, the coaching notes about them) is deleted. Neither can be undone.</p>
+            <label>Type {{ u.email or u.id }} to confirm <input name="confirm" autocomplete="off" required></label>
+            <button class="btn btn-sm btn-primary" type="submit">Offboard</button>
+          </form>
+        </details>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

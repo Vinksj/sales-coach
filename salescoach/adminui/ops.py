@@ -100,6 +100,16 @@ def enable(conn, user_id: str) -> dict:
     return after
 
 
+def offboard(conn, user_id: str, mode: str, to_user_id: Optional[str] = None) -> dict:
+    """A rep leaves: their work goes to another active rep (reassign) or is deleted (purge); either way they are
+    disabled and signed out of everything (lifecycle/offboard.py, which audits it)."""
+    from ..lifecycle import offboard as lifecycle_offboard
+    try:
+        return lifecycle_offboard.offboard(conn, user_id, mode, to_user_id or None)
+    except lifecycle_offboard.OffboardError as exc:
+        raise AdminError(str(exc)) from exc
+
+
 def logout_everywhere(conn, user_id: str) -> int:
     if users.get(conn, user_id) is None:
         raise AdminError("no such user")
@@ -178,4 +188,5 @@ def overview(conn) -> dict:
     team_rows = [{**t, "managers": [by_id.get(m, {"id": m, "name": m, "email": None}) for m in users.managers_of(conn, t["id"])],
                   "members": [u for u in rows if u["team_id"] == t["id"]]} for t in teams.values()]
     return {"users": rows, "teams": team_rows, "roles": users.ROLES,
+            "receivers": [u for u in rows if u["role"] == "rep" and u["status"] == "active"],
             "candidates": [u for u in rows if u["role"] in ("manager", "admin") and u["status"] != "disabled"]}
