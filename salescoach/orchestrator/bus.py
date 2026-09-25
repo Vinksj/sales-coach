@@ -81,13 +81,25 @@ def publish(conn, event: Event, priority: int = PRIORITY_NORMAL) -> bool:
     """Store an event. Returns False when its dedupe_key was already published.
 
     ON CONFLICT DO NOTHING, not a caught IntegrityError: on Postgres a failed statement aborts the
-    caller's open transaction, and the caller has state changes in it."""
+    caller's open transaction, and the caller has state changes in it.
+
+    The bus is the one table every connection may write (store/rls.py), and the worker handles an event
+    AS its owner. So a person at the keyboard (interactive mode) may only queue work on their own objects:
+    a manager who can read a rep's call cannot queue its redraft (manager/access.ReadOnly). Background
+    duties publish as the owner they run for; nothing else is refused here. Cloud mode only (a local
+    install has one user; its CLI and tests queue work for any owner id they like)."""
+    owner = owner_for(conn, event)
+    if identity.cloud():
+        actor = getattr(conn, "actor", None) or identity.current_actor(required=False)
+        if (actor is not None and actor.mode == identity.INTERACTIVE and owner is not None
+                and owner != actor.user_id):
+            from ..manager.access import ReadOnly
+            raise ReadOnly(owner, "this")
     cur = conn.execute(
         "INSERT INTO wf_events(event_id,type,entity_id,payload,causation_id,dedupe_key,status,created_at,updated_at,"
         "priority,owner) VALUES (?,?,?,?,?,?, 'pending', ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING",
         (event.event_id, event.type, event.entity_id, json.dumps(event.payload),
-         event.causation_id, event.dedupe_key, event.occurred_at or now(), now(), int(priority),
-         owner_for(conn, event)))
+         event.causation_id, event.dedupe_key, event.occurred_at or now(), now(), int(priority), owner))
     return cur.rowcount > 0
 
 

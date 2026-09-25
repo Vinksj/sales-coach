@@ -370,6 +370,47 @@ class ActorGate:
             await self.app(scope, receive, send)
 
 
+class WriteGuard:
+    """A write request whose path names an object (a POST under /calls/<id>/, /deals/<id>/, /loops/<id>/,
+    /emails/<id>/, ...) is refused with 403 before its route runs when the acting user can read the object
+    but does not own it: a manager reviewing a rep's call can press none of its buttons, including buttons
+    a later phase adds (manager/access.WRITE_PATHS). Inside the ActorGate, so the actor is known."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"].upper() not in SAFE_METHODS:
+            actor = identity.current_actor(required=False)
+            path = scope.get("path") or ""
+            if actor is not None and any(p.match(path) for p, _, _ in access.WRITE_PATHS):
+                db_path = getattr(scope.get("app"), "state", None)
+                db_path = getattr(db_path, "db_path", None)
+
+                def check():
+                    with identity.activate(actor):
+                        conn = stores.sales(db_path)
+                        try:
+                            access.refuse_write(conn, path)
+                        finally:
+                            conn.close()
+                try:
+                    from starlette.concurrency import run_in_threadpool
+                    await run_in_threadpool(check)
+                except access.ReadOnly as exc:
+                    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+                    if "text/html" in headers.get("accept", ""):
+                        body = (f'<!doctype html><meta charset="utf-8"><title>403</title>'
+                                f'<link rel="stylesheet" href="/static/app.css"><main class="wrap"><div class="page-head">'
+                                f'<div class="eyebrow">403</div><h1>{html.escape(str(exc))}</h1>'
+                                f'<p><a href="/">Back to Today</a></p></div></main>')
+                        await HTMLResponse(body, status_code=403)(scope, receive, send)
+                    else:
+                        await PlainTextResponse(str(exc), status_code=403)(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
 # ---- plumbing -----------------------------------------------------------------
 
 @contextmanager
@@ -807,6 +848,7 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
     app.state.login_limiter = hosted.LoginLimiter()
     from . import auth
     app.add_middleware(FirstRunGate)
+    app.add_middleware(WriteGuard)                  # inside the ActorGate: needs the actor; before any route
     app.add_middleware(ActorGate)                   # outside the gate: "is this USER set up" needs to know who
     app.add_middleware(auth.AuthGate)               # inert without SALESCOACH_PASSWORD; else a session before any page
     app.add_middleware(SameOriginGuard)             # added last = outermost: the gate never sees a foreign request

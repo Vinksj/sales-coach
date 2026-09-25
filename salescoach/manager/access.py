@@ -17,6 +17,7 @@ The team: a manager reads the rep rows of every team they manage (team_managers 
 is exactly app_visible_owners() on Postgres. managed_reps() is the same list in Python, for the pages.
 An admin who manages no team manages nobody and sees no content (and no Team page).
 """
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional
@@ -165,3 +166,40 @@ def viewing(conn, user_id: Optional[str]):
         return
     with identity.viewing(None):
         yield actor_id(conn)
+
+
+# ---- the write guard by path (web/app.WriteGuard) --------------------------------------------------------
+# A write request whose path names an object (every POST under /calls/<id>/, /deals/<id>/, /loops/<id>/, ...)
+# is checked BEFORE its route runs: the object is looked up as the acting user, and one they can read but do
+# not own is refused (ReadOnly, 403). One check in front of every route, the ones added by later phases
+# included, so a new write route on a rep's object cannot forget it. The *_or_404 helpers check again.
+_EMAIL = "SELECT owner_id FROM emails WHERE id=?"
+WRITE_PATHS = (
+    (re.compile(r"^/calls/([^/]+)/"), "SELECT owner_id FROM calls WHERE node_id=?", str),
+    (re.compile(r"^/live/([^/]+)/"), "SELECT owner_id FROM calls WHERE node_id=?", str),
+    (re.compile(r"^/coach/(?:replay|live)/([^/]+)"), "SELECT owner_id FROM calls WHERE node_id=?", str),
+    (re.compile(r"^/deals/([^/]+)/"), "SELECT owner_id FROM deals WHERE node_id=?", str),
+    (re.compile(r"^/(?:loops|followups)/([^/]+)/"), "SELECT owner_id FROM loops WHERE node_id=?", str),
+    (re.compile(r"^/(?:emails|nudges)/(\d{1,9})/"), _EMAIL, int),
+    (re.compile(r"^/replies/(\d{1,9})/"), "SELECT owner_id FROM email_replies WHERE id=?", int),
+    (re.compile(r"^/conflicts/(\d{1,9})/"), "SELECT owner_id FROM memory_conflicts WHERE id=?", int),
+    (re.compile(r"^/learning/proposals/(\d{1,9})/"), "SELECT owner_id FROM learning_proposals WHERE id=?", int),
+)
+
+
+def path_owner(conn, path: str):
+    """(found, owner_id) of the object a write path names, read as the acting user; (False, None) when the
+    path names none or the object is not there for them (the route then answers 404 as always)."""
+    for pattern, sql, cast in WRITE_PATHS:
+        m = pattern.match(path or "")
+        if m:
+            row = conn.execute(sql, (cast(m.group(1)),)).fetchone()
+            return (row is not None, row["owner_id"] if row is not None else None)
+    return False, None
+
+
+def refuse_write(conn, path: str) -> None:
+    """ReadOnly when a write path names an object the acting user can read but does not own."""
+    found, owner = path_owner(conn, path)
+    if found and not is_own(conn, owner):
+        raise ReadOnly(owner)

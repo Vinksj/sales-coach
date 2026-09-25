@@ -449,7 +449,8 @@
 {% endif %}
 
 {# ---- comments: the whole call; a moment of it is commented on in the transcript ---------------- #}
-{{ mm.thread(call_comments.general, 'call', cid, here, purpose=(call_comments.n ~ ' comment' ~ ('' if call_comments.n == 1 else 's') ~ ' on this call, ' ~ call_comments.open ~ ' unresolved. To comment on one moment, open the transcript and use "Comment" under that turn. Seen by the rep and their managers; never by the coach\'s agents.')) }}
+{% set thread_note %}{{ call_comments.n }} comment{{ '' if call_comments.n == 1 else 's' }} on this call, {{ call_comments.open }} unresolved. To comment on one moment, open the transcript and use "Comment" under that turn. Seen by the rep and their managers; never by the coach's agents.{% endset %}
+{{ mm.thread(call_comments.general, 'call', cid, here, purpose=thread_note) }}
 
 {# ---- g. transcript -------------------------------------------------------- #}
 <details class="section transcript" id="transcript"{% if call_comments.by_turn %} open{% endif %}>
