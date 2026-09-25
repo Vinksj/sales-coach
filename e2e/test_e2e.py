@@ -443,6 +443,7 @@ def test_rep_a_connects_gmail_and_sends_their_own_follow_up():
     assert "in-reply-to" not in msg["headers"] and "references" not in msg["headers"]   # a new thread
     assert row["status"] == "sent" and row["gmail_thread_id"] == msg["threadId"] and row["gmail_message_id"] == msg["id"]
     assert row["approved_by"] == f"user:{uid(A)}"
+    assert q1("SELECT wf_state FROM calls WHERE node_id=%s", call_a)["wf_state"] in ("email_sent", "done")
     assert fakes("GET", "/_control/google")["exchanges"].count(["authorization_code", A]) >= 2   # sign-in + consent
     S["sent"] = msg
     EVIDENCE["gmail"] = {"sent": len(sent), "grant": msg["grant_email"],
