@@ -61,10 +61,23 @@ def _upcoming(conn, limit=8) -> list[dict]:
 
 
 def _calendar_state(conn, request) -> dict:
-    return {"last_sync": core.fromjson(get_user_state(conn, calendar.LAST_SYNC_KEY), None),
-            "unavailable": core.fromjson(get_user_state(conn, "automation:calendar:unavailable"), None),
-            "refresh_pending": calendar.refresh_pending(conn), "live": core._live_status(request.app),
-            "record_cfg": common.cfg("calendar").get("record") or {}}
+    """What the calendar sections need. In cloud mode also the rep's own link (`link`: status, email,
+    for the Connect CTA) and `problem`: the last failure when it is newer than the last good read."""
+    last_sync = core.fromjson(get_user_state(conn, calendar.LAST_SYNC_KEY), None)
+    unavailable = core.fromjson(get_user_state(conn, calendar.UNAVAILABLE_KEY), None)
+    state = {"last_sync": last_sync, "unavailable": unavailable,
+             "refresh_pending": calendar.refresh_pending(conn), "live": core._live_status(request.app),
+             "record_cfg": common.cfg("calendar").get("record") or {}, "recording": calendar.recording_enabled(),
+             "in_cloud": identity.cloud(), "link": None, "problem": None, "connect_url": CONNECT_CALENDAR}
+    if identity.cloud():
+        from . import gcal
+        state["link"] = gcal.connection_state(conn)
+        if unavailable and (not last_sync or str(unavailable.get("at") or "") > str(last_sync.get("at") or "")):
+            state["problem"] = unavailable
+    return state
+
+
+CONNECT_CALENDAR = "/auth/connect/google?feature=calendar"
 
 
 def _recent_replies(conn, limit=10, include_reviewed=False) -> list[dict]:
@@ -151,7 +164,15 @@ def calendar_page(request: Request):
 def calendar_refresh(request: Request, next_url: str = Form("/calendar", alias="next")):
     back = core._clean_next(next_url, "/calendar")
     with core._db(request) as conn:
+        if identity.cloud():
+            from . import gcal
+            if gcal.connection_state(conn)["status"] != "connected":
+                return core._redirect(back, err="Your Google Calendar is not connected: connect it from your "
+                                                "profile page first.", anchor="upcoming-calls")
         calendar.request_refresh(conn)
+    if identity.cloud():
+        return core._redirect(back, msg="Reading your Google Calendar; the meetings appear here in a moment.",
+                              anchor="upcoming-calls")
     return core._redirect(back, msg="Reading your calendar through the connector; this takes about a minute.",
                           anchor="upcoming-calls")
 
@@ -160,6 +181,9 @@ def calendar_refresh(request: Request, next_url: str = Form("/calendar", alias="
 def calendar_record(request: Request, event_id: str, action: str = Form("arm"),
                     next_url: str = Form("/calendar", alias="next")):
     back = core._clean_next(next_url, "/calendar")
+    if not calendar.recording_enabled():
+        return core._redirect(back, err="Recording is not started from the calendar in a cloud install: your calls "
+                                        "come from your recorder.", anchor="upcoming-calls")
     with core._db(request) as conn:
         row = conn.execute("SELECT title FROM calendar_meetings WHERE owner_id=? AND event_id=?",
                            (identity.actor_of(conn).user_id, event_id)).fetchone()
@@ -394,7 +418,8 @@ def email_fill_slots(request: Request, email_id: int, to: str = Form(None), cc: 
         factory = getattr(request.app.state, "calendar_factory", None)
         result = calendar.fill_slots(conn, email_id, calendar=factory(conn) if factory else None)
     if result["status"] == "filled":
-        return core._redirect(back, msg=f"Calendar-verified times filled in: {result['sentence']}")
+        whose = f" (read from the {result['source']})" if identity.cloud() and result.get("source") else ""
+        return core._redirect(back, msg=f"Calendar-verified times filled in{whose}: {result['sentence']}")
     return core._redirect(back, err=f"Times not filled: {result['reason']}")
 
 

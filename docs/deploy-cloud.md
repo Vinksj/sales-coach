@@ -20,7 +20,8 @@ nothing on a laptop install changes.
 - Auto-send is off, whatever `config/automation.yaml` says, and a manager can never send: the
   policy layer refuses anyone but the email's owner in their own session.
 - The machine-local features stay off, as in any hosted install (live capture, local transcription,
-  the Claude CLI connectors, the Jarvis bridge).
+  the Claude CLI connectors, the Jarvis bridge). The calendar is each rep's own Google Calendar,
+  read-only, through their own grant (see "Calendar: what is read, and reconnecting").
 - Settings and raw payloads live in the database (`org_settings`, `raw_payloads`), so no process
   needs a shared volume; see "Org settings and raw payloads".
 - The app runs as three kinds of process (web, worker, scheduler); see "Processes".
@@ -106,6 +107,37 @@ When Google answers `invalid_grant` to a refresh (the person revoked access, cha
 with Gmail scopes granted, six months without use, or an admin restricted the app), the grant is
 marked "needs reconnect" once, never retried, and the profile page shows a Reconnect button. Sending
 and reply polling for that person pause until they reconnect; nothing else is lost.
+
+## Calendar: what is read, and reconnecting
+
+"Connect Calendar" asks for `calendar.readonly` only (plus `openid email`). With it the app reads the
+rep's own primary Google Calendar and nothing else; it never creates, changes or answers an event and
+has no code path that could (`automation/gcal.py` issues one request, `GET .../calendars/primary/events`):
+
+- **Upcoming meetings.** The scheduler's calendar duty (every `calendar.scan_hours`) and the page's
+  "Refresh calendar" read the next `calendar.upcoming_days` for each rep, as that rep: title, start and
+  end, the guests' addresses and their responses, status, event type, free/busy flag and the join
+  link (`hangoutLink` or a video `conferenceData` entry). Declined, cancelled, all-day, out-of-office,
+  working-location and "free" entries are not listed. A meeting with a deal's people gets a prep brief.
+  The Calendar page and Today's "Upcoming calls" show the rep's own meetings only; there is no Record
+  button in cloud mode (calls come from the rep's recorder).
+- **Meeting times in drafts.** "Fill times from calendar" on a draft with `[SLOTS]` reads the rep's
+  own calendar for the next business days and proposes two or three free times under the org's
+  scheduling rules (Settings), in the rep's own timezone (their profile; an org-wide `timezone` in the
+  scheduling rules is only the fallback for a rep who has none). The draft records whose calendar was
+  read ("Google Calendar of asha@...").
+- **Incremental reads.** After a full read of the window the app keeps Google's sync token in the
+  rep's own `user_state` (`automation:calendar:sync_token`, an opaque cursor, not a credential) and
+  later asks only for what changed. Google expiring it (410) means one full read; the window is also
+  re-read in full at least daily.
+
+A rep who has not connected Calendar simply has no meetings listed: the duty notes "calendar not
+connected" for them and moves on (no errors, no retries), and the Calendar and Today pages show a
+"Connect your calendar" card. When Google stops accepting the link (`invalid_grant`, or a 401/403
+that says the grant lacks the scope), the grant is marked "needs reconnect" once; the pages show
+"Reconnect your calendar", the meetings already read stay listed, and slot filling says "reconnect
+your calendar" instead of guessing. Reconnecting from the profile page (You > Google > Calendar) is
+all it takes; the next read is a full one.
 
 ## Token key rotation
 

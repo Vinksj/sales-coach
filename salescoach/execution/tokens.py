@@ -285,6 +285,12 @@ def access_token(conn, user_id: str, provider: str = PROVIDER) -> str:
     return token
 
 
+def forget_access_token(conn, user_id: str, provider: str = PROVIDER) -> None:
+    """Drop the cached access token (an API answered 401 to it) so the next access_token() refreshes."""
+    conn.execute("UPDATE oauth_tokens SET access_token_enc=NULL, expires_at=NULL, updated_at=? WHERE user_id=? AND provider=?",
+                 (now(), user_id, provider))
+
+
 def disconnect(conn, user_id: str, provider: str = PROVIDER) -> dict:
     """The person's own Disconnect: revoke at Google (best effort), delete the row.
     Returns {"had": bool, "revoked": bool}."""

@@ -1,5 +1,7 @@
-{# One table of calendar meetings with the record controls. Used by the Today page and /calendar. #}
-{% macro meeting_rows(meetings, live, next_url) %}
+{# One table of calendar meetings with the record controls. Used by the Today page and /calendar.
+   record=false (a cloud install: calls come from the rep's recorder) leaves the Record column out. #}
+{% macro meeting_head(record=true) %}<thead><tr><th>When</th><th>Meeting</th><th>Deal</th>{% if record %}<th>Record</th>{% endif %}</tr></thead>{% endmacro %}
+{% macro meeting_rows(meetings, live, next_url, record=true) %}
 {% for mt in meetings %}
 <tr class="{% if mt.in_progress %}row-now{% endif %}">
   <td class="nowrap">{{ mt.start_at|dt }}<div class="meta">{% if mt.in_progress %}now{% elif mt.ended %}ended{% else %}{{ ((mt.end_at|dt).split(', ')[-1]) }} end{% endif %}</div></td>
@@ -8,6 +10,7 @@
   <td>{% if mt.deal_id %}<a href="/deals/{{ mt.deal_id }}">{{ mt.deal_name or mt.deal_id }}</a>
       {% if mt.link %}<div class="meta"><a href="{{ mt.link }}">Prep brief</a></div>{% elif mt.prep_status == 'pending' %}<div class="meta">prep: preparing</div>{% elif mt.prep_status == 'failed' %}<div class="meta accent">prep failed</div>{% endif %}
       {% else %}<span class="muted">not a deal</span>{% endif %}</td>
+  {% if record %}
   <td class="nowrap">
     {% if mt.call_id %}
       <a class="btn btn-sm" href="{% if live.active and live.call_id == mt.call_id %}/live/{{ mt.call_id }}{% else %}/calls/{{ mt.call_id }}{% endif %}">{% if live.active and live.call_id == mt.call_id %}Recording · open{% else %}Recorded · {{ mt.call_state|step_label }}{% endif %}</a>
@@ -28,6 +31,7 @@
       {% if mt.record_error %}<div class="meta accent">{{ mt.record_error }}</div>{% endif %}
     {% endif %}
   </td>
+  {% endif %}
 </tr>
 {% endfor %}
 {% endmacro %}

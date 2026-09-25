@@ -8,12 +8,15 @@ calendar and found free time under config/scheduling.yaml. If the calendar
 cannot be read, the marker stays and the reason is recorded: a guessed time is
 worse than none.
 
-The Google Calendar connector is reached through `claude -p` (connector.py),
-read tools only. Nothing here creates, edits or answers an event, or sends an
-invite.
+Which calendar (calendar_for): on a local install, the seller's Google Calendar
+through the claude.ai connector reached by `claude -p` (connector.py, read tools
+only); in cloud mode, the ACTING user's own primary Google Calendar through
+their own calendar.readonly grant (gcal.py). Nothing here creates, edits or
+answers an event, or sends an invite.
 
-All slot arithmetic is in Asia/Kolkata. Busy time is what would really block
-him: declined, cancelled, free ("transparent"), working-location and birthday
+Slot arithmetic is in the acting user's timezone (their profile; scheduling.yaml
+may pin one on a local install). Busy time is what would really block them:
+declined, cancelled, free ("transparent"), working-location and birthday
 entries are ignored, and an all-day event counts only if it is out-of-office.
 """
 import json
@@ -42,7 +45,13 @@ DEFAULTS = {
 
 
 class CalendarUnavailable(RuntimeError):
-    pass
+    code = "unavailable"
+
+
+def kind(event_type) -> str:
+    """An eventType in one spelling: Google's REST API says "outOfOffice", the connector has been seen
+    to say "OUT_OF_OFFICE". Both become "outofoffice"."""
+    return str(event_type or "default").replace("_", "").lower()
 
 
 @dataclass
@@ -61,7 +70,16 @@ class CalEvent:
 
 
 def scheduling(overrides: dict | None = None) -> dict:
-    return _with_zone({**DEFAULTS, **(config.load("scheduling") or {}), **(overrides or {})})
+    return _with_zone({**DEFAULTS, **_org_rules(), **(overrides or {})})
+
+
+def _org_rules() -> dict:
+    """scheduling.yaml (or, in cloud, the org's scheduling settings). In cloud mode a pinned timezone is
+    only the fallback for a rep whose profile has none: the org's rules are shared, the clock is each rep's."""
+    rules = dict(config.load("scheduling") or {})
+    if identity.cloud() and rules.get("timezone") and seller.user_profile().get("timezone"):
+        rules.pop("timezone")
+    return rules
 
 
 def own_domains() -> set[str]:
@@ -168,7 +186,8 @@ def parse_page(text: str) -> tuple[list[CalEvent], str | None]:
                 continue
             et = et if et and et > st else st + timedelta(minutes=30)
         attendees = [{"email": (a.get("email") or "").lower(), "response": a.get("responseStatus"),
-                      "self": bool(a.get("self"))} for a in e.get("attendees") or []]
+                      "self": bool(a.get("self"))} for a in e.get("attendees") or []
+                     if isinstance(a, dict) and not a.get("resource")]      # a meeting room is not a guest
         out.append(CalEvent(
             id=str(e.get("id") or ""), title=e.get("summary") or "", start=st, end=et, all_day=all_day,
             attendees=attendees, status=e.get("status") or "confirmed", event_type=e.get("eventType") or "DEFAULT",
@@ -187,9 +206,9 @@ def busy_intervals(events) -> list[tuple[datetime, datetime]]:
     for e in events:
         if e.status == "cancelled" or e.declined_by_me or e.transparency == "transparent":
             continue
-        if e.event_type in ("WORKING_LOCATION", "BIRTHDAY"):
+        if kind(e.event_type) in ("workinglocation", "birthday"):
             continue
-        if e.all_day and not (e.event_type == "OUT_OF_OFFICE" or OOO_WORDS.search(e.title or "")):
+        if e.all_day and not (kind(e.event_type) == "outofoffice" or OOO_WORDS.search(e.title or "")):
             continue
         busy.append((e.start, e.end))
     return busy
@@ -245,6 +264,21 @@ class ConnectorCalendar:
             "ON CONFLICT(owner_id,key) DO UPDATE SET fetched_at=excluded.fetched_at, events=excluded.events, "
             "error=excluded.error", (key, now(), self.name, json.dumps(events), error, _owner(self.conn)))
         self.conn.commit()
+
+
+def calendar_for(conn):
+    """The calendar of the user bound to `conn`: their own Google Calendar through their own grant in
+    cloud mode (gcal.GoogleCalendar), the machine's claude.ai connector on a local install."""
+    if identity.cloud():
+        from .gcal import GoogleCalendar
+        return GoogleCalendar(conn)
+    return ConnectorCalendar(conn)
+
+
+def source_label(calendar) -> str:
+    """Whose calendar was read, for the draft's verification line: "Google Calendar of rep@org" for a
+    rep's own calendar, the calendar's name otherwise."""
+    return getattr(calendar, "label", None) or getattr(calendar, "name", "calendar")
 
 
 # ---- slots -------------------------------------------------------------------------
@@ -380,7 +414,7 @@ def _record_fill(conn, email_id, status, reason=None, slots=(), sentence=None, s
         (email_id, status, json.dumps([s.isoformat() for s in slots]), sentence, reason, source, busy_count,
          verified_at, now()))
     return {"status": status, "reason": reason, "slots": [s.isoformat() for s in slots], "sentence": sentence,
-            "verified_at": verified_at}
+            "verified_at": verified_at, "source": source}
 
 
 def fill_slots(conn, email_id: int, calendar=None, now_dt: datetime | None = None) -> dict:
@@ -397,16 +431,17 @@ def fill_slots(conn, email_id: int, calendar=None, now_dt: datetime | None = Non
         result = _record_fill(conn, email_id, "not_needed", "the draft has no [SLOTS] marker")
         conn.commit()
         return result
-    calendar = calendar or ConnectorCalendar(conn)
-    source = getattr(calendar, "name", "calendar")
+    calendar = calendar or calendar_for(conn)
     current = (now_dt or common.now_ist()).astimezone(common.IST)
     cfg = scheduling()
     start, end = search_window(current, cfg)
     try:
+        source = source_label(calendar)
         events = calendar.events(start, end)
     except Exception as exc:
-        result = _record_fill(conn, email_id, "unavailable",
-                              f"calendar unreachable, so [SLOTS] stays: {exc}", source=source)
+        what = "calendar not connected" if getattr(exc, "code", "") == "not_connected" else "calendar unreachable"
+        result = _record_fill(conn, email_id, "unavailable", f"{what}, so [SLOTS] stays: {exc}",
+                              source=getattr(calendar, "name", "calendar"))
         conn.commit()
         return result
     busy = busy_intervals(events)
@@ -456,6 +491,7 @@ def _deal_matchers(conn) -> tuple[dict, dict]:
 # ---- every meeting on the calendar, and which ones to record ------------------------------
 
 SKIP_TYPES = {"workingLocation", "birthday", "outOfOffice", "focusTime"}
+SKIP_KINDS = {kind(t) for t in SKIP_TYPES}           # compared through kind(): either spelling
 MEETING_COLUMNS = {           # added after the table first shipped; ensure_columns() adds them to older databases
     "record": "TEXT NOT NULL DEFAULT 'no'", "call_id": "TEXT", "meeting_url": "TEXT",
     "last_seen_at": "TEXT", "record_error": "TEXT",
@@ -480,40 +516,69 @@ def ensure_columns(conn) -> None:
             conn.execute(f"ALTER TABLE calendar_meetings ADD COLUMN {col} {decl}")
 
 
+def _is_meeting(e) -> bool:
+    """A real meeting to show: not cancelled, declined, all-day, out-of-office, free or a marker entry."""
+    if not e.id or e.status == "cancelled" or e.declined_by_me or e.all_day or kind(e.event_type) in SKIP_KINDS:
+        return False
+    return not (OOO_WORDS.search(e.title or "") or e.transparency == "transparent")
+
+
+def _match(guests, by_domain, by_email) -> tuple[str | None, list[str]]:
+    deal, domains = None, []
+    for addr in guests:
+        dom = addr.split("@", 1)[-1]
+        match = by_email.get(addr) or by_domain.get(dom)
+        if match:
+            deal = deal or match
+            if dom not in domains:
+                domains.append(dom)
+    return deal, domains
+
+
+def _announce(conn, owner, event_id, deal, title, start, guests) -> None:
+    """A meeting just got linked to a deal: ask for a prep brief (once per owner and event)."""
+    bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal, dedupe_key=f"NEXT_CALL:{owner}:{event_id}",
+                            payload={"event_id": event_id, "deal_id": deal, "title": title, "start": start,
+                                     "attendees": guests}))
+    engine._emit(conn, ACTOR, "deal_meeting_seen", node_id=deal, after={"event_id": event_id, "title": title, "start": start})
+
+
 def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime | None = None) -> list[dict]:
     """Every meeting on the calendar for the next `days`, stored in calendar_meetings so the Today and
-    Calendar pages can show them all and the seller can pick which to record.
+    Calendar pages can show them all (and, on a local install, the seller can pick which to record).
 
     Cancelled, declined, all-day and working-location entries are skipped. A meeting whose attendees
     belong to a deal is linked to it and, the first time it is seen, publishes NEXT_CALL_SCHEDULED so a
     prep brief is written. Meetings that vanished from the calendar are dropped unless they were recorded.
+
+    A calendar with a sync() (gcal.GoogleCalendar) may answer with only what changed since its last
+    read: changed meetings are stored, deleted or no-longer-relevant ones dropped, and meetings already
+    stored are matched again against today's deals (a deal made since is not a calendar change).
+    Returns the meetings stored in this run (on an incremental run, the changed ones).
     """
     ensure_columns(conn)
     owner = _owner(conn)
     days = days or int(common.cfg("calendar").get("upcoming_days", 7))
     current = (now_dt or common.now_ist()).astimezone(common.IST)
-    calendar = calendar or ConnectorCalendar(conn)
+    calendar = calendar or calendar_for(conn)
     window_start, window_end = current - timedelta(hours=2), current + timedelta(days=days)
-    events = calendar.events(window_start, window_end)
+    if hasattr(calendar, "sync"):
+        result = calendar.sync(window_start, window_end, now_dt=current)
+        events, gone, full = list(result.events), list(result.removed), result.full
+    else:
+        events, gone, full = calendar.events(window_start, window_end), [], True
     by_domain, by_email = _deal_matchers(conn)
     mine = common.my_addresses(conn)
     stamp = now()
     seen = datetime.now(common.IST).isoformat(timespec="microseconds")   # unique to this sync, not just this second
     found = []
     for e in events:
-        if not e.id or e.status == "cancelled" or e.declined_by_me or e.all_day or e.event_type in SKIP_TYPES:
+        if not _is_meeting(e) or not (e.start < window_end and e.end > window_start):
+            if e.id:
+                gone.append(e.id)                    # on a full read the sweep below drops it anyway
             continue
-        if OOO_WORDS.search(e.title or "") or e.transparency == "transparent":
-            continue            # out-of-office blocks and "free" markers are not calls
         guests = [a["email"] for a in e.attendees if a["email"] and not a["self"] and a["email"] not in mine]
-        deal, domains = None, []
-        for addr in guests:
-            dom = addr.split("@", 1)[-1]
-            match = by_email.get(addr) or by_domain.get(dom)
-            if match:
-                deal = deal or match
-                if dom not in domains:
-                    domains.append(dom)
+        deal, domains = _match(guests, by_domain, by_email)
         existing = conn.execute("SELECT event_id, deal_id FROM calendar_meetings WHERE owner_id=? AND event_id=?",
                                 (owner, e.id)).fetchone()
         conn.execute(
@@ -525,23 +590,38 @@ def sync_events(conn, days: int | None = None, calendar=None, now_dt: datetime |
             "last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at",
             (e.id, deal, e.title, e.start.isoformat(), e.end.isoformat(), json.dumps(guests), json.dumps(domains),
              e.meeting_url, stamp, seen, stamp, owner))
-        newly_matched = deal and (existing is None or not existing["deal_id"])
-        if newly_matched:
-            bus.publish(conn, Event(type="NEXT_CALL_SCHEDULED", entity_id=deal, dedupe_key=f"NEXT_CALL:{owner}:{e.id}",
-                                    payload={"event_id": e.id, "deal_id": deal, "title": e.title,
-                                             "start": e.start.isoformat(), "attendees": guests}))
-            engine._emit(conn, ACTOR, "deal_meeting_seen", node_id=deal,
-                         after={"event_id": e.id, "title": e.title, "start": e.start.isoformat()})
+        if deal and (existing is None or not existing["deal_id"]):
+            _announce(conn, owner, e.id, deal, e.title, e.start.isoformat(), guests)
         found.append({"event_id": e.id, "deal_id": deal, "title": e.title, "start": e.start.isoformat(),
                       "end": e.end.isoformat(), "attendees": guests, "meeting_url": e.meeting_url,
                       "new": existing is None})
-    # Gone from the calendar (moved out of the window or deleted) and never recorded: drop it.
-    conn.execute("DELETE FROM calendar_meetings WHERE owner_id=? AND call_id IS NULL AND start_at>=? AND start_at<=? "
-                 "AND (last_seen_at IS NULL OR last_seen_at!=?)",
-                 (owner, window_start.isoformat(), window_end.isoformat(), seen))
-    set_user_state(conn, LAST_SYNC_KEY, json.dumps({"at": stamp, "events": len(found), "source": calendar.name}))
+    if full:
+        # Gone from the calendar (moved out of the window or deleted) and never recorded: drop it.
+        conn.execute("DELETE FROM calendar_meetings WHERE owner_id=? AND call_id IS NULL AND start_at>=? AND start_at<=? "
+                     "AND (last_seen_at IS NULL OR last_seen_at!=?)",
+                     (owner, window_start.isoformat(), window_end.isoformat(), seen))
+    else:
+        for event_id in dict.fromkeys(gone):
+            conn.execute("DELETE FROM calendar_meetings WHERE owner_id=? AND event_id=? AND call_id IS NULL "
+                         "AND start_at>=?", (owner, event_id, window_start.isoformat()))
+        _relink(conn, owner, window_start, window_end, by_domain, by_email)
+    set_user_state(conn, LAST_SYNC_KEY, json.dumps({"at": stamp, "events": len(found), "source": calendar.name,
+                                                    "mode": "full" if full else "incremental"}))
     conn.commit()
     return found
+
+
+def _relink(conn, owner, window_start, window_end, by_domain, by_email) -> None:
+    """Stored meetings with no deal yet, matched against today's deals from their stored guests."""
+    for r in conn.execute("SELECT event_id, title, start_at, attendees FROM calendar_meetings WHERE owner_id=? "
+                          "AND deal_id IS NULL AND start_at>=? AND start_at<=?",
+                          (owner, window_start.isoformat(), window_end.isoformat())).fetchall():
+        guests = json.loads(r["attendees"] or "[]")
+        deal, domains = _match(guests, by_domain, by_email)
+        if deal:
+            conn.execute("UPDATE calendar_meetings SET deal_id=?, matched_domains=?, updated_at=? WHERE owner_id=? "
+                         "AND event_id=?", (deal, json.dumps(domains), now(), owner, r["event_id"]))
+            _announce(conn, owner, r["event_id"], deal, r["title"], r["start_at"], guests)
 
 
 def upcoming_deal_meetings(conn, days: int | None = None, calendar=None, now_dt: datetime | None = None) -> list[dict]:
@@ -575,6 +655,8 @@ def upcoming_meetings(conn, limit: int | None = None, now_dt: datetime | None = 
 
 def set_record(conn, event_id: str, on: bool) -> bool:
     """Arm (or disarm) automatic recording of one meeting. Returns False for an unknown meeting."""
+    if on and not recording_enabled():
+        raise RecordingRefused("recording comes from your recorder in a cloud install, not from the calendar")
     ensure_columns(conn)
     cur = conn.execute("UPDATE calendar_meetings SET record=?, record_error=NULL, updated_at=? WHERE owner_id=? AND event_id=?",
                        ("yes" if on else "no", now(), _owner(conn), event_id))
@@ -612,7 +694,7 @@ def start_recording(conn, event_id: str, manager, lang_mode: str = "auto") -> st
         raise KeyError(event_id)
     if row["call_id"]:
         raise RecordingRefused(f"this meeting was already recorded as {row['call_id']}")
-    if manager is None:
+    if manager is None or not recording_enabled():
         raise RecordingRefused("live capture is not available in this server")
     if not seller.is_configured():
         raise RecordingRefused(seller.NOT_CONFIGURED)
@@ -682,7 +764,7 @@ def recorder_tick(conn, manager, now_dt: datetime | None = None) -> dict:
 
 
 def request_refresh(conn) -> bool:
-    """Ask the worker to re-read the calendar now (a minute through the connector). Deduped per minute."""
+    """Ask the worker to re-read the acting user's calendar now (entity user:<id>). Deduped per minute."""
     stamp = datetime.now(common.IST).strftime("%Y%m%d%H%M")
     owner = _owner(conn)
     ok = bus.publish(conn, Event(type="CALENDAR_REFRESH_REQUESTED", entity_id=f"user:{owner}",
@@ -696,7 +778,47 @@ def refresh_pending(conn) -> bool:
                         "status IN ('pending','running')", (f"user:{_owner(conn)}",)).fetchone() is not None
 
 
+UNAVAILABLE_KEY = "automation:calendar:unavailable"     # per user, as the scheduler's duty bookkeeping
+
+
+def recording_enabled() -> bool:
+    """Arming a meeting for live capture is a local-install feature: a cloud install has no microphone,
+    and a rep's calls come from their own recorder (sources, Phase 4)."""
+    return not identity.cloud()
+
+
+def sync_own_calendar(conn) -> dict:
+    """Cloud: sync the acting user's own Google Calendar. Never raises for a missing, dead or unreachable
+    link: the reason goes to user_state (automation:calendar:unavailable, with a code the pages read) and
+    the answer says it was skipped, so one rep's calendar never backs off anyone else's, and a rep who
+    never connected one costs nothing but this note."""
+    from .gcal import GoogleCalendar
+    cal = GoogleCalendar(conn)
+    link = cal.connection()
+    if link["status"] != "connected":
+        why = ("calendar not connected" if link["status"] == "not_connected"
+               else "calendar needs reconnecting: Google no longer accepts the link")
+        _note_unavailable(conn, why, link["status"])
+        return {"skipped": why}
+    try:
+        found = sync_events(conn, calendar=cal)
+    except CalendarUnavailable as exc:
+        conn.rollback()
+        _note_unavailable(conn, str(exc), exc.code)
+        return {"skipped": str(exc)[:300]}
+    deal = [f for f in found if f["deal_id"]]
+    return {"meetings": len(found), "deal_meetings": len(deal), "new": sum(1 for f in deal if f["new"])}
+
+
+def _note_unavailable(conn, why: str, code: str) -> None:
+    set_user_state(conn, UNAVAILABLE_KEY, json.dumps({"at": now(), "why": why[:500], "code": code}))
+    conn.commit()
+
+
 def on_refresh(conn, event):
+    if identity.cloud():
+        sync_own_calendar(conn)             # "Refresh calendar" on a page: the same quiet path as the duty
+        return
     sync_events(conn)
 
 

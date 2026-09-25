@@ -157,7 +157,7 @@
     {% for i in email.warns %}<li><span class="tag">check</span> {{ i.detail }}</li>{% endfor %}
   </ul>
   {% endif %}
-  {% if slot_fill and slot_fill.status == 'filled' %}<p class="meta">Meeting times calendar-verified {{ slot_fill.verified_at|dt }}.</p>{% endif %}
+  {% if slot_fill and slot_fill.status == 'filled' %}<p class="meta">Meeting times calendar-verified {{ slot_fill.verified_at|dt }}{% if cloud() and slot_fill.calendar_source %} against the {{ slot_fill.calendar_source }}{% endif %}.</p>{% endif %}
   {% if email.user_added %}<p class="warn-line">Added by you, not on this call or deal: {{ email.user_added|join(', ') }}</p>{% endif %}
 
   <form method="post" action="/emails/{{ e.id }}/save" class="email-form card" id="email-form-{{ e.id }}">

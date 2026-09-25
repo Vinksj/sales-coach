@@ -1,0 +1,13 @@
+{# Cloud mode, the rep's Google Calendar is not linked (never connected, or Google stopped accepting it).
+   Expects `link` ({status, email}) and `connect_url` in the context: the calendar page's, or auto.calendar's. #}
+<section class="card" id="connect-calendar">
+  {% if link.status == 'not_connected' %}
+  <h2>Connect your calendar</h2>
+  <p class="meta">The coach lists your upcoming meetings, writes a prep brief before the ones with a deal's people, and proposes meeting times in your follow-ups from the time you really have free. It reads your own Google Calendar only, read-only (calendar.readonly); it never creates, changes or answers an event.</p>
+  <div class="actions"><a class="btn btn-primary" href="{{ connect_url }}">Connect your calendar</a> <a class="btn btn-quiet" href="/me/setup#google-connections">Your profile</a></div>
+  {% else %}
+  <h2>Reconnect your calendar</h2>
+  <p class="meta">Google stopped accepting the link to your calendar{% if link.email %} ({{ link.email }}){% endif %}. That happens after a password change, six months without use, or when an admin restricts the app. Reconnect to carry on; nothing else is lost.</p>
+  <div class="actions"><a class="btn btn-primary" href="{{ connect_url }}">Reconnect your calendar</a> <a class="btn btn-quiet" href="/me/setup#google-connections">Your profile</a></div>
+  {% endif %}
+</section>
