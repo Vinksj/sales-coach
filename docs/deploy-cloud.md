@@ -405,3 +405,48 @@ transcripts, analyses, agent runs, closed loops, unsent drafts, the replies to t
 views, and the raw payload, and writes a `retention.purge` event per batch. Open loops and deals stay.
 `salescoach retention --dry-run` counts; `salescoach retention` runs a round now.
 
+
+## End-to-end check
+
+`e2e/run.sh` runs a whole team install on your machine, in Docker, with no outside service involved:
+the real image as `web`, `worker` (`WORKER_CONCURRENCY=2`) and two `scheduler` replicas, Postgres 16, a
+one-shot `migrate` (creates the app role, runs `salescoach migrate` as the owner role on the org database
+and on a second, empty one), and `fakes`, one small process standing in for Google (OIDC sign-in and
+consent with PKCE, RS256 ID tokens and their JWKS and x509 certificates, Gmail, Calendar), Fireflies,
+Fathom and an OpenAI-compatible model that answers every agent's schema.
+
+```
+e2e/run.sh                      # build the image, start the stack, run e2e/test_e2e.py, tear everything down
+E2E_KEEP=1 e2e/run.sh           # leave the stack up afterwards; `e2e/run.sh down` removes it
+PYTHON=/path/to/venv/bin/python e2e/run.sh -k budget     # a Python with the project installed; pytest args pass through
+```
+
+The tests walk the Verification list of the plan, in order, as the people would: the bootstrap admin signs
+in and sets the org up (profile, the model); invites two reps, a manager and a rep with no recorder, and makes
+a team; everyone signs in through the fake Google; both reps connect their own Fireflies account (different
+keys, the same meeting in both) and press Import now, and each gets their own copy, analysed by the worker to
+a drafted follow-up; rep B gets 404 for every page and button of rep A's; the manager sees both on /team and
+/calls, A's call then shows "Viewed by", the manager's comment on a turn shows on A's page, and the manager's
+Send on A's email is refused (403) with nothing reaching Gmail; a 1 USD per-user daily cap defers B's next job
+(no attempt spent, nothing failed) while A's runs; A connects Gmail and sends: the fake Gmail recorded exactly
+one message, from A's grant, with the draft's To, Message-ID and send key; exactly one scheduler holds the
+lock, and `docker kill` of it hands the lead to the other within the 5 s retry; offboarding B to A ends B's
+session at once and moves B's call to A, which the manager still reads; `salescoach import-sqlite` of a
+synthetic laptop database (built with the test fixtures) into the second database round-trips every count.
+`/health` and `salescoach health` are checked on every process.
+
+Ports, on 127.0.0.1 only: 18140 (the app; `SALESCOACH_PUBLIC_URL`), 19000 (the fakes: the test's "browser"
+visits the fake Google there) and 15432 (Postgres, read by the test as the owner role). The test only reads
+the database, except for two operator acts that have no page: the daily budget (written into `org_settings`,
+as Settings would) and `import-sqlite` (run in the web container). A failed run leaves every service's log
+in `e2e/logs/` (not tracked); whatever happens, the containers, volumes, network and image are removed.
+
+**How the app reaches the fakes.** Only through settings the app already has (the model provider's base URL,
+set from Setup like any OpenAI-compatible endpoint) and four endpoint overrides in `salescoach/endpoints.py`:
+`GOOGLE_OAUTH_BASE` (sign-in, token, revoke, signing keys), `GOOGLE_API_BASE` (Gmail and Calendar),
+`SALESCOACH_FIREFLIES_URL` and `SALESCOACH_FATHOM_BASE`. Unset, every URL is the vendor's. They are honoured
+only together with `SALESCOACH_E2E=1`: set without it, `salescoach serve` refuses to start and any call that
+would use one raises, so a stray variable cannot send a Google code, a token or a rep's recorder key anywhere
+else. Nothing that is checked changes: the fake's ID tokens go through the same verification as Google's
+(signature against the keys at the overridden URL, issuer, audience, expiry, nonce, `hd`, the allow-list).
+Never set any of these five variables in a real deployment.
