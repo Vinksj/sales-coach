@@ -59,13 +59,15 @@ CREATE OR REPLACE FUNCTION app_actor_role() RETURNS text LANGUAGE sql STABLE SEC
   SELECT role FROM users WHERE id = app_actor_id() AND status = 'active'
 $$;
 
--- The owners whose rows the acting user may read: themselves, plus every member of every team they manage.
--- Empty for nobody, for an unknown or inactive user, and for an admin who manages no team.
+-- The owners whose rows the acting user may read: themselves, plus (interactive sessions only) every member of
+-- every team they manage. Empty for nobody, for an unknown or inactive user, and for an admin who manages no
+-- team. A service session (a duty, the worker) reads its own rows only.
 CREATE OR REPLACE FUNCTION app_visible_owners() RETURNS text[] LANGUAGE sql STABLE SECURITY DEFINER AS $$
   SELECT COALESCE(
     (SELECT ARRAY[me.id] || ARRAY(
        SELECT u.id FROM team_managers tm JOIN users u ON u.team_id = tm.team_id
-       WHERE tm.user_id = me.id AND u.id <> me.id)
+       WHERE tm.user_id = me.id AND u.id <> me.id
+         AND current_setting('app.mode', true) = 'interactive')
      FROM users me WHERE me.id = app_actor_id() AND me.status = 'active'),
     '{}'::text[])
 $$;

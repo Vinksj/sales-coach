@@ -773,6 +773,92 @@ MIGRATIONS[10] = _sources
 MIGRATIONS[11] = _manager
 
 
+# ---- 12 (2026-09-25, Phase 8: the last keys two reps could collide on) ------------------------------
+# pattern_observations UNIQUE(family, key, subject) becomes UNIQUE(owner_id, family, key, subject), and the
+# one-open-proposal index idx_lprop_open (kind, subject) becomes (owner_id, kind, subject): a proposal's
+# subject is a tag or a trigger name every rep shares. SQLite cannot change a table's UNIQUE in place, so
+# pattern_observations is rebuilt (nothing references it by foreign key, no triggers, no views); the index is
+# dropped and made again. The DDL is frozen at version 12. The Postgres side is store/pg/0008_owner_keys.sql.
+# A store without the learning plugin's tables (SALESCOACH_NO_PLUGINS) has nothing to do: the plugin SQL
+# creates them later in today's shape.
+PATTERN_OBSERVATIONS_V12 = """CREATE TABLE pattern_observations_v12 (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  family           TEXT NOT NULL,
+  key              TEXT NOT NULL,
+  subject          TEXT NOT NULL,
+  polarity         TEXT,
+  call_id          TEXT,
+  deal_id          TEXT,
+  email_id         INTEGER,
+  nudge_id         INTEGER,
+  evidence         TEXT NOT NULL DEFAULT '{}',
+  confidence       TEXT,
+  value            REAL,
+  outcome_kind     TEXT,
+  outcome_value    TEXT,
+  seller_id        TEXT,
+  source_is_replay INTEGER NOT NULL DEFAULT 0,
+  excluded         INTEGER NOT NULL DEFAULT 0,
+  observed_at      TEXT,
+  created_at       TEXT NOT NULL,
+  owner_id TEXT NOT NULL DEFAULT 'local',
+  UNIQUE(owner_id, family, key, subject)
+)"""
+PATTERN_OBSERVATIONS_V12_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_pattern_observations_owner_id ON pattern_observations(owner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pobs_family ON pattern_observations(family, key)",
+    "CREATE INDEX IF NOT EXISTS idx_pobs_call   ON pattern_observations(call_id)",
+)
+
+
+def _unique_has_owner(conn, table: str) -> bool:
+    """Whether every UNIQUE constraint of `table` (the autoindexes SQLite makes for them) names owner_id."""
+    for _, name, unique, origin, _partial in conn.execute(f"PRAGMA index_list({table})"):
+        if unique and origin == "u":
+            cols = [r[2] for r in conn.execute(f"PRAGMA index_info({name})")]
+            if "owner_id" not in cols:
+                return False
+    return True
+
+
+def _owner_keys(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 12:     # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "pattern_observations" in tables and not _unique_has_owner(conn, "pattern_observations"):
+            new = "pattern_observations_v12"
+            before = conn.execute("SELECT COUNT(*) FROM pattern_observations").fetchone()[0]
+            conn.execute(f"DROP TABLE IF EXISTS {new}")
+            conn.execute(PATTERN_OBSERVATIONS_V12)
+            old = set(_columns(conn, "pattern_observations"))
+            cols = [c for c in _columns(conn, new) if c in old]
+            conn.execute(f"INSERT INTO {new}({', '.join(cols)}) SELECT {', '.join(cols)} FROM pattern_observations")
+            conn.execute("DROP TABLE pattern_observations")
+            conn.execute(f"ALTER TABLE {new} RENAME TO pattern_observations")
+            for index in PATTERN_OBSERVATIONS_V12_INDEXES:
+                conn.execute(index)
+            after = conn.execute("SELECT COUNT(*) FROM pattern_observations").fetchone()[0]
+            if after != before:
+                raise sqlite3.IntegrityError(f"pattern_observations rebuild copied {after} of {before} rows")
+        if "learning_proposals" in tables and "owner_id" in _columns(conn, "learning_proposals"):
+            conn.execute("DROP INDEX IF EXISTS idx_lprop_open")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(owner_id, kind, subject) "
+                         "WHERE status='open'")
+        conn.execute("PRAGMA user_version = 12")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[12] = _owner_keys
+
+
 def run(conn):
     """Apply every step above the database's version, in order; the version ends at the highest step
     applied."""

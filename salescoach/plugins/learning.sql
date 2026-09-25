@@ -38,8 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_derived_outcomes_owner_id ON derived_outcomes(own
 CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON derived_outcomes(deal_id, kind);
 
 -- One row per (family, key) seen on one subject (a call, an email edit, a sent
--- nudge, a live nudge, a stakeholder). UNIQUE(family, key, subject) makes the
--- sync idempotent. `excluded` is the user's "Wrong"; a sync never clears it.
+-- nudge, a live nudge, a stakeholder) of one owner. UNIQUE(owner_id, family, key,
+-- subject) makes the sync idempotent and keeps two reps' rows apart (migration 12 /
+-- pg 0008). `excluded` is the user's "Wrong"; a sync never clears it.
 CREATE TABLE IF NOT EXISTS pattern_observations (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   family           TEXT NOT NULL,        -- seller|seller_series|email_voice|followup|nudge_trigger|persona|objection
@@ -61,7 +62,7 @@ CREATE TABLE IF NOT EXISTS pattern_observations (
   observed_at      TEXT,
   created_at       TEXT NOT NULL,
   owner_id TEXT NOT NULL DEFAULT 'local',
-  UNIQUE(family, key, subject)
+  UNIQUE(owner_id, family, key, subject)
 );
 CREATE INDEX IF NOT EXISTS idx_pattern_observations_owner_id ON pattern_observations(owner_id);
 CREATE INDEX IF NOT EXISTS idx_pobs_family ON pattern_observations(family, key);
@@ -99,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_lp_family ON learned_patterns(family, status);
 
 -- Things the learner suggests and only the user can apply: tag merges and
 -- live-coach trigger weights. Never applied automatically. At most ONE open
--- proposal per subject (the partial index below); decided ones stay as history,
+-- proposal per owner and subject (the partial index below; owner_id since migration 12); decided ones stay as history,
 -- and a new one for the same subject is opened only when the evidence has grown
 -- to `proposals.repropose_factor` x decided_n (the n when the user decided).
 -- A table made by phase F1 (UNIQUE(kind, subject), no decided_n) is rebuilt by
@@ -120,4 +121,4 @@ CREATE TABLE IF NOT EXISTS learning_proposals (
   owner_id TEXT NOT NULL DEFAULT 'local'
 );
 CREATE INDEX IF NOT EXISTS idx_learning_proposals_owner_id ON learning_proposals(owner_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(kind, subject) WHERE status='open';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(owner_id, kind, subject) WHERE status='open';

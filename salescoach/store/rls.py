@@ -31,10 +31,13 @@ The contract (docs/architecture.md, "Isolation"):
     APP role (`salescoach_app`: no superuser, no BYPASSRLS, no CREATE) is what DATABASE_URL names;
     every table has row-level security ENABLED for it, and every OWNED table has it FORCED so that
     not even the owner's own statements skip the policies unless the role bypasses RLS outright.
-  * app_visible_owners(): the acting user's id plus the ids of every member of the teams the user
-    manages (team_managers + users.team_id). It reads the directory live, so demoting a manager
-    takes effect on the next query. A user whose row is missing or not `active` sees nothing;
-    an admin who manages no team sees no content.
+  * app_visible_owners(): the acting user's id plus, in an INTERACTIVE session, the ids of every member
+    of the teams the user manages (team_managers + users.team_id). It reads the directory live, so
+    demoting a manager takes effect on the next query. A user whose row is missing or not `active`
+    sees nothing; an admin who manages no team sees no content. A SERVICE session (a background duty
+    or the worker acting for a user) sees its own rows only: team review is a person reading pages,
+    and a manager who also sells must not have their own learning sync, embeddings or follow-ups
+    pick up the team's rows as if they were theirs (Phase 8).
 
 Policies, per class:
 
@@ -161,13 +164,15 @@ CREATE OR REPLACE FUNCTION app_actor_role() RETURNS text LANGUAGE sql STABLE SEC
   SELECT role FROM users WHERE id = app_actor_id() AND status = 'active'
 $$;
 
--- The owners whose rows the acting user may read: themselves, plus every member of every team they manage.
--- Empty for nobody, for an unknown or inactive user, and for an admin who manages no team.
+-- The owners whose rows the acting user may read: themselves, plus (interactive sessions only) every member of
+-- every team they manage. Empty for nobody, for an unknown or inactive user, and for an admin who manages no
+-- team. A service session (a duty, the worker) reads its own rows only.
 CREATE OR REPLACE FUNCTION app_visible_owners() RETURNS text[] LANGUAGE sql STABLE SECURITY DEFINER AS $$
   SELECT COALESCE(
     (SELECT ARRAY[me.id] || ARRAY(
        SELECT u.id FROM team_managers tm JOIN users u ON u.team_id = tm.team_id
-       WHERE tm.user_id = me.id AND u.id <> me.id)
+       WHERE tm.user_id = me.id AND u.id <> me.id
+         AND current_setting('app.mode', true) = 'interactive')
      FROM users me WHERE me.id = app_actor_id() AND me.status = 'active'),
     '{}'::text[])
 $$;

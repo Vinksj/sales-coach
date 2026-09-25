@@ -188,14 +188,14 @@ def recompute(conn) -> dict:
     # The user's "Wrong" covers observations that arrive later too.
     for p in existing.values():
         if p["user_state"] == "wrong":
-            conn.execute("UPDATE pattern_observations SET excluded=1 WHERE family=? AND key=? AND excluded=0",
-                         (p["family"], p["key"]))
+            conn.execute("UPDATE pattern_observations SET excluded=1 WHERE owner_id=? AND family=? AND key=? "
+                         "AND excluded=0", (owner, p["family"], p["key"]))
 
     merges = _merge_targets(existing)
     groups: dict[tuple, list] = {}
     own_obs: dict[tuple, int] = {}
-    for o in conn.execute("SELECT * FROM pattern_observations WHERE family IN (%s) ORDER BY observed_at, id"
-                          % ",".join("?" * len(PATTERN_FAMILIES)), PATTERN_FAMILIES):
+    for o in conn.execute("SELECT * FROM pattern_observations WHERE owner_id=? AND family IN (%s) ORDER BY observed_at, id"
+                          % ",".join("?" * len(PATTERN_FAMILIES)), (owner, *PATTERN_FAMILIES)):
         src = (o["family"], o["key"])
         own_obs[src] = own_obs.get(src, 0) + 1
         groups.setdefault(merges.get(src, src), []).append(o)
@@ -340,13 +340,14 @@ def _open_proposal(conn, kind, subject, pattern, target, summary, payload, n: in
     """Open a proposal unless one is open, or the user already decided this subject and the evidence
     has not materially grown since. `n` is the evidence behind it now (nudges shown live / calls with
     the tag). Decided rows are never touched: they are the history."""
-    if conn.execute("SELECT 1 FROM learning_proposals WHERE kind=? AND subject=? AND status='open'",
-                    (kind, subject)).fetchone():
+    owner = identity.actor_of(conn).user_id          # one open proposal per (owner, kind, subject): idx_lprop_open
+    if conn.execute("SELECT 1 FROM learning_proposals WHERE owner_id=? AND kind=? AND subject=? AND status='open'",
+                    (owner, kind, subject)).fetchone():
         return 0
-    last = conn.execute("SELECT id, decided_n FROM learning_proposals WHERE kind=? AND subject=? AND status!='open' "
-                        "ORDER BY id DESC LIMIT 1", (kind, subject)).fetchone()
-    rounds = conn.execute("SELECT COUNT(*) FROM learning_proposals WHERE kind=? AND subject=?",
-                          (kind, subject)).fetchone()[0]
+    last = conn.execute("SELECT id, decided_n FROM learning_proposals WHERE owner_id=? AND kind=? AND subject=? "
+                        "AND status!='open' ORDER BY id DESC LIMIT 1", (owner, kind, subject)).fetchone()
+    rounds = conn.execute("SELECT COUNT(*) FROM learning_proposals WHERE owner_id=? AND kind=? AND subject=?",
+                          (owner, kind, subject)).fetchone()[0]
     if last is not None:
         if last["decided_n"] is None:
             # Decided before n was recorded (phase F1): today's evidence becomes the baseline, so the
@@ -425,13 +426,14 @@ def _since_decision(conn, trigger: str) -> tuple[int, int] | None:
     """(shown, unhelpful) among the counted live nudges shown AFTER the user last decided a weight proposal
     for this trigger; None when there was no decision. Lowering a weight and then judging it on the
     nudges that led to the lowering would propose the same thing for ever."""
-    last = conn.execute("SELECT resolved_at FROM learning_proposals WHERE kind='trigger_weight' AND subject=? "
-                        "AND status!='open' ORDER BY id DESC LIMIT 1", (f"trigger:{trigger}",)).fetchone()
+    owner = identity.actor_of(conn).user_id
+    last = conn.execute("SELECT resolved_at FROM learning_proposals WHERE owner_id=? AND kind='trigger_weight' "
+                        "AND subject=? AND status!='open' ORDER BY id DESC LIMIT 1", (owner, f"trigger:{trigger}")).fetchone()
     if last is None or not last["resolved_at"]:
         return None
     decided = common.ts(last["resolved_at"])
-    rows = [o for o in conn.execute("SELECT * FROM pattern_observations WHERE family='nudge_trigger' AND key=?",
-                                    (trigger,))
+    rows = [o for o in conn.execute("SELECT * FROM pattern_observations WHERE owner_id=? AND family='nudge_trigger' "
+                                    "AND key=?", (owner, trigger))
             if countable(o) and decided and common.ts(o["observed_at"]) and common.ts(o["observed_at"]) > decided]
     return len(rows), sum(1 for o in rows if o["outcome_value"] in ("ignored", "dismissed"))
 
@@ -551,9 +553,11 @@ def set_user_state(conn, pid: str, state: str | None, by: str = "user:ui") -> di
     row = _ensure_row(conn, pid)
     gate.propose(conn, gate.Proposed(pid, "learned_patterns", "user_state", state, "user_input", dict(USER)), actor=by)
     if state == "wrong":
-        conn.execute("UPDATE pattern_observations SET excluded=1 WHERE family=? AND key=?", (row["family"], row["key"]))
+        conn.execute("UPDATE pattern_observations SET excluded=1 WHERE owner_id=? AND family=? AND key=?",
+                     (row["owner_id"], row["family"], row["key"]))
     elif row["user_state"] == "wrong":
-        conn.execute("UPDATE pattern_observations SET excluded=0 WHERE family=? AND key=?", (row["family"], row["key"]))
+        conn.execute("UPDATE pattern_observations SET excluded=0 WHERE owner_id=? AND family=? AND key=?",
+                     (row["owner_id"], row["family"], row["key"]))
     recompute(conn)
     if row["family"] == "seller":
         # Review 3: the legacy seller_patterns table (the prep brief's fallback, the Today card, the coach

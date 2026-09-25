@@ -18,6 +18,7 @@ numbers and counts only, never transcript or email text.
 import json
 import re
 
+from .. import identity
 from ..automation import common
 from ..store.stores import now
 from . import cfg, seller_id, voice
@@ -299,7 +300,11 @@ def sync(conn) -> dict:
                  persona(conn), objection(conn, snapshots)):
         for r in rows:
             wanted[(r["family"], r["key"], r["subject"])] = r
-    have = {(r["family"], r["key"], r["subject"]): r for r in conn.execute("SELECT * FROM pattern_observations")}
+    # The acting user's own rows only: UNIQUE(owner_id, family, key, subject), and on Postgres the read policy
+    # also shows a manager their team's rows, which this sync must neither update nor delete.
+    owner = identity.actor_of(conn).user_id
+    have = {(r["family"], r["key"], r["subject"]): r
+            for r in conn.execute("SELECT * FROM pattern_observations WHERE owner_id=?", (owner,))}
     sid, stamp, added, updated = seller_id(conn), now(), 0, 0
     for k, r in wanted.items():
         values = [json.dumps(r[c], sort_keys=True, default=str) if c == "evidence" else r[c] for c in COLUMNS]

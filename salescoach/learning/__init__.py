@@ -113,7 +113,7 @@ def _rebuild_proposals(conn) -> None:
         conn.execute(f"INSERT INTO learning_proposals({cols}) SELECT {cols} FROM learning_proposals_f1 ORDER BY id")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_proposals_owner_id ON learning_proposals(owner_id)")
         conn.execute("DROP TABLE learning_proposals_f1")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(kind, subject) "
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lprop_open ON learning_proposals(owner_id, kind, subject) "
                      "WHERE status='open'")
         conn.execute("RELEASE learning_proposals_f2")
     except Exception:

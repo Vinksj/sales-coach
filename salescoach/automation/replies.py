@@ -161,10 +161,25 @@ def _valid_date(raw):
         return None
 
 
+def reply_loop_id(owner: str, message_id: str, statement: str) -> str:
+    """The loop a reply's new commitment becomes: deterministic, so analysing the reply again finds it. Two
+    reps' mailboxes may hold the same message (email_replies is UNIQUE per owner), so outside the local
+    install the owner is in the hash; nodes.id is one key for the whole org and another rep's row is
+    invisible, so without it rep B's loop would collide with rep A's. The local user's ids are unchanged."""
+    key = f"{message_id}|{evidence.normalize(statement)}"
+    if owner != identity.LOCAL_USER:
+        key = f"{owner}|{key}"
+    return "loop-r-" + hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
 def _new_loop(conn, reply, item, conf) -> str:
-    lid = "loop-r-" + hashlib.sha1(f"{reply['message_id']}|{evidence.normalize(item.statement)}".encode()).hexdigest()[:12]
+    owner = reply["owner_id"] if "owner_id" in reply.keys() else identity.actor_of(conn).user_id
+    lid = reply_loop_id(owner, reply["message_id"], item.statement)
     if engine.node_exists(conn, lid):
         return lid
+    legacy = reply_loop_id(identity.LOCAL_USER, reply["message_id"], item.statement)
+    if legacy != lid and repo.owner_of(conn, legacy) == owner:
+        return legacy                                     # made before an import (salescoach import-sqlite)
     due = _valid_date(item.due_date)
     loop = {"type": "prospect_action", "priority": "medium", "due_date": due,
             "due_date_confidence": "explicit" if due else "unknown"}
