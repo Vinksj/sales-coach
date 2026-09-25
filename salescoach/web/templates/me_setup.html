@@ -73,7 +73,7 @@
         {% elif have %}<span class="pill pill-alert"><i></i>{{ 'Needs reconnect' if st == 'needs_reconsent' else 'Revoked' }}</span>
         {% else %}<span class="pill pill-muted"><i></i>Not connected</span>{% endif %}
       </div>
-      <p class="meta">{% if key == 'gmail' %}Send and save drafts as you, and read replies to the emails the coach sent. Asks for gmail.compose and gmail.readonly, nothing wider.{% else %}Read-only: your meetings with their guests, for the Today page and the follow-ups. Asks for calendar.readonly.{% endif %}</p>
+      <p class="meta">{% if key == 'gmail' %}Send and save drafts as you, and read replies to the emails the coach sent. Asks for gmail.compose and gmail.readonly, nothing wider.{% else %}Read-only: your own meetings and their guests, for the Calendar and Today pages, prep briefs and the meeting times the coach puts in your drafts. Asks for calendar.readonly, nothing wider; it never creates or answers an event.{% endif %}</p>
       <div class="actions">
         <a class="btn btn-sm {% if have and st == 'active' %}btn-quiet{% else %}btn-primary{% endif %}" href="/auth/connect/google?feature={{ key }}">{% if have and st == 'active' %}Connect again{% elif have %}Reconnect{% else %}Connect {{ label }}{% endif %}</a>
       </div>

@@ -232,8 +232,8 @@ actor is current when it opens. Two modes, `SALESCOACH_MODE`:
 - `cloud`: Postgres only (`stores.sales()` refuses a SQLite path; `serve` refuses at the door). There
   is no implicit user: `identity.current_actor()` and `seller.profile()` outside a session raise
   `NoActor`, which is how a background thread that forgot its session is caught. Live capture, the
-  recorder duty, the live-coach plugin, the Claude CLI calendar connector and the Jarvis bridge are
-  off (`hosted.is_hosted()` is also true, so Setup says "not available in a hosted install").
+  recorder duty, the live-coach plugin, the Claude CLI calendar connector (replaced by each rep's own
+  Google Calendar, `automation/gcal.py`) and the Jarvis bridge are off (`hosted.is_hosted()` is also true, so Setup says "not available in a hosted install").
 
 The only ways to set the actor: `identity.session(user_id, mode=)` (opens a connection and binds
 everything; every thread entry point uses it or `as_user`), `as_user(conn, user_id)` (re-bind an
@@ -309,7 +309,7 @@ is the acting user's (`user_id` from `conn.actor`):
 
 | Org-wide (`state`) | Per user (`user_state`) |
 |---|---|
-| `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
+| `sources:<kind>:last_run/last_ok/last_result/last_error` and the adapters' cursors (the poller is org-level until Phase 4); `automation:sources:*` | `automation:followups:ran_for`, `automation:followups:last_eval`, `automation:replies:last_poll`, `automation:calendar:last_sync`, `automation:calendar:sync_token` (the Google sync cursor, cloud), `automation:<duty>:last_run/last_result/unavailable/last_error` for every per-user duty (followups, replies, calendar, autosend, recorder, learning) |
 | `setup:provider_test`, `setup:finished_at`, `setup:key_host:<provider>` (the org's model provider and wizard); `ops:worker:<host>:heartbeat`, `ops:scheduler:<host>:heartbeat`, `ops:scheduler:leader` (process liveness, `ops.py`) | `setup:card_dismissed` (the Today card) |
 | `automation:calendar_tools` (the connector discovery on this machine) | `intel:coach_error`, `learning:last_run`, `learning:last_error` |
 
@@ -439,12 +439,41 @@ hosted install. Per-user OAuth grants live in `oauth_tokens` (`execution/tokens.
 under the `SALESCOACH_TOKEN_KEYS` ring, one live row per user and provider, scopes `gmail.compose`
 + `gmail.readonly` and `calendar.readonly`, `invalid_grant` marks `needs_reconsent` once);
 `GmailProvider.for_user` builds a mailbox from one, `provider_for(conn)` picks it in cloud and the
-machine-local alias otherwise, and `policy.approve_and_send` refuses in cloud anyone but the
+machine-local alias otherwise, and `calendar.calendar_for(conn)` likewise picks the acting user's own
+`gcal.GoogleCalendar` in cloud and the `claude -p` `ConnectorCalendar` otherwise (see "Calendar"
+below), and `policy.approve_and_send` refuses in cloud anyone but the
 email's owner in an interactive session (auto-send is off). Sends carry `X-Salescoach-Key`; an
 unknown-outcome send is recovered from Sent by that header, not by a Message-ID Gmail may have
 replaced. Admin writes (`adminui/ops.py`) land in `events` with `actor_user_id`. The tables
 `sessions`, `invites` and `oauth_tokens` are SYSTEM in `store/tenancy.py`. See
 [deploy-cloud.md](deploy-cloud.md).
+
+### Calendar (Phase 5)
+
+`automation/calendar.py` is written against one small interface (`name`, `available()`,
+`events(start, end) -> [CalEvent]`) and `calendar_for(conn)` supplies it: on a local install the
+seller's calendar through the claude.ai connector (`connector.py`, via `claude -p`); in cloud mode
+`gcal.GoogleCalendar(conn)`, the ACTING user's own primary calendar on their own `calendar.readonly`
+grant (`execution/tokens.access_token`; `invalid_grant` marks the grant `needs_reconsent` once and
+raises `CalendarNeedsReconnect`, a `CalendarUnavailable`). It calls `events.list` directly
+(`singleEvents`, `orderBy=startTime`, `timeMin`/`timeMax`, the rep's `timeZone`, every page) and
+normalises the REST JSON with the same `parse_page` the connector's answers go through (items,
+start/end `dateTime`|`date`, attendees' email/responseStatus/self, meeting rooms dropped, status,
+eventType compared through `kind()` so `outOfOffice` and `OUT_OF_OFFICE` agree, transparency,
+hangoutLink/conferenceData). `GoogleCalendar.sync()` adds incremental reads: the baseline is a
+windowed read without `orderBy` whose `nextSyncToken` is kept in `user_state`
+(`automation:calendar:sync_token`) with the window it covers; later reads send only `syncToken`
+(+ `singleEvents`, `timeZone`) and `sync_events` applies what changed (upserts, deletions and moves,
+then re-matches stored meetings with no deal against today's deals); 410, a day-old baseline or a
+window past the baseline means a full read. The token is written in the same transaction as the
+meetings it produced. Slots use the events, not `freebusy.query`: the busy rules (declined,
+cancelled, transparent, working-location and birthday ignored, all-day busy only when out-of-office)
+are finer than Google's free/busy blocks. `calendar_meetings` is keyed `(owner_id, event_id)`, so two
+reps invited to one meeting each have their own row. In cloud mode the per-user `calendar` duty and
+the `CALENDAR_REFRESH_REQUESTED` handler go through `calendar.sync_own_calendar`, which never raises
+for a missing, dead or unreachable link: it writes `automation:calendar:unavailable` (with a `code`)
+for that user and skips, so one rep's calendar never backs off another's; recording from the
+calendar (`set_record`, `start_recording`, the Record controls) is off.
 
 ## Prompts
 
@@ -469,7 +498,7 @@ No tracked prompt or config file names a person or a company.
 | Email policy | `execution/policy.py` | The one path to Gmail. `approve_and_send` takes an immediate transaction, refuses anything already sent, marks the row `sending`, and uses a deterministic Message-ID. An error before Gmail could have accepted the message marks it failed (retryable); any other error leaves it "delivery unknown", and a retry first searches Sent |
 | Gmail | `execution/gmail.py` | No LLM in the module; it sends exactly the bytes it is handed. The token file is read-only here |
 | Auto-send | `automation/autosend.py` | Off unless `policy.yaml` names an auto-send policy **and** `automation.yaml` has `enabled: true` and `dry_run: false`; then still subject to lint, recipient, content, hold-time, cap and working-hours checks, and still through `approve_and_send` |
-| Calendar | `automation/connector.py` | Read-only three ways: the module refuses to build a call to a tool outside its read list, only that one tool is allowed, and every write tool is explicitly disallowed. Tool results are read verbatim; no model retypes calendar data |
+| Calendar | `automation/connector.py`, `automation/gcal.py` | Local: read-only three ways: the module refuses to build a call to a tool outside its read list, only that one tool is allowed, and every write tool is explicitly disallowed. Tool results are read verbatim; no model retypes calendar data. Cloud: the rep's own grant holds only `calendar.readonly`, and the module issues only `GET` events.list on `primary` |
 | Web | `web/app.py` | Host allow-list, exact-origin check on every state-changing request, first-run gate. See [SECURITY.md](../SECURITY.md) |
 | Secrets | `config.py`, `providers/` | 0600 file, never logged, never echoed, scrubbed from error text |
 | Learning | `learning/` | No model calls; counts only; nothing from a call or an email reaches a prompt. See [learning.md](learning.md) |
