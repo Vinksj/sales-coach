@@ -70,6 +70,43 @@ def cloud_problems(role: str = "all") -> list:
     return out
 
 
+def serving_role_problems(url: str) -> list:
+    """Cloud mode: the role DATABASE_URL names must be one row-level security applies to. A superuser, a role
+    with BYPASSRLS, or one that owns (or is a member of the owner of) the schema or any of its tables skips the
+    policies (the owner, on every table whose security is not FORCED: users, teams, oauth_tokens...) and the
+    guards (store/rls.py), so every rep would read everything. That is the migration role's job
+    (DATABASE_MIGRATE_URL), never the serving one's. Empty = fine."""
+    from .store import db, stores
+    try:
+        conn = db.connect(url)
+    except Exception as exc:
+        return [f"could not connect to DATABASE_URL to check its role: {type(exc).__name__}"]
+    conn.system = True                                    # a catalog check: nobody is acting
+    try:
+        if stores._pg_schema:                             # the test harness's per-test schema
+            conn.execute(f'SET search_path TO "{stores._pg_schema}"')
+        who, superuser, bypass = conn.execute(
+            "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").fetchone()
+        schema, owns_schema, owns_table = conn.execute(
+            "SELECT current_schema(), "
+            "COALESCE((SELECT pg_has_role(current_user, n.nspowner, 'USAGE') FROM pg_namespace n "
+            "          WHERE n.nspname = current_schema()), false), "
+            "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "        WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') "
+            "          AND pg_has_role(current_user, c.relowner, 'USAGE'))").fetchone()
+    except Exception as exc:
+        return [f"could not check the DATABASE_URL role: {type(exc).__name__}"]
+    finally:
+        conn.close()
+    why = [w for w, bad in (("is a superuser", superuser), ("has BYPASSRLS", bypass),
+                            (f"owns schema {schema}", owns_schema), (f"owns tables in schema {schema}", owns_table)) if bad]
+    if not why:
+        return []
+    return [f"DATABASE_URL connects as {who}, which {' and '.join(why)}: row-level security would not apply to the "
+            "app. Point DATABASE_URL at the app role (salescoach_app: NOSUPERUSER NOBYPASSRLS, owns nothing) and keep "
+            "the owner role for DATABASE_MIGRATE_URL"]
+
+
 def cmd_serve(args):
     from . import hosted, identity
     raw_mode = (os.environ.get(identity.MODE_ENV) or "local").strip().lower()
@@ -81,7 +118,7 @@ def cmd_serve(args):
         if not db.is_postgres_url(str(stores.db_path())):
             print(stores.CLOUD_NEEDS_POSTGRES, file=sys.stderr)
             return 2
-        missing = cloud_problems(args.role)
+        missing = cloud_problems(args.role) or serving_role_problems(str(stores.db_path()))
         if missing:
             print("refusing to start in cloud mode:\n  " + "\n  ".join(missing) + "\n(see docs/deploy-cloud.md)",
                   file=sys.stderr)

@@ -85,7 +85,12 @@ def me_save(request: Request, name: str = Form(""), emails: str = Form(""), role
     webapp = _web()
     with webapp._db(request) as conn:
         shipped = config.text("style.md")
-        users.update(conn, actor.user_id, name=data["name"], email=data["emails"][0], extra_emails=data["emails"][1:],
+        # The sign-in address (users.email) is an admin's to change: sign-in resolves users by it, so a user who
+        # rewrote their own could squat a colleague's before the colleague is invited. The form edits the OTHER
+        # addresses; the sign-in address stays first whatever was submitted (trg_users_guard refuses it too).
+        primary = (users.get(conn, actor.user_id) or {}).get("email")
+        extras = [e for e in data["emails"] if e != primary]
+        users.update(conn, actor.user_id, name=data["name"], extra_emails=extras,
                      aliases=data["aliases"], languages=data["languages"], timezone=data["timezone"] or None,
                      signature=data["signature"] or None, role_title=data["role"] or None,
                      call_context=data["call_context"] or None,
@@ -93,7 +98,8 @@ def me_save(request: Request, name: str = Form(""), emails: str = Form(""), role
         identity.refresh(conn)
         repo.sync_me(conn)
         conn.commit()
-    return webapp._redirect(PATH, msg="Profile saved.")
+    note = "" if not primary or primary in data["emails"] else f" Your sign-in address stays {primary}; an admin changes it."
+    return webapp._redirect(PATH, msg="Profile saved." + note)
 
 
 @router.post(DISCONNECT)

@@ -15,8 +15,14 @@ the next request. The flow, and what each step refuses (plans/sales-coach-cloud-
 
   GET /auth/google         remembers state + nonce + a PKCE verifier server-side (googleauth.Pending)
                            and sends the browser to Google with scopes openid email profile, an
-                           `hd` hint and the S256 challenge.
-  GET /auth/callback       the state must be one we issued, once; the code is exchanged (with the
+                           `hd` hint and the S256 challenge. It also gives THIS browser a random
+                           binding value in a short-lived cookie (HttpOnly, SameSite=Lax, Secure over
+                           https, path /auth/callback) and keeps only its sha256 with the attempt.
+                           Starts are rate-limited per client address (BEGIN_LIMIT per window).
+  GET /auth/callback       the state must be one we issued, once, AND the browser must present the
+                           binding cookie of that attempt: a callback URL minted in someone else's
+                           browser signs nobody in (login CSRF). A browser already signed in as
+                           another user is refused, never switched. The code is exchanged (with the
                            verifier); the ID token is parsed by Authlib (signature against Google's
                            JWKS, iss, aud, exp, OUR nonce) AND verified again by google-auth; then
                            email_verified, `hd` in GOOGLE_ALLOWED_DOMAINS and email in that domain
@@ -34,7 +40,10 @@ the next request. The flow, and what each step refuses (plans/sales-coach-cloud-
 An unauthenticated request for a page is sent to /login?next=<same-app path>; anything else (JSON,
 event streams, form posts) gets a 401 so a script never follows a redirect into an HTML page.
 """
+import hashlib
+import hmac
 import re
+import secrets
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -56,6 +65,12 @@ INVITE_NEEDED = ("This Google account is not on the list for this coach. Ask you
                  "then sign in again with the same account.")
 DISABLED = "Your access to this coach has been switched off. Ask your admin."
 EXPIRED_LINK = "That sign-in link has expired or was already used. Start again."
+OTHER_BROWSER = ("That sign-in was not started in this browser (or the browser did not keep its cookie). "
+                 "Start again here.")
+SIGNED_IN_AS_OTHER = ("This browser is already signed in to the coach as someone else. Log out first, then sign "
+                      "in with the other account.")
+SIGNIN_COOKIE = "sc_signin"
+BEGIN_LIMIT = 30                  # sign-in starts per client address per hosted.LOGIN_WINDOW_S
 pending = googleauth.Pending()
 
 
@@ -214,6 +229,19 @@ def _limiter(request: Request, name: str = "login_limiter") -> hosted.LoginLimit
     return limiter
 
 
+def _begin_limiter(request: Request) -> hosted.LoginLimiter:
+    """Every start of a sign-in counts (not only failures): starting is what fills googleauth.Pending."""
+    limiter = getattr(request.app.state, "begin_limiter", None)
+    if limiter is None:
+        limiter = hosted.LoginLimiter(limit=BEGIN_LIMIT)
+        request.app.state.begin_limiter = limiter
+    return limiter
+
+
+def _binding_hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def _wait_message(wait: int) -> str:
     minutes = max(1, -(-wait // 60))
     return f"Too many attempts. Try again in {minutes} minute{'s' if minutes > 1 else ''}."
@@ -302,15 +330,26 @@ def google_start(request: Request):
     if not googleauth.configured():
         return _render(request, status=503, next=nxt,
                        error="Google sign-in is not configured on this install: " + "; ".join(googleauth.problems()) + ".")
-    wait = _limiter(request).retry_after(_client(request))
+    who = _client(request)
+    wait = _limiter(request).retry_after(who) or _begin_limiter(request).retry_after(who)
     if wait:
         return _render(request, status=429, next=nxt, error=_wait_message(wait))
-    state, nonce, challenge = pending.begin(kind="signin", next=nxt)
+    _begin_limiter(request).failed(who)
+    binding = secrets.token_urlsafe(32)
+    state, nonce, challenge = pending.begin(client=who, kind="signin", next=nxt, browser=_binding_hash(binding))
     url = googleauth.authorization_url(_redirect_uri(request, GOOGLE_CALLBACK), googleauth.SIGNIN_SCOPES, state, nonce,
                                        challenge)
     response = RedirectResponse(url, status_code=303)
+    response.set_cookie(SIGNIN_COOKIE, binding, max_age=int(googleauth.PENDING_TTL_S), path=GOOGLE_CALLBACK,
+                        httponly=True, samesite="lax", secure=hosted.cookie_secure())
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def _same_browser(request: Request, data: dict) -> bool:
+    """The callback comes from the browser that started this attempt: it holds the binding cookie."""
+    cookie, bound = request.cookies.get(SIGNIN_COOKIE) or "", data.get("browser") or ""
+    return bool(cookie and bound) and hmac.compare_digest(_binding_hash(cookie), bound)
 
 
 def _bootstrap_admin(conn, ident: dict) -> Optional[dict]:
@@ -388,6 +427,9 @@ def google_callback(request: Request):
     if not data or data.get("kind") != "signin":
         ip_limiter.failed(who)
         return _render(request, status=400, next="/", error=EXPIRED_LINK)
+    if not _same_browser(request, data):
+        ip_limiter.failed(who)
+        return _render(request, status=400, next="/", error=OTHER_BROWSER)
     nxt = data.get("next") or "/"
     if params.get("error") or not params.get("code"):
         return _render(request, status=400, next=nxt,
@@ -406,6 +448,12 @@ def google_callback(request: Request):
     if wait:
         return _render(request, status=429, next=nxt, error=_wait_message(wait))
     with _db(request) as conn:
+        current = getattr(request.state, "actor", None)
+        if current is not None:
+            with conn.as_system():
+                same = users.by_email(conn, ident["email"])
+            if same is None or same["id"] != current.user_id:
+                return _denied(request, SIGNED_IN_AS_OTHER, status=409)
         try:
             row = _resolve_user(conn, ident)
         except googleauth.Denied as exc:
@@ -421,6 +469,7 @@ def google_callback(request: Request):
     email_limiter.succeeded(ident["email"])
     response = RedirectResponse(nxt, status_code=303)
     sessions.set_cookie(response, cookie)
+    response.delete_cookie(SIGNIN_COOKIE, path=GOOGLE_CALLBACK)     # spent (a failed attempt's is dead anyway: one-shot state)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -449,7 +498,7 @@ def connect_start(request: Request):
     if not tokens.keys_configured():
         return _me_redirect(err="This install cannot hold a Google connection yet: SALESCOACH_TOKEN_KEYS is not set. "
                                 "Ask whoever runs it.")
-    state, nonce, challenge = pending.begin(kind="connect", user_id=actor.user_id, feature=feature)
+    state, nonce, challenge = pending.begin(client=_client(request), kind="connect", user_id=actor.user_id, feature=feature)
     email = (actor.profile or {}).get("emails", [None])[0] if actor.profile else None
     scopes = (*googleauth.SIGNIN_SCOPES, *googleauth.FEATURE_SCOPES[feature])
     url = googleauth.authorization_url(_redirect_uri(request, CONNECT_CALLBACK), scopes, state, nonce, challenge,

@@ -52,10 +52,11 @@ Policies, per class:
   ORG     accounts, people: readable and writable by any active user (every rep contributes to
                    the shared directory). users, teams, team_managers: readable by every connection
                    (a connection has to read `users` to learn who it is); writable by admins, and
-                   a user may update their own users row except id, role, team_id and status
-                   (trg_users_guard; the one exception is accepting their own invite, invited ->
-                   active, at their first sign-in); the first user of an empty directory may be inserted by
-                   anyone (the bootstrap).
+                   a user may update their own users row except id, role, team_id, status, email and
+                   google_sub (trg_users_guard; the one exception is accepting their own invite, invited ->
+                   active, with their google_sub, at their first sign-in); the first user of an empty
+                   directory may be inserted by anyone (the bootstrap). The guards bind every role row
+                   security applies to, not a role name.
   SYSTEM  wf_events: open to every connection of the app role (the bus carries ids and step names,
                    never content; the web layer publishes from interactive requests, the worker
                    claims with no user bound). state: readable by any active user, written by
@@ -73,8 +74,10 @@ Policies, per class:
           invites: SELECT and UPDATE open (the Google callback reads the allow-list and marks the
                    invite accepted with nobody bound yet); INSERT and DELETE by admins only.
           oauth_tokens: the acting user's own grant (user_id = app_actor_id(), active), or any row
-                   for an active admin (disabling a user revokes their grants; the admin page shows
-                   link status). Nobody bound reads nothing. `salescoach tokens rotate` runs as the
+                   for an active admin to read, delete or update (disabling a user revokes their grants;
+                   the admin page shows link status); an admin inserts none, and trg_oauth_tokens_guard
+                   lets an admin's update only mark a grant revoked or re-encrypt it. Nobody bound reads
+                   nothing. `salescoach tokens rotate` runs as the
                    owner role (DATABASE_MIGRATE_URL) or as an admin.
           access_log: insert-only. The viewer logs their own view of an object they may read, under
                    its true owner (app_entity_owner); that owner and their managers read the log.
@@ -164,14 +167,16 @@ CREATE OR REPLACE FUNCTION app_actor_role() RETURNS text LANGUAGE sql STABLE SEC
   SELECT role FROM users WHERE id = app_actor_id() AND status = 'active'
 $$;
 
--- The owners whose rows the acting user may read: themselves, plus (interactive sessions only) every member of
--- every team they manage. Empty for nobody, for an unknown or inactive user, and for an admin who manages no
--- team. A service session (a duty, the worker) reads its own rows only.
+-- The owners whose rows the acting user may read: themselves, plus (interactive sessions only, and only while
+-- their role is manager or admin) every member of every team they manage. Empty for nobody, for an unknown or
+-- inactive user, and for an admin who manages no team. A service session (a duty, the worker) reads its own rows
+-- only. The role is read here, live, as well as team_managers: a manager demoted to rep reads no team even if a
+-- team_managers row was left behind (adminui/ops.py deletes them on demotion; this is the backstop).
 CREATE OR REPLACE FUNCTION app_visible_owners() RETURNS text[] LANGUAGE sql STABLE SECURITY DEFINER AS $$
   SELECT COALESCE(
     (SELECT ARRAY[me.id] || ARRAY(
        SELECT u.id FROM team_managers tm JOIN users u ON u.team_id = tm.team_id
-       WHERE tm.user_id = me.id AND u.id <> me.id
+       WHERE tm.user_id = me.id AND u.id <> me.id AND me.role IN ('manager', 'admin')
          AND current_setting('app.mode', true) = 'interactive')
      FROM users me WHERE me.id = app_actor_id() AND me.status = 'active'),
     '{}'::text[])
@@ -229,19 +234,23 @@ $$;
 -- parent and let a mismatched child through. As the owner it sees every parent and refuses the mismatch.
 ALTER FUNCTION app_child_owner() SECURITY DEFINER;
 
--- A user may edit their own profile; only an admin changes who someone is in the org. The one status change a
--- user makes themselves is accepting their own invite at their first Google sign-in (invited -> active,
--- web/auth.py _resolve_user); every other status change is an admin's. The guard constrains the APP role
--- (session_user: current_user is the definer in here); the owner role, an operator at psql or the migrator,
--- bypasses row security altogether and is not the app.
-CREATE OR REPLACE FUNCTION app_users_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+-- A user may edit their own profile; only an admin changes who someone is in the org: id, role, team, status,
+-- the sign-in address (email: sign-in resolves users by it, so a rep must not squat a colleague's address before
+-- the colleague is invited) and the Google account (google_sub). The one status change a user makes themselves
+-- is accepting their own invite at their first Google sign-in (invited -> active, web/auth.py _resolve_user),
+-- which is also when their own google_sub is set, from NULL. The guard constrains every role row security
+-- applies to (row_security_active: the app role, a member of it, any other non-owner, non-BYPASSRLS login), not
+-- a role NAME; the owner role, an operator at psql or the migrator, bypasses row security altogether and is not
+-- the app. SECURITY INVOKER, so row_security_active() asks about the caller, not the function's owner.
+CREATE OR REPLACE FUNCTION app_users_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
 BEGIN
-  IF session_user = '@APP_ROLE@' AND app_actor_role() IS DISTINCT FROM 'admin' AND (
+  IF row_security_active(TG_RELID) AND app_actor_role() IS DISTINCT FROM 'admin' AND (
        NEW.id IS DISTINCT FROM OLD.id OR NEW.role IS DISTINCT FROM OLD.role
-       OR NEW.team_id IS DISTINCT FROM OLD.team_id
+       OR NEW.team_id IS DISTINCT FROM OLD.team_id OR NEW.email IS DISTINCT FROM OLD.email
+       OR (NEW.google_sub IS DISTINCT FROM OLD.google_sub AND NOT (OLD.google_sub IS NULL AND OLD.id = app_actor_id()))
        OR (NEW.status IS DISTINCT FROM OLD.status
            AND NOT (OLD.status = 'invited' AND NEW.status = 'active' AND OLD.id = app_actor_id()))) THEN
-    RAISE EXCEPTION 'only an admin may change a user''s id, role, team or status'
+    RAISE EXCEPTION 'only an admin may change a user''s id, role, team, status, sign-in address or Google account'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
   RETURN NEW;
@@ -264,9 +273,10 @@ $$;
 
 -- A comment's thread, author and time never change; only its author edits the text; a resolve is signed by
 -- whoever resolved it. The policies say WHO may update a comment (its rep or its author); this says WHAT.
-CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+-- Like trg_users_guard it binds every role row security applies to (row_security_active), not a role name.
+CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
 BEGIN
-  IF session_user = '@APP_ROLE@' AND (
+  IF row_security_active(TG_RELID) AND (
        NEW.id IS DISTINCT FROM OLD.id OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
        OR NEW.author_id IS DISTINCT FROM OLD.author_id OR NEW.entity_type IS DISTINCT FROM OLD.entity_type
        OR NEW.entity_id IS DISTINCT FROM OLD.entity_id OR NEW.turn_idx IS DISTINCT FROM OLD.turn_idx
@@ -282,6 +292,31 @@ END $$;
 DROP TRIGGER IF EXISTS trg_comments_guard ON comments;
 CREATE TRIGGER trg_comments_guard BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION app_comments_guard();
 
+-- An OAuth grant is its user's: they (or a duty acting for them) change anything in their own row. The policies
+-- also let an active admin read, update and delete any row (the admin page's link status; disabling a user;
+-- `tokens rotate --as` an admin); this says WHAT an admin's update may be: marking the grant revoked (status to
+-- 'revoked', the cached access token dropped) or re-encrypting it under another key (key_id changes with the
+-- ciphertexts). Never re-activating it, widening its scopes, moving it to another user or account, or swapping
+-- its token under the same key. (Re-encrypting takes the key ring, which only the server holds.)
+CREATE OR REPLACE FUNCTION app_oauth_tokens_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
+BEGIN
+  IF row_security_active(TG_RELID) AND OLD.user_id IS DISTINCT FROM app_actor_id() AND (
+       NEW.user_id IS DISTINCT FROM OLD.user_id OR NEW.provider IS DISTINCT FROM OLD.provider
+       OR NEW.scopes IS DISTINCT FROM OLD.scopes OR NEW.email IS DISTINCT FROM OLD.email
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (NEW.status IS DISTINCT FROM OLD.status AND NEW.status IS DISTINCT FROM 'revoked')
+       OR (NEW.refresh_token_enc IS DISTINCT FROM OLD.refresh_token_enc AND NEW.key_id IS NOT DISTINCT FROM OLD.key_id)
+       OR (NEW.access_token_enc IS DISTINCT FROM OLD.access_token_enc AND NEW.access_token_enc IS NOT NULL
+           AND NEW.key_id IS NOT DISTINCT FROM OLD.key_id)
+       OR (NEW.expires_at IS DISTINCT FROM OLD.expires_at AND NEW.expires_at IS NOT NULL)) THEN
+    RAISE EXCEPTION 'an admin may only mark another user''s Google grant revoked, re-encrypt it, or delete it'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_oauth_tokens_guard ON oauth_tokens;
+CREATE TRIGGER trg_oauth_tokens_guard BEFORE UPDATE ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION app_oauth_tokens_guard();
+
 """
 
 # ---- policy expressions -------------------------------------------------------------------------
@@ -295,7 +330,8 @@ ACTIVE_WRITE = "app_actor_active() AND app_mode_ok()"
 ADMIN = "app_actor_role() = 'admin'"
 ANY = "true"
 ACTIVE_ADMIN_WRITE = f"{ACTIVE_WRITE} AND {ADMIN}"
-OWN_GRANT = f"(user_id = app_actor_id() AND app_actor_active()) OR {ADMIN}"
+OWN_GRANT_ONLY = "user_id = app_actor_id() AND app_actor_active()"
+OWN_GRANT = f"({OWN_GRANT_ONLY}) OR {ADMIN}"
 SERVICE_OR_ADMIN = f"{ACTIVE_WRITE} AND ({ADMIN} OR current_setting('app.mode', true) = 'service')"
 HEARTBEAT = "key LIKE 'ops:%'"                 # ops.py: process heartbeats and the scheduler leader row
 
@@ -319,7 +355,9 @@ SYSTEM_POLICIES = {
     # Phase 3. The reasons are in the module docstring.
     "sessions": (ANY, ANY, ANY, ANY),
     "invites": (ANY, ADMIN, ANY, ADMIN),
-    "oauth_tokens": (OWN_GRANT,) * 4,
+    # An admin reads, updates and deletes any grant, but inserts none; what an admin's UPDATE may change is
+    # narrowed by trg_oauth_tokens_guard (mark revoked, re-encrypt).
+    "oauth_tokens": (OWN_GRANT, OWN_GRANT_ONLY, OWN_GRANT, OWN_GRANT),
     # Phase 6.
     "org_settings": (ANY, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE, ACTIVE_ADMIN_WRITE),
     # Phase 7. Insert-only: a view is logged by the viewer, of an object they may read, whose owner is
@@ -502,6 +540,27 @@ END $$;
 """
 
 
+# Every SECURITY DEFINER function of the schema (the ones above, app_child_owner from 0002, anything a numbered
+# migration adds) runs with search_path pinned to the schema it lives in, then pg_temp: a caller's search_path
+# (a temporary table or function shadowing `users`, `nodes`, `app_actor_id`) never reaches code that runs as the
+# owner. The schema is the one this file is applied to (current_schema() at apply time: `public` or whatever a
+# deployment uses; each test's own schema), so it is resolved here, not written into the file. Re-run on every
+# apply, because CREATE OR REPLACE FUNCTION drops a function's SET clauses. The trigger functions (the guards
+# run as the invoker, so row_security_active() asks about the caller) are pinned too: what they call is the
+# schema's, whatever the caller's search_path says.
+PIN_SEARCH_PATH = """-- ---- SECURITY DEFINER and trigger functions: search_path pinned to this schema, then pg_temp ---------
+DO $$
+DECLARE f regprocedure;
+BEGIN
+  FOR f IN SELECT p.oid::regprocedure FROM pg_proc p
+           WHERE p.pronamespace = current_schema()::regnamespace AND (p.prosecdef OR p.prorettype = 'trigger'::regtype) LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path = %I, pg_temp', f, current_schema());
+  END LOOP;
+END $$;
+
+"""
+
+
 def generate() -> str:
     unknown = {t: k for t, k in tenancy.TABLE_CLASS.items() if k not in (tenancy.OWNED, tenancy.ORG, tenancy.SYSTEM)}
     if unknown:
@@ -512,7 +571,8 @@ def generate() -> str:
     for table, spec in OWNED_EXCEPTIONS.items():
         if tenancy.TABLE_CLASS.get(table) != tenancy.OWNED or not spec[4].strip():
             raise ValueError(f"store/rls.py OWNED_EXCEPTIONS names {table}: it must be OWNED and carry a reason")
-    parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE), _offboard_function()]
+    parts = [HEADER, DROP_POLICIES, ROLE_BOOTSTRAP, FUNCTIONS.replace("@APP_ROLE@", APP_ROLE), _offboard_function(),
+             PIN_SEARCH_PATH]
     for kind, title in ((tenancy.OWNED, "OWNED: one rep's work; the owner writes, the owner's managers read"),
                         (tenancy.ORG, "ORG: the shared directory"),
                         (tenancy.SYSTEM, "SYSTEM: the machinery")):

@@ -55,6 +55,7 @@ SIGNIN_CALLBACK = "/auth/callback"
 CONNECT_CALLBACK = "/auth/connect/callback"
 PENDING_TTL_S = 10 * 60
 PENDING_MAX = 5000
+PENDING_PER_CLIENT = 20             # live attempts one client address may hold; its own oldest goes first
 HTTP_TIMEOUT_S = 15.0
 
 # Tests replace this with an httpx.MockTransport; None = the network.
@@ -208,25 +209,35 @@ def authorization_url(redirect_uri: str, scopes, state: str, nonce: str, code_ch
 class Pending:
     """The server side of `state`: what a redirect promised the callback (nonce, PKCE verifier,
     where to go next, which feature). One-shot, ten minutes, bounded; in memory, so one web process
-    per install (Phase 6 keeps the web role to one process; a restart only means signing in again)."""
+    per install (Phase 6 keeps the web role to one process; a restart only means signing in again).
 
-    def __init__(self, ttl_s: float = PENDING_TTL_S, max_items: int = PENDING_MAX):
-        self.ttl_s, self.max_items = ttl_s, max_items
+    Bounded twice: PENDING_PER_CLIENT live attempts per client address (a flood from one address only
+    evicts that address's own attempts, never someone else's), then PENDING_MAX overall (oldest first).
+    web/auth.py also rate-limits starting a sign-in per address, so pushing a real person's attempt out
+    takes many addresses, each of them limited."""
+
+    def __init__(self, ttl_s: float = PENDING_TTL_S, max_items: int = PENDING_MAX,
+                 per_client: int = PENDING_PER_CLIENT):
+        self.ttl_s, self.max_items, self.per_client = ttl_s, max_items, per_client
         self._items: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def begin(self, **data) -> tuple[str, str, str]:
+    def begin(self, client: Optional[str] = None, **data) -> tuple[str, str, str]:
         """Remember a new attempt; returns (state, nonce, code_challenge). The verifier stays here
-        until the callback takes it."""
+        until the callback takes it. `client` is the address the attempt came from (the cap's key)."""
         state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         verifier, challenge = new_pkce()
         now = time.time()
         with self._lock:
             self._sweep(now)
+            if client is not None:
+                mine = sorted((v["at"], k) for k, v in self._items.items() if v.get("client") == client)
+                for _at, k in mine[:max(0, len(mine) - self.per_client + 1)]:
+                    self._items.pop(k, None)
             if len(self._items) >= self.max_items:
                 oldest = min(self._items, key=lambda k: self._items[k]["at"])
                 self._items.pop(oldest, None)
-            self._items[state] = {"nonce": nonce, "verifier": verifier, "at": now, **data}
+            self._items[state] = {"nonce": nonce, "verifier": verifier, "at": now, "client": client, **data}
         return state, nonce, challenge
 
     def take(self, state: Optional[str]) -> Optional[dict]:

@@ -136,8 +136,9 @@ def test_for_user_picks_that_users_grant_and_refuses_missing_or_dead(db, keys, d
     if dialect == "postgres":
         asha = users.create(db, "asha@tessel.test", "Asha")
         bala = users.create(db, "bala@tessel.test", "Bala")
-        grant(db, asha["id"], email="asha@tessel.test", access="at-asha")
-        grant(db, bala["id"], email="bala@tessel.test", access="at-bala")
+        for who, email, access in ((asha, "asha@tessel.test", "at-asha"), (bala, "bala@tessel.test", "at-bala")):
+            with identity.as_user(db, who["id"]):                  # a grant is stored by its own user (an admin inserts none)
+                grant(db, who["id"], email=email, access=access)
         a, b = gmail_mod.GmailProvider.for_user(db, asha["id"]), gmail_mod.GmailProvider.for_user(db, bala["id"])
         assert (a.address, a._creds.token, b.address, b._creds.token) == ("asha@tessel.test", "at-asha", "bala@tessel.test", "at-bala")
         with identity.as_user(db, asha["id"]):

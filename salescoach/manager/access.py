@@ -90,9 +90,12 @@ def require_own(conn, owner_id, what: str = "this") -> None:
 # ---- the team -----------------------------------------------------------------------------------------
 
 def managed_team_ids(conn, user_id: Optional[str] = None) -> list:
+    """The teams the user manages: their team_managers rows, while their role is manager or admin (the same
+    rule as app_visible_owners(): a manager demoted to rep manages nothing, whatever rows were left behind)."""
     user_id = user_id or actor_id(conn)
-    return [r[0] for r in conn.execute("SELECT team_id FROM team_managers WHERE user_id=? ORDER BY team_id",
-                                       (user_id,)).fetchall()]
+    return [r[0] for r in conn.execute(
+        "SELECT tm.team_id FROM team_managers tm JOIN users u ON u.id = tm.user_id "
+        "WHERE tm.user_id=? AND u.role IN ('manager', 'admin') ORDER BY tm.team_id", (user_id,)).fetchall()]
 
 
 def manages_team(conn, user_id: Optional[str] = None) -> bool:

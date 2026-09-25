@@ -208,3 +208,17 @@ def test_the_command_line(install, target, monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_MIGRATE_URL")
     assert cli.main(["import-sqlite", str(install["path"]), "--as", EMAIL]) == 2
     assert "DATABASE_MIGRATE_URL" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("table,column", [("events", "actor_user_id"), ("people", "user_id")])
+def test_a_source_naming_any_user_but_local_is_refused(install, target, table, column):
+    """Security review, finding 8: a user column holding an id other than 'local' would reach the cloud verbatim
+    and name somebody there (an event 'by' the admin, a person linked to another rep); refused, nothing written."""
+    raw = sqlite3.connect(install["path"])
+    assert raw.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > 0
+    raw.execute(f"UPDATE {table} SET {column}='u-admin' WHERE rowid = (SELECT MIN(rowid) FROM {table})")
+    raw.commit()
+    raw.close()
+    with pytest.raises(importer.ImportRefused, match=f"{table}.{column} names user 'u-admin'"):
+        importer.run(install["path"], EMAIL, log=lambda *_: None)
+    assert target.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 0          # all or nothing
