@@ -108,9 +108,10 @@ def test_the_app_runs_as_the_app_role(db):
         "SELECT p.proname, p.prosecdef FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
         "WHERE n.nspname = current_schema()").fetchall()}
     for fn in ("app_actor_active", "app_actor_role", "app_visible_owners", "app_can_write", "app_users_empty",
-               "app_owner_of", "app_child_owner", "app_users_guard"):
+               "app_owner_of", "app_child_owner"):
         assert definer.get(fn) is True, fn
-    for fn in ("app_actor_id", "app_mode_ok"):
+    # The guards run as the invoker: row_security_active() must ask about the caller, not the function's owner.
+    for fn in ("app_actor_id", "app_mode_ok", "app_users_guard", "app_comments_guard", "app_oauth_tokens_guard"):
         assert definer.get(fn) is False, fn
 
 

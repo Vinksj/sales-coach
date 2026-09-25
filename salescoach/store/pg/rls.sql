@@ -126,19 +126,23 @@ $$;
 -- parent and let a mismatched child through. As the owner it sees every parent and refuses the mismatch.
 ALTER FUNCTION app_child_owner() SECURITY DEFINER;
 
--- A user may edit their own profile; only an admin changes who someone is in the org. The one status change a
--- user makes themselves is accepting their own invite at their first Google sign-in (invited -> active,
--- web/auth.py _resolve_user); every other status change is an admin's. The guard constrains the APP role
--- (session_user: current_user is the definer in here); the owner role, an operator at psql or the migrator,
--- bypasses row security altogether and is not the app.
-CREATE OR REPLACE FUNCTION app_users_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+-- A user may edit their own profile; only an admin changes who someone is in the org: id, role, team, status,
+-- the sign-in address (email: sign-in resolves users by it, so a rep must not squat a colleague's address before
+-- the colleague is invited) and the Google account (google_sub). The one status change a user makes themselves
+-- is accepting their own invite at their first Google sign-in (invited -> active, web/auth.py _resolve_user),
+-- which is also when their own google_sub is set, from NULL. The guard constrains every role row security
+-- applies to (row_security_active: the app role, a member of it, any other non-owner, non-BYPASSRLS login), not
+-- a role NAME; the owner role, an operator at psql or the migrator, bypasses row security altogether and is not
+-- the app. SECURITY INVOKER, so row_security_active() asks about the caller, not the function's owner.
+CREATE OR REPLACE FUNCTION app_users_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
 BEGIN
-  IF session_user = 'salescoach_app' AND app_actor_role() IS DISTINCT FROM 'admin' AND (
+  IF row_security_active(TG_RELID) AND app_actor_role() IS DISTINCT FROM 'admin' AND (
        NEW.id IS DISTINCT FROM OLD.id OR NEW.role IS DISTINCT FROM OLD.role
-       OR NEW.team_id IS DISTINCT FROM OLD.team_id
+       OR NEW.team_id IS DISTINCT FROM OLD.team_id OR NEW.email IS DISTINCT FROM OLD.email
+       OR (NEW.google_sub IS DISTINCT FROM OLD.google_sub AND NOT (OLD.google_sub IS NULL AND OLD.id = app_actor_id()))
        OR (NEW.status IS DISTINCT FROM OLD.status
            AND NOT (OLD.status = 'invited' AND NEW.status = 'active' AND OLD.id = app_actor_id()))) THEN
-    RAISE EXCEPTION 'only an admin may change a user''s id, role, team or status'
+    RAISE EXCEPTION 'only an admin may change a user''s id, role, team, status, sign-in address or Google account'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
   RETURN NEW;
@@ -161,9 +165,10 @@ $$;
 
 -- A comment's thread, author and time never change; only its author edits the text; a resolve is signed by
 -- whoever resolved it. The policies say WHO may update a comment (its rep or its author); this says WHAT.
-CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+-- Like trg_users_guard it binds every role row security applies to (row_security_active), not a role name.
+CREATE OR REPLACE FUNCTION app_comments_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
 BEGIN
-  IF session_user = 'salescoach_app' AND (
+  IF row_security_active(TG_RELID) AND (
        NEW.id IS DISTINCT FROM OLD.id OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
        OR NEW.author_id IS DISTINCT FROM OLD.author_id OR NEW.entity_type IS DISTINCT FROM OLD.entity_type
        OR NEW.entity_id IS DISTINCT FROM OLD.entity_id OR NEW.turn_idx IS DISTINCT FROM OLD.turn_idx
@@ -178,6 +183,31 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS trg_comments_guard ON comments;
 CREATE TRIGGER trg_comments_guard BEFORE UPDATE ON comments FOR EACH ROW EXECUTE FUNCTION app_comments_guard();
+
+-- An OAuth grant is its user's: they (or a duty acting for them) change anything in their own row. The policies
+-- also let an active admin read, update and delete any row (the admin page's link status; disabling a user;
+-- `tokens rotate --as` an admin); this says WHAT an admin's update may be: marking the grant revoked (status to
+-- 'revoked', the cached access token dropped) or re-encrypting it under another key (key_id changes with the
+-- ciphertexts). Never re-activating it, widening its scopes, moving it to another user or account, or swapping
+-- its token under the same key. (Re-encrypting takes the key ring, which only the server holds.)
+CREATE OR REPLACE FUNCTION app_oauth_tokens_guard() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER AS $$
+BEGIN
+  IF row_security_active(TG_RELID) AND OLD.user_id IS DISTINCT FROM app_actor_id() AND (
+       NEW.user_id IS DISTINCT FROM OLD.user_id OR NEW.provider IS DISTINCT FROM OLD.provider
+       OR NEW.scopes IS DISTINCT FROM OLD.scopes OR NEW.email IS DISTINCT FROM OLD.email
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (NEW.status IS DISTINCT FROM OLD.status AND NEW.status IS DISTINCT FROM 'revoked')
+       OR (NEW.refresh_token_enc IS DISTINCT FROM OLD.refresh_token_enc AND NEW.key_id IS NOT DISTINCT FROM OLD.key_id)
+       OR (NEW.access_token_enc IS DISTINCT FROM OLD.access_token_enc AND NEW.access_token_enc IS NOT NULL
+           AND NEW.key_id IS NOT DISTINCT FROM OLD.key_id)
+       OR (NEW.expires_at IS DISTINCT FROM OLD.expires_at AND NEW.expires_at IS NOT NULL)) THEN
+    RAISE EXCEPTION 'an admin may only mark another user''s Google grant revoked, re-encrypt it, or delete it'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_oauth_tokens_guard ON oauth_tokens;
+CREATE TRIGGER trg_oauth_tokens_guard BEFORE UPDATE ON oauth_tokens FOR EACH ROW EXECUTE FUNCTION app_oauth_tokens_guard();
 
 -- ---- Phase 8: offboarding (salescoach/lifecycle/offboard.py) ----------------------------------------
 -- An active admin, interactively, ends a user's ownership of their work: p_to NULL purges every OWNED row of
@@ -433,6 +463,16 @@ BEGIN
     GET DIAGNOSTICS m = ROW_COUNT;
   END IF;
   RETURN n + m;
+END $$;
+
+-- ---- SECURITY DEFINER and trigger functions: search_path pinned to this schema, then pg_temp ---------
+DO $$
+DECLARE f regprocedure;
+BEGIN
+  FOR f IN SELECT p.oid::regprocedure FROM pg_proc p
+           WHERE p.pronamespace = current_schema()::regnamespace AND (p.prosecdef OR p.prorettype = 'trigger'::regtype) LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path = %I, pg_temp', f, current_schema());
+  END LOOP;
 END $$;
 
 -- ---- OWNED: one rep's work; the owner writes, the owner's managers read --------------------------------
@@ -820,7 +860,7 @@ CREATE POLICY invites_delete ON invites FOR DELETE USING (app_actor_role() = 'ad
 ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE oauth_tokens NO FORCE ROW LEVEL SECURITY;
 CREATE POLICY oauth_tokens_select ON oauth_tokens FOR SELECT USING ((user_id = app_actor_id() AND app_actor_active()) OR app_actor_role() = 'admin');
-CREATE POLICY oauth_tokens_insert ON oauth_tokens FOR INSERT WITH CHECK ((user_id = app_actor_id() AND app_actor_active()) OR app_actor_role() = 'admin');
+CREATE POLICY oauth_tokens_insert ON oauth_tokens FOR INSERT WITH CHECK (user_id = app_actor_id() AND app_actor_active());
 CREATE POLICY oauth_tokens_update ON oauth_tokens FOR UPDATE USING ((user_id = app_actor_id() AND app_actor_active()) OR app_actor_role() = 'admin') WITH CHECK ((user_id = app_actor_id() AND app_actor_active()) OR app_actor_role() = 'admin');
 CREATE POLICY oauth_tokens_delete ON oauth_tokens FOR DELETE USING ((user_id = app_actor_id() AND app_actor_active()) OR app_actor_role() = 'admin');
 -- org_settings: SYSTEM
