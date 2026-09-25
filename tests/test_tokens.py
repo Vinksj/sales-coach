@@ -206,3 +206,31 @@ def test_missing_keys_refuse_before_any_row_is_written(db, monkeypatch):
         tokens.store(db, "local", "1//rt", [], None)
     assert db.execute("SELECT COUNT(*) FROM oauth_tokens").fetchone()[0] == 0
     assert os.environ.get(tokens.KEYS_ENV) is None
+
+
+def test_rotate_never_overwrites_a_grant_that_changed_while_it_ran(db, keys, monkeypatch):
+    """Security review, finding 7: a reconnect (a new refresh token) that lands between rotate's read of a row
+    and its write must survive; rotate writes a row back only if it is still the row it read."""
+    from salescoach.store import stores
+    tokens.store(db, "local", "1//old", googleauth.FEATURE_SCOPES["gmail"], "maya@tessel.test",
+                 access_token="at-old", expires_in=3600)
+    db.commit()
+    monkeypatch.setenv(tokens.KEYS_ENV, f"{K2},{K1}")
+    other = stores.sales()                                   # another process: the person reconnects Google
+    real, fired = tokens.encrypt, []
+
+    def racing(value, aad):
+        if not fired:                                         # rotate has read the row and is re-encrypting it
+            fired.append(1)
+            tokens.store(other, "local", "1//new", googleauth.FEATURE_SCOPES["gmail"], "maya@tessel.test")
+            other.commit()
+        return real(value, aad)
+
+    monkeypatch.setattr(tokens, "encrypt", racing)
+    try:
+        report = tokens.rotate(db)
+    finally:
+        other.close()
+    assert fired and report["unreadable"] == [] and report["rotated"] + report["skipped"] == 1
+    row = tokens.get(db, "local")
+    assert row["key_id"] == "k2" and tokens.refresh_token_of(db, "local") == "1//new"

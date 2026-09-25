@@ -30,6 +30,7 @@ KEYS_ENV = "SALESCOACH_TOKEN_KEYS"
 PROVIDER = "google"
 STATUSES = ("active", "needs_reconsent", "revoked")
 ACCESS_MARGIN_S = 120          # a cached access token this close to expiry is refreshed first
+ROTATE_ATTEMPTS = 5            # re-reads of one row that changed while `rotate` was re-encrypting it
 NONCE_BYTES = 12
 
 
@@ -326,26 +327,45 @@ def revoke_all_for_user(conn, user_id: str) -> int:
 
 def rotate(conn) -> dict:
     """Re-encrypt every row under the newest key. Rows already on it are skipped; a row whose key is
-    no longer in the ring is reported, not touched. Returns {rotated, skipped, unreadable}."""
+    no longer in the ring is reported, not touched. Returns {rotated, skipped, unreadable}.
+
+    Each row is written back only if it is still the row that was read (same key_id and ciphertexts: every
+    encrypt draws a fresh nonce, so any concurrent store, refresh, mark or disconnect changes them). A row that
+    changed meanwhile is read again and re-considered, so a reconnect or a revoke that lands mid-rotation is
+    never overwritten with the older token."""
     newest = key_ring()[0][0]
     rotated = skipped = 0
     unreadable = []
-    for r in conn.execute("SELECT * FROM oauth_tokens ORDER BY user_id, provider").fetchall():
-        if r["key_id"] == newest:
-            skipped += 1
-            continue
-        try:
-            rt = decrypt(r["refresh_token_enc"], r["key_id"], _aad(r["user_id"], r["provider"], "refresh_token")) \
-                if r["refresh_token_enc"] else None
-            at = decrypt(r["access_token_enc"], r["key_id"], _aad(r["user_id"], r["provider"], "access_token")) \
-                if r["access_token_enc"] else None
-        except TokenError:
-            unreadable.append(f"{r['user_id']}/{r['provider']} (key {r['key_id']})")
-            continue
-        rt_enc = encrypt(rt, _aad(r["user_id"], r["provider"], "refresh_token"))[0] if rt else None
-        at_enc = encrypt(at, _aad(r["user_id"], r["provider"], "access_token"))[0] if at else None
-        conn.execute("UPDATE oauth_tokens SET refresh_token_enc=?, access_token_enc=?, key_id=?, updated_at=? "
-                     "WHERE user_id=? AND provider=?", (rt_enc, at_enc, newest, now(), r["user_id"], r["provider"]))
-        rotated += 1
+    keys = [(r["user_id"], r["provider"]) for r in
+            conn.execute("SELECT user_id, provider FROM oauth_tokens ORDER BY user_id, provider").fetchall()]
+    for user_id, provider in keys:
+        for _attempt in range(ROTATE_ATTEMPTS):
+            r = conn.execute("SELECT * FROM oauth_tokens WHERE user_id=? AND provider=?", (user_id, provider)).fetchone()
+            if r is None:                                     # disconnected meanwhile: nothing to rotate
+                break
+            if r["key_id"] == newest:
+                skipped += 1
+                break
+            try:
+                rt = decrypt(r["refresh_token_enc"], r["key_id"], _aad(user_id, provider, "refresh_token")) \
+                    if r["refresh_token_enc"] else None
+                at = decrypt(r["access_token_enc"], r["key_id"], _aad(user_id, provider, "access_token")) \
+                    if r["access_token_enc"] else None
+            except TokenError:
+                unreadable.append(f"{user_id}/{provider} (key {r['key_id']})")
+                break
+            rt_enc = encrypt(rt, _aad(user_id, provider, "refresh_token"))[0] if rt else None
+            at_enc = encrypt(at, _aad(user_id, provider, "access_token"))[0] if at else None
+            cur = conn.execute(
+                "UPDATE oauth_tokens SET refresh_token_enc=?, access_token_enc=?, key_id=?, updated_at=? "
+                "WHERE user_id=? AND provider=? AND key_id=? "
+                "AND COALESCE(refresh_token_enc, '') = ? AND COALESCE(access_token_enc, '') = ?",
+                (rt_enc, at_enc, newest, now(), user_id, provider, r["key_id"],
+                 r["refresh_token_enc"] or "", r["access_token_enc"] or ""))
+            if cur.rowcount:
+                rotated += 1
+                break
+        else:
+            unreadable.append(f"{user_id}/{provider} (kept changing while rotating; run rotate again)")
     conn.commit()
     return {"rotated": rotated, "skipped": skipped, "unreadable": unreadable, "key": newest}
