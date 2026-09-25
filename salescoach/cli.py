@@ -90,7 +90,10 @@ def cmd_serve(args):
             print("refusing to start in cloud mode:\n  " + "\n  ".join(missing) + "\n(see docs/deploy-cloud.md)",
                   file=sys.stderr)
             return 2
-    if args.role in ("all", "web") and not _loopback(args.host) and not hosted.auth_enabled() and not args.allow_unauthenticated:
+    # Cloud mode always has a login (Google sign-in, web/auth.required()); the refusal is for a single-seller
+    # install with no password. The image's own CMD binds 0.0.0.0, so a cloud web process must pass here.
+    signed_in = hosted.auth_enabled() or identity.cloud()
+    if args.role in ("all", "web") and not _loopback(args.host) and not signed_in and not args.allow_unauthenticated:
         print(UNAUTHENTICATED_BIND.format(host=args.host), file=sys.stderr)
         return 2
     from . import ops

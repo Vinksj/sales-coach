@@ -352,6 +352,28 @@ def test_serve_refuses_a_non_loopback_bind_without_a_password(local, monkeypatch
     assert calls[-1]["forwarded_allow_ips"] == "172.16.0.0/12"
 
 
+def test_serve_in_cloud_mode_binds_the_network_without_a_password(local, monkeypatch, capsys):
+    """Regression (e2e run 2026-09-25): cloud mode's login is Google sign-in, never a password, and the image's
+    CMD binds 0.0.0.0, so `serve --role web` in a cloud container refused to start ("no login")."""
+    import uvicorn
+    from salescoach import identity
+    from salescoach.store import stores
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(kw))
+    monkeypatch.setattr("salescoach.web.app.create_app", lambda *a, **k: object())
+    monkeypatch.setattr(stores, "db_path", lambda: "postgresql://app@db:5432/salescoach")
+    monkeypatch.setenv(identity.MODE_ENV, "cloud")
+    monkeypatch.setenv("SALESCOACH_SESSION_SECRET", "a long random string for the tests")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "1234.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "shh")
+    monkeypatch.setenv("GOOGLE_ALLOWED_DOMAINS", "tessel.test")
+    monkeypatch.setenv("SALESCOACH_TOKEN_KEYS", "k1:" + "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+    assert cli.main(["serve", "--role", "web", "--host", "0.0.0.0", "--port", "8140"]) != 2, capsys.readouterr().err
+    assert calls[-1]["host"] == "0.0.0.0"
+    monkeypatch.setenv(identity.MODE_ENV, "local")                                   # a laptop: still refused
+    assert cli.main(["serve", "--role", "web", "--host", "0.0.0.0"]) == 2 and len(calls) == 1
+
+
 # ---- a PBKDF2 hash instead of the password ---------------------------------------------------------------------
 
 def test_pbkdf2_hash_is_accepted_and_wins_over_the_plain_password(client, monkeypatch, capsys):
