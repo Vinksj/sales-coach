@@ -187,11 +187,12 @@ connections come from a `psycopg_pool` pool; `close()` returns one.
   statement aborts a Postgres transaction. Prefer `ON CONFLICT` to catching `IntegrityError`.
 - Catch `db.IntegrityError` / `db.OperationalError` / `db.Error`, never `sqlite3.*`.
 
-**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (9 today: 8 is
-Phase 3's sign-in tables, 9 is Phase 6's ops tables), run by
+**Migrations differ.** SQLite: `store/migrate.py`, keyed on `PRAGMA user_version` (12 today: 8 is
+Phase 3's sign-in tables, 9 Phase 6's ops tables, 10 Phase 4's recorder connections, 11 Phase 7's manager
+tables, 12 Phase 8's owner keys), run by
 every connect, followed by the plugin DDL (`CREATE IF NOT EXISTS`) and `reconcile_columns`. Postgres:
 `store/pgmigrate.py` applies the numbered files in `store/pg/` once, under `pg_advisory_lock`,
-recorded in `schema_migrations` (0001, 0002, 0004 and 0005 today: 0003 was the one-shot row-level
+recorded in `schema_migrations` (0001, 0002 and 0004 to 0008 today: 0003 was the one-shot row-level
 security file, replaced by the repeatable `rls.sql` before anything was deployed, and the gap is
 kept so a database that did apply it moves on through 0004; the highest number is the version a build
 expects), then the REPEATABLE `store/pg/rls.sql` whenever its sha256 differs from the one recorded in
@@ -295,7 +296,9 @@ and the table stays SYSTEM.
 
 **Keys re-scoped per owner** (migration 7 / 0002): `seller_patterns (owner_id, tag)`,
 `calendar_cache (owner_id, key)`, `calendar_meetings (owner_id, event_id)`, `email_replies UNIQUE
-(owner_id, message_id)`, `learned_patterns UNIQUE (owner_id, family, key, scope)` with ids
+(owner_id, message_id)`, and in Phase 8 (SQLite 12 / pg 0008) `pattern_observations UNIQUE (owner_id,
+family, key, subject)` and the one-open-proposal index `idx_lprop_open (owner_id, kind, subject)`; a reply's
+new loop id hashes the owner in (`automation/replies.reply_loop_id`) outside the local install, `learned_patterns UNIQUE (owner_id, family, key, scope)` with ids
 `lp:<family>:u:<owner>:<key>` (rewritten in `merged_into`, `learning_proposals`, `field_provenance`
 and `memory_conflicts`), `coach_reports.owner_id`. A user's own paste or upload gets
 `paste:<owner>:<sha>` / `upload:<owner>:<sha>` (`repo.user_source_ref`). Phase 4: a recorder
@@ -372,9 +375,11 @@ be policed: a numbered policy file could only ever cover the tables that existed
 The helpers: `app_actor_id()` (the setting, NULL when empty), `app_mode_ok()` (a mode is bound),
 `app_actor_active()` / `app_actor_role()` (the acting user's row exists and is `active`, SECURITY
 DEFINER so the `users` policies cannot recurse), `app_visible_owners()` (the acting user's id plus
-the ids of every member of every team they manage, `team_managers` + `users.team_id`, read live so a
-demotion or a disabling takes effect on the next query; empty for nobody, for an inactive user and
-for an admin who manages no team), `app_can_write(owner)` (the row is the acting user's own, they are
+in an INTERACTIVE session the ids of every member of every team they manage, `team_managers` +
+`users.team_id`, read live so a demotion or a disabling takes effect on the next query; empty for nobody,
+for an inactive user and for an admin who manages no team; a SERVICE session, a duty or the worker, reads
+its own rows only, so a manager who also sells never has their learning sync or follow-ups pick up the
+team's rows as theirs), `app_can_write(owner)` (the row is the acting user's own, they are
 active, a mode is bound), `app_users_empty()`, `app_owner_of(node)`, `app_source_connection_owner(id)`
 (Phase 4: the per-connection webhook learns whose connection it is before it can bind them; an id, never
 content; NULL for a disconnected connection or an inactive owner), `app_org_spend_since(since)` and
@@ -526,3 +531,19 @@ No tracked prompt or config file names a person or a company.
 
 Two reviews of these paths, what they found and the regression tests that pin each fix are in
 [review-2026-09-12.md](review-2026-09-12.md).
+
+## The data's life cycle (Phase 8)
+
+`salescoach/lifecycle/`: `importer.py` (`salescoach import-sqlite PATH --as <email>`: a single-user SQLite
+install, migrated on a temporary copy, into an EMPTY Postgres org in one owner-role transaction, ids
+verbatim, 'local' rewritten to the user wherever the owner is embedded, sequences set past the max, then
+re-counted and checked), `retention.py` (the org's `retention.days`, config/org.yaml; a per-owner scheduler
+duty in each owner's service session), `export.py` (`/me/export`, `salescoach export --user`: the user's own
+rows, every query naming the user), `offboard.py` (reassign or purge a leaving rep) and `settings.py` (the
+retention period and the recording-consent notice). Row-level security lets nobody move a row to another
+owner and lets an admin read no content, so two SECURITY DEFINER functions in `rls.sql`, generated from
+`tenancy.py`, are the only doors: `app_offboard(user, to)` (an active admin, interactively; every OWNED
+table is moved or purged, `tenancy.PERSONAL` deleted on a reassign) and `app_forget_annotations(type, ids)`
+(a service session deletes the comments and views about its own objects being deleted). See "Backup and
+restore", "Launch checklist" and "Offboarding and data requests" in [deploy-cloud.md](deploy-cloud.md).
+

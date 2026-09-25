@@ -44,7 +44,7 @@ nothing on a laptop install changes.
 | `SALESCOACH_MODE` | all three | yes | `cloud`: no implicit user, org settings and raw payloads in the database |
 | `SALESCOACH_ROLE` | all three | yes | `web`, `worker` or `scheduler` (`all` = one process; see "Processes") |
 | `DATABASE_URL` | all three | yes | the APP role's `postgresql://` URL (`salescoach_app`: no superuser, no `BYPASSRLS`) |
-| `DATABASE_MIGRATE_URL` | `salescoach migrate`, `salescoach tokens rotate` | yes | the OWNER role's URL (owns the schema, `BYPASSRLS`): DDL, the row-level policies, key rotation. Never given to a serving process |
+| `DATABASE_MIGRATE_URL` | `salescoach migrate`, `salescoach tokens rotate`, `import-sqlite`, `export --user`, backups | yes | the OWNER role's URL (owns the schema, `BYPASSRLS`): DDL, the row-level policies, key rotation. Never given to a serving process |
 | `SALESCOACH_PUBLIC_URL` | web | yes | `https://coach.example.com`: what people type; also the base of the two OAuth redirect URIs |
 | `SALESCOACH_SESSION_SECRET` | web | yes | a long random string; signs the session cookie. Rotating it logs every browser out. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | all three | yes | the Internal OAuth client the Workspace admin created (checklist below); a worker refreshes the reps' grants with it |
@@ -176,6 +176,8 @@ and the person reconnects. The ring is never written to the database or to any f
   calls, deals, drafts and coaching stay in the database, owned by them, readable by their team's
   managers as before; nothing is sent or polled as them any more. Enabling them again lets them sign
   in; they reconnect Google themselves.
+- A person leaving for good is **offboarded** (their work handed to another rep, or deleted): see
+  "Offboarding and data requests" below. Disabling alone keeps their work where it is.
 - Rotating `SALESCOACH_SESSION_SECRET` ends every session on the next request.
 - Housekeeping: `sessions.purge()` drops sessions expired or revoked more than a week ago.
 - The `sessions` table never holds a session id: its `id` column is sha256 of the id the cookie
@@ -287,3 +289,119 @@ nothing). The table is OWNED, under the same row-level policies as a call: its o
 managers) read it, nobody else. Nothing in the pipeline reads a payload back; `salescoach payloads
 export --out DIR --as <user id>` (or without `--out`, JSON lines on stdout; `--since` to bound it)
 writes one user's out for support.
+
+## Backup and restore
+
+Everything the app knows is in the one Postgres database: calls and transcripts, deals, loops, emails,
+coaching, the settings (`org_settings`), what each source delivered (`raw_payloads`), the encrypted
+Google grants and recorder keys, sessions. There is no shared volume and nothing in `SALESCOACH_DATA`
+that a cloud install needs to keep (a laptop keeps payload files under `data/inbox`; a cloud install keeps
+them as rows). What is NOT in the database, and must be kept elsewhere: the environment (above), above all
+`SALESCOACH_TOKEN_KEYS` (without the key that encrypted them, the grants and recorder keys in a backup are
+unreadable: people reconnect) and `SALESCOACH_SESSION_SECRET` (without it every browser signs in again).
+Keep both in the platform's secret store and in the org's password manager.
+
+**Managed backups (Render).** Use a paid Render Postgres plan: it takes daily snapshots and keeps
+write-ahead logs for point-in-time recovery (the window depends on the plan; check it before launch and
+write it down). Keep the database on the private network (no public connection string) and in the same
+region as the services. A point-in-time restore creates a NEW database: point `DATABASE_URL` and
+`DATABASE_MIGRATE_URL` at it (the roles come with it) and redeploy.
+
+**A logical backup you hold yourself** (weekly, and before every upgrade), as the OWNER role, because only
+it sees every row (the app role's dump would be filtered by row-level security to nothing):
+
+```
+pg_dump "$DATABASE_MIGRATE_URL" --format=custom --no-owner --file=salescoach-$(date +%F).dump
+```
+
+Store it encrypted (it holds every transcript) where the customer's retention and access rules apply;
+delete old dumps on the same schedule as the retention setting, or a deleted call lives on in a dump.
+
+**Restore drill** (do it once before launch, then quarterly; write down the time it took):
+1. Create an empty database; create the app role in it as for a first deploy
+   (`CREATE ROLE salescoach_app LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+   GRANT CONNECT ON DATABASE … TO salescoach_app;`).
+2. `pg_restore --no-owner --role=<owner role> --dbname="$NEW_MIGRATE_URL" salescoach-YYYY-MM-DD.dump`
+3. `DATABASE_MIGRATE_URL=$NEW_MIGRATE_URL salescoach migrate`: it re-applies the row-level policies and
+   the app role's grants (rls.sql), and brings an older dump up to this build's schema.
+4. Start a `web` process against it with the same `SALESCOACH_TOKEN_KEYS` and session secret; sign in as a
+   rep and a manager; open a call; check that Gmail still shows as connected (the key ring decrypts).
+5. `salescoach status` and `salescoach migrate --check` both clean. Then throw the drill database away.
+
+## Launch checklist
+
+Environment, per service (see "Environment" for what each is): `SALESCOACH_MODE=cloud`,
+`SALESCOACH_ROLE` (web / worker / scheduler), `DATABASE_URL` (app role), `DATABASE_MIGRATE_URL` (owner
+role; only for migrate, tokens rotate, import-sqlite, export --user and backups, never a serving process),
+`SALESCOACH_PUBLIC_URL`, `SALESCOACH_SESSION_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`GOOGLE_ALLOWED_DOMAINS`, `SALESCOACH_BOOTSTRAP_ADMIN`, `SALESCOACH_TOKEN_KEYS`, the model provider's API
+key (with a spend limit set at the provider), `LLM_BUDGET_ORG_USD_DAY`, `LLM_BUDGET_USER_USD_DAY`,
+`WORKER_CONCURRENCY`, `SALESCOACH_PG_POOL_SIZE` (optional), `SALESCOACH_DATA`, `SALESCOACH_RUNTIME`.
+
+1. **Database.** Managed Postgres with point-in-time recovery, private network. Create the app role;
+   `salescoach migrate` with the owner role; `salescoach migrate --check` exits 0.
+2. **Workspace admin checklist** above, done by the customer's Google admin: Internal OAuth client, the
+   five scopes and nothing wider, both redirect URIs, trusted app access, Gmail and Calendar not
+   Restricted for the reps' OU.
+3. **Recorder accounts per rep.** Every rep has their own account on the recorder the team uses, with API
+   access on their plan; the vendor's terms allow storing transcripts here. The admin allows that recorder
+   (Settings > Where calls come from); each rep connects their own key on their profile page.
+4. **First admin.** Deploy with `SALESCOACH_BOOTSTRAP_ADMIN=<their address>`; they sign in first and
+   become the admin, once.
+5. **Settings.** The admin fills in the org's company, offering and ICP, picks the models and tests them,
+   chooses the method (Settings).
+6. **Invites, teams and managers.** Admin page: invite every rep and manager by address with their role;
+   create the teams, put reps in them, name each team's managers.
+7. **Recording consent.** The customer's own wording, in Settings > Review > "Recording consent and
+   retention": every rep sees it on each call page, on My meetings and on Today.
+8. **Retention.** The customer's period in days, same place (empty keeps everything). `salescoach retention
+   --dry-run` says what the first run would delete, per rep.
+9. **Budgets.** `LLM_BUDGET_ORG_USD_DAY` and `LLM_BUDGET_USER_USD_DAY` set; a spend limit at the provider too.
+10. **An existing laptop install?** Bring it in before anyone else starts, while the org is empty:
+    `salescoach import-sqlite ~/.claude/sales-coach/data/sales.db --as <their email> --dry-run`, read the
+    counts, then the same without `--dry-run`. It refuses a non-empty org. It copies the database, not the
+    payload files under `data/inbox`, the laptop's `state`, settings files or Google tokens: the person
+    signs in, reconnects Gmail, Calendar and their recorder, and the admin enters the org settings.
+11. **Test sign-ins.** A rep signs in, connects Gmail and Calendar and their recorder, and sees a call of
+    theirs arrive; a manager signs in and sees that rep's call read-only on /team and /calls; a second rep
+    does NOT see the first rep's call (404).
+12. **Backups.** The first `pg_dump` taken and the restore drill done once (above).
+13. **Security review sign-off.** The independent review of this build (the plan's gate before any real
+    user is invited) is done, its findings fixed or accepted in writing by the customer. No invite goes out
+    before this line is ticked.
+
+## Offboarding and data requests
+
+**A rep leaves.** Admin page > the person's row > Offboard. Choose one, then type their email to confirm:
+- **Hand their work to** another active rep: every call, deal, loop, email and draft (with the comments on
+  them, whose authors do not change) becomes that rep's, in one transaction. What describes the person,
+  not the work, is deleted rather than handed over: their learned patterns and proposals, pattern
+  observations, seller patterns and observations, coach reports, live-coach nudges, calendar cache and
+  meetings, recorder connections, the coaching notes written about them, their bookkeeping and speaker
+  labels. The receiver's managers now read the work; the leaver's managers read it only if they also
+  manage the receiver. The moved calls still show the leaver as the one speaking ("me"): they are history,
+  handed over.
+- **Delete all of their work**: every row they own goes. Deals, accounts and people in the shared directory
+  stay (other reps may use them).
+Either way they are disabled, signed out everywhere and their Google grants revoked (at Google too, best
+effort), and the Admin audit (events: `admin.user.offboard` with the per-table counts, then
+`admin.user.disable`) records who did it. Neither can be undone except from a backup. Just disabling
+someone (Disable) keeps their work where it is; retention does not reach a disabled user's calls, so
+offboard people who have left.
+
+**A data request (access / portability).** A person downloads everything that is theirs from their
+profile page ("Download my data", `/me/export`): a zip with one JSON file per table and a README.json.
+For someone who can no longer sign in, an operator runs `salescoach export --user <email> --out file.zip`
+with the owner role (`DATABASE_MIGRATE_URL`); it selects the same rows (owner_id = that user) and never
+includes secrets (session keys, OAuth tokens, recorder keys).
+
+**A deletion request (erasure).** Offboard with "Delete all of their work". Names and addresses that other
+reps' deals also use stay in the shared directory; remove or edit those people by hand if the request
+covers them. Then remember the backups: dumps and the managed PITR window keep the data until they age out.
+
+**Retention.** Settings > Review > "Keep calls for (days)". The scheduler's retention duty runs daily (in the
+scheduler's leader), per rep, in that rep's own session: it deletes calls older than the period with their
+transcripts, analyses, agent runs, closed loops, unsent drafts, the replies to those drafts, comments and
+views, and the raw payload, and writes a `retention.purge` event per batch. Open loops and deals stay.
+`salescoach retention --dry-run` counts; `salescoach retention` runs a round now.
+
