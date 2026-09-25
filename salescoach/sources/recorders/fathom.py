@@ -22,12 +22,18 @@ import re
 from datetime import timezone
 from typing import Optional
 
+from ... import endpoints
 from .. import parsers
 from ..adapters import SourceError
 from ..adapters._http import request_json
 from . import MAX_PAGES, Account, RecorderAdapter
 
 BASE_URL = "https://api.fathom.ai/external/v1"
+
+
+def base_url() -> str:
+    """BASE_URL, unless the end-to-end harness points it at its fake (salescoach/endpoints.py)."""
+    return endpoints.url(endpoints.FATHOM_BASE, BASE_URL)
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
@@ -50,7 +56,7 @@ class FathomRecorder(RecorderAdapter):
         self._seen: dict = {}                 # recording id -> the listed item (transcript included)
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        answer = request_json("Fathom", "GET", BASE_URL + path, {"X-Api-Key": self._key}, params=params,
+        answer = request_json("Fathom", "GET", base_url() + path, {"X-Api-Key": self._key}, params=params,
                               transport=self._transport)
         return answer if isinstance(answer, dict) else {}
 

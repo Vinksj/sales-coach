@@ -105,7 +105,13 @@ class GmailProvider:
             from googleapiclient.discovery import build
             if self._creds is None:
                 self._creds, self.address = _load_credentials(self.alias)
-            self._service = build("gmail", "v1", credentials=self._creds, cache_discovery=False)
+            # The bundled (static) discovery document; its root is https://gmail.googleapis.com/ unless the
+            # end-to-end harness overrides it (salescoach/endpoints.py, GOOGLE_API_BASE with SALESCOACH_E2E=1).
+            from .. import endpoints
+            root = endpoints.override(endpoints.GOOGLE_API_BASE)
+            options = {"api_endpoint": root + "/"} if root else None
+            self._service = build("gmail", "v1", credentials=self._creds, cache_discovery=False,
+                                  client_options=options)
         return self._service
 
     def profile(self) -> dict:

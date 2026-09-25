@@ -24,12 +24,18 @@ import re
 from datetime import timezone
 from typing import Optional
 
+from ... import endpoints
 from .. import parsers
 from ..adapters import SourceAuthError, SourceError, SourceRateLimited
 from ..adapters._http import request_json
 from . import MAX_PAGES, Account, RecorderAdapter
 
 URL = "https://api.fireflies.ai/graphql"
+
+
+def url() -> str:
+    """URL, unless the end-to-end harness points it at its fake (salescoach/endpoints.py)."""
+    return endpoints.url(endpoints.FIREFLIES_URL, URL)
 PAGE = 50                      # the documented maximum for `limit`
 RATE_LIMIT_WAIT_S = 3600
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -60,7 +66,7 @@ class FirefliesRecorder(RecorderAdapter):
     default_poll_minutes = 60
 
     def _post(self, query: str, variables: Optional[dict] = None) -> dict:
-        answer = request_json("Fireflies", "POST", URL, {"Authorization": f"Bearer {self._key}"},
+        answer = request_json("Fireflies", "POST", url(), {"Authorization": f"Bearer {self._key}"},
                               body={"query": query, "variables": variables or {}}, transport=self._transport)
         errors = answer.get("errors") if isinstance(answer, dict) else None
         if errors:

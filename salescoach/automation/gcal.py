@@ -45,12 +45,17 @@ from typing import Optional
 
 import httpx
 
-from .. import googleauth, identity, seller
+from .. import endpoints, googleauth, identity, seller
 from ..execution import tokens
 from ..store.stores import get_user_state, set_user_state
 from .calendar import CalEvent, CalendarUnavailable, parse_page
 
 EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+
+
+def events_url() -> str:
+    """EVENTS_URL, unless the end-to-end harness points it at its fake (salescoach/endpoints.py)."""
+    return endpoints.url(endpoints.GOOGLE_API_BASE, EVENTS_URL, "/calendar/v3/calendars/primary/events")
 SYNC_KEY = "automation:calendar:sync_token"
 PAGE_SIZE = 250
 MAX_PAGES = 20                      # 5,000 events in one window: past that, refuse rather than guess
@@ -143,7 +148,7 @@ class GoogleCalendar:
             token = self._token()
             with googleauth.http() as client:
                 try:
-                    response = client.get(EVENTS_URL, params=params, headers={"Authorization": f"Bearer {token}"})
+                    response = client.get(events_url(), params=params, headers={"Authorization": f"Bearer {token}"})
                 except httpx.HTTPError as exc:
                     raise CalendarUnavailable(f"could not reach Google Calendar: {type(exc).__name__}") from exc
             if response.status_code == 401 and attempt == 1:

@@ -71,7 +71,11 @@ def cloud_problems(role: str = "all") -> list:
 
 
 def cmd_serve(args):
-    from . import hosted, identity
+    from . import endpoints, hosted, identity
+    overrides = endpoints.problems()
+    if overrides:
+        print("refusing to start:\n  " + "\n  ".join(overrides), file=sys.stderr)
+        return 2
     raw_mode = (os.environ.get(identity.MODE_ENV) or "local").strip().lower()
     if raw_mode not in identity.MODES:
         print(f"{identity.MODE_ENV}={raw_mode!r} is not one of {', '.join(identity.MODES)}", file=sys.stderr)
