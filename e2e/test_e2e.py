@@ -581,16 +581,16 @@ EXPECTED_ERRORS = ("BudgetExceeded", "budget for today is used up")      # step 
 def test_zy_no_unexpected_exception_in_any_process_log():
     """Every traceback the app processes logged during the run must be one a step above caused on purpose."""
     logs = compose("logs", "--no-color", "web", "worker", "scheduler").stdout
-    blocks, current = [], None
-    for line in logs.splitlines():
-        text = line.split("|", 1)[-1][1:] if "|" in line else line
+    blocks, current = [], {}                                     # compose interleaves the services' lines, so
+    for line in logs.splitlines():                               # each service's traceback is followed on its own
+        service, text = (line.split("|", 1)[0].strip(), line.split("|", 1)[1][1:]) if "|" in line else ("", line)
         if text.startswith("Traceback (most recent call last)"):
-            current = [text]
-            blocks.append(current)
-        elif current is not None:
-            current.append(text)
+            current[service] = [text]
+            blocks.append(current[service])
+        elif current.get(service) is not None:
+            current[service].append(text)
             if text and not text.startswith((" ", "\t")) and not text.startswith(("During handling", "The above")):
-                current = None                                   # the exception line ends the block
+                current[service] = None                          # the exception line ends the block
     unexpected = ["\n".join(b[-3:]) for b in blocks if not any(e in "\n".join(b) for e in EXPECTED_ERRORS)]
     assert not unexpected, unexpected
     EVIDENCE["tracebacks"] = {"total": len(blocks), "unexpected": len(unexpected)}
