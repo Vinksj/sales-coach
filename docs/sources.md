@@ -16,6 +16,9 @@ There are hundreds of call recorders. The coach does not try to integrate with e
 
 `salescoach sources list` shows every source, whether it is on, whether it is ready, and its last error.
 
+That table is a **local install** (one seller, SQLite). A **cloud install** (`SALESCOACH_MODE=cloud`)
+works per rep: see "Cloud: each rep connects their own recorder" below.
+
 ## What happens to every transcript
 
 1. **Dedupe.** Each transcript has a `source_ref`. The same one never becomes two calls:
@@ -195,3 +198,70 @@ recorders without an adapter (instructions only, nothing to save).
 The scheduler duty `sources` (plugin `salescoach/plugins/sources.py`) ticks every minute and polls
 whichever enabled, configured adapters are due. Per-source state: `sources:<kind>:last_run`,
 `last_ok`, `last_result`, `last_error`. One adapter failing never stops the others.
+
+## Cloud: each rep connects their own recorder
+
+In a cloud install (`SALESCOACH_MODE=cloud`, [deploy-cloud.md](deploy-cloud.md)) there is no org-wide
+recorder key, no watched folder and no org webhook. **A call belongs to the user whose recorder
+connection delivered it.** Each rep connects their own recorder account on their profile page (You >
+"Your call recorder"): paste the API key from their own account, Test, Save. The admin only decides which
+recorders the org allows (Settings > "Where calls come from", which in cloud mode is an allow-list with
+per-recorder notes and asks for no key); an admin never connects an account for anyone.
+
+- Two reps on the same meeting each get **their own call** from their own account, analysed from their
+  own side (channel `me` is that rep; a colleague is another speaker). `calls.source_ref` embeds the
+  owner, `<kind>:<owner user id>:<id at the recorder>`, so the copies never collide.
+- There is no organiser matching, no "unassigned" queue, no duplicate merging and no shared-call
+  access. A rep without a connection gets no recorder calls (they can still upload or paste; an upload
+  is theirs, `upload:<owner>:<sha>`, and an uploaded export's own id is keyed on the uploader too).
+- "My meetings" (`/me/meetings`, linked from Today) lists the rep's calendar meetings (from their
+  Google Calendar once connected) next to what their recorder captured, each marked upcoming /
+  recorded, imported (a link to the call) / recorded, not imported yet / not recorded. Read-only
+  apart from "Import now". None of the recorder APIs lists upcoming meetings: upcoming comes from the
+  calendar only.
+
+### Supported recorders (all `verified: false`: written from the public API docs, tested against fixtures only)
+
+| Recorder | Where the rep finds the key | Plan needed | Listing (this account only) | Transcript and "who is the rep" | Default check | Push |
+|---|---|---|---|---|---|---|
+| Fathom | Settings > API Access | every plan; 60 requests/min | `GET https://api.fathom.ai/external/v1/meetings?include_transcript=true&created_after=&cursor=` (`X-Api-Key`) | carried in the listing (`GET /recordings/{id}/transcript` otherwise); a speaker whose `matched_calendar_invitee_email` is `recorded_by.email` is the rep; a colleague's shared recording is skipped | 15 min | signed (verified as Standard Webhooks with the signing secret the rep pastes); the payload is the meeting |
+| Fireflies.ai | Settings > Developer settings | every plan; Free 50 requests/day, Pro 500/day, Business 60/min | GraphQL `transcripts(mine: true, fromDate, limit<=50, skip)` at `https://api.fireflies.ai/graphql` (bearer) | `transcript(id)` sentences; the account holder's name (from `user { email name }`) is the rep | 60 min (the Free plan's daily limit) | the connection's token header (no signature scheme in the research notes); the push names the meeting, which is fetched with the rep's key |
+| tl;dv | Personal Settings > API Keys | Pro and above | `GET https://pasta.tldv.io/v1alpha1/meetings?onlyParticipated=true&from=&page=&pageSize=` (`x-api-key`) | `GET /meetings/{id}` + `/meetings/{id}/transcript`; speakers by name (the rep's aliases decide) | 15 min | token header; `MeetingReady` / `TranscriptReady` name the meeting |
+| Granola | Settings > Connectors > API keys | Business or Enterprise | `GET https://public-api.granola.ai/v1/notes?created_after=&cursor=` (bearer) | `GET /v1/notes/{id}?include=transcript`; `speaker.attribution` me/them maps the rep's turns directly | 15 min | signed (Standard Webhooks, `note.generated`); fetched with the rep's key |
+
+Not supported in v1: **Gong, Otter, Avoma, Chorus** (their APIs give one admin key over everyone's
+calls, not a key per rep, so they cannot deliver a call to the rep it belongs to); **Zoom** and **Google
+Meet** come later (Zoom needs a user-managed OAuth app in the customer's account; Meet lists only the
+meetings a user organised, without e-mails). Reps using them export and upload.
+
+### How it runs
+
+- `source_connections` (OWNED by the rep): kind, the API key as AES-256-GCM ciphertext under
+  `SALESCOACH_TOKEN_KEYS` (bound to the owner, kind and column; `salescoach tokens rotate` re-encrypts
+  these too), status `active | error | disconnected`, the poll bookkeeping (`last_poll_at`,
+  `last_ok_at`, `next_poll_at`, `failures`, `last_error`), and `state` (the account the key belongs
+  to, the recorder's recent listing and what became of each meeting, a resume cursor, a remembered
+  rate limit). Keys are write-only: never rendered, redirected, flashed or logged.
+- The per-user scheduler duty `recorders` ticks every minute and, for each active user in that user's
+  own service session, polls their due connections (`sources/connections.poll_user`). A first poll
+  looks back 2 days, later ones from the last good poll minus 6 hours; at most 25 imports per poll; a
+  meeting listed before its transcript is ready is retried for 3 days; a colleague-only meeting is not
+  imported. Imports go through `import_normalized(owner=<the connection's user>, history=False,
+  link="account")`: the deal from the participants' domains, the rep's own person row on the call, the
+  rep's aliases and remembered speaker labels for "which one is me" (the `needs_speaker` question
+  stays, asked once and remembered per rep).
+- Errors back off (the poll interval doubled per failure, at most 6 hours). A 429 waits as long as the
+  recorder said (else an hour) and is remembered in the row. A 401/403 stops the connection
+  (`status = error`) with "reconnect" on the rep's card until they save a key again. One connection's
+  failure never stops another's, nor another user's.
+- Webhook, optional: `POST /import/webhook/{connection_id}`, created from the rep's card. The owner is
+  the connection's (looked up before the payload is read; the payload can never name one). Fathom and
+  Granola pushes are verified with the recorder's signature (`webhook-id`, `webhook-timestamp`,
+  `webhook-signature`; the rep pastes the signing secret, stored encrypted); anything else must carry
+  the connection's own token in `X-Salescoach-Secret` (shown once; only its sha256 is kept), which
+  suits a relay such as Zapier or Make. Wrong secret: 403. Unknown or disconnected connection, or a
+  recorder the admin switched off: 404. The org-level `/import/webhook` answers 404 in cloud mode.
+- Disconnect deletes the key and both webhook secrets; the calls already imported stay the rep's.
+- Nothing found yet says the vendors restrict storing transcripts, but nothing cleared it either: the
+  client confirms with their recorder vendor (deploy checklist).
+

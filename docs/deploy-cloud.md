@@ -28,6 +28,10 @@ nothing on a laptop install changes.
   "Isolation" in [architecture.md](architecture.md). The policies are `store/pg/rls.sql`, which
   `salescoach migrate` re-applies whenever a build changes them; every process refuses to start until
   it has.
+- Call recorders are per person too. Each rep connects their own recorder account (Fathom,
+  Fireflies, tl;dv, Granola) with their own API key on their profile page; a call belongs to the rep
+  whose recorder delivered it. The admin only chooses which recorders are allowed (Settings > "Where
+  calls come from"). See "Cloud" in [sources.md](sources.md).
 - Settings (the org's company, models, sources, method, budgets) are an admin's: in cloud mode
   `/setup` answers 403 to anyone else, and the database refuses anyone else's save. A rep's own half
   is their profile page (You).
@@ -75,6 +79,11 @@ this build's, on every role.
 6. Manage Google Services: Gmail and Calendar must not be "Restricted" for the target OU (or step 5
    covers it). If Gmail is Restricted, an unlisted app cannot use its scopes.
 7. Tell reps: a Google password change silently unlinks Gmail; they re-link from their profile page.
+8. Call recorders: **each rep needs their own recorder account with API access** (Fathom: any plan;
+   Fireflies: any plan, Free is limited to 50 API requests a day; tl;dv: Pro or above; Granola:
+   Business or Enterprise). There is no org-wide recorder key. Gong, Otter, Avoma and Chorus are not
+   supported (org-level APIs only). Confirm with the recorder vendor that storing transcripts in this
+   app is allowed under their terms.
 
 ## How sign-in works
 
@@ -116,6 +125,9 @@ DATABASE_MIGRATE_URL=postgresql://owner@.../db salescoach tokens rotate
 # or through the app role as an active admin:  salescoach tokens rotate --as <admin user id>
 # then drop the old key from SALESCOACH_TOKEN_KEYS and deploy again
 ```
+
+`rotate` also re-encrypts the reps' recorder keys (`source_connections`); those rows are each rep's own,
+so only the owner role sees them all (`--as` an admin reaches the admin's own connections only).
 
 `rotate` re-encrypts every person's grant, and the row-level policy on `oauth_tokens` lets only a
 grant's owner or an active admin see it, so the command runs as exactly one of the two identities that
