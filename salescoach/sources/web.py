@@ -24,7 +24,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import seller
+from .. import repo, seller
 from ..store import stores
 from ..store import db
 from . import base, settings
@@ -54,7 +54,8 @@ def import_file_post(request: Request, file: UploadFile = File(...), title: str 
     conn = stores.sales(request.app.state.db_path)
     try:
         # What the form names must exist: an unknown id used to reach the INSERT and fail as a 500.
-        if deal_id and conn.execute("SELECT 1 FROM deals WHERE node_id=?", (deal_id,)).fetchone() is None:
+        # ... and be the acting user's own: a deal they can only read (a team member's) is not found either.
+        if deal_id and repo.own_deal(conn, deal_id) is None:
             raise HTTPException(404, "deal not found")
         people = list(dict.fromkeys(p for p in participants if p))
         for person_id in people:

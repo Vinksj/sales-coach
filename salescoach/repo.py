@@ -43,6 +43,18 @@ def find_account_by_domain(conn, domain: str) -> Optional[str]:
     return None
 
 
+def own_deal(conn, deal_id):
+    """The deal row when it exists AND the acting user owns it, else None. What a new call may be filed on:
+    a call belongs to whoever imported it, so its deal must be theirs too. A manager can READ a rep's deals
+    (row-level policies); filing the manager's own call on one would put the manager's call, and on it the
+    manager's participants and follow-ups, inside the rep's deal. Callers answer 404 for None, the same as for
+    an id that does not exist (the isolation contract: someone else's object is no object)."""
+    if not deal_id:
+        return None
+    return conn.execute("SELECT * FROM deals WHERE node_id=? AND owner_id=?",
+                        (deal_id, identity.actor_of(conn).user_id)).fetchone()
+
+
 def create_deal(conn, name, account_id=None, stage=None, actor=ACTOR, source_id=None) -> str:
     nid = new_id("deal")
     engine.add_node(conn, actor, id=nid, type="deal", title=name, status="full", source_id=source_id)

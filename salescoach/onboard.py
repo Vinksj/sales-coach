@@ -17,8 +17,11 @@ CONTACTS = Path(os.path.expanduser("~/.claude/contacts"))
 
 
 def _deal_for_account(conn, account_id, name=None):
-    sql = "SELECT node_id FROM deals WHERE account_id=?"
-    params = [account_id]
+    """The acting user's own deal with the account (accounts are the org's directory; deals are one rep's):
+    a call filed by guessing must never land on a deal the actor can only read, a team member's."""
+    from . import identity
+    sql = "SELECT node_id FROM deals WHERE account_id=? AND owner_id=?"
+    params = [account_id, identity.actor_of(conn).user_id]
     if name:
         sql += " AND name=?"
         params.append(name)

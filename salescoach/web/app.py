@@ -1955,7 +1955,7 @@ def import_text_post(request: Request, text: str = Form(""), title: str = Form("
     except ValueError:
         return _redirect("/import", err="Call date/time is not a valid date.")
     with _db(request) as conn:
-        if deal_id and conn.execute("SELECT 1 FROM deals WHERE node_id=?", (deal_id,)).fetchone() is None:
+        if deal_id and repo.own_deal(conn, deal_id) is None:       # unknown, or someone else's: not found
             raise HTTPException(404, "deal not found")
         people = list(dict.fromkeys([repo.ensure_me(conn), *[p for p in participants if p]]))
         for person_id in people:
@@ -1986,6 +1986,10 @@ def import_audio_post(request: Request, file: UploadFile = File(...), title: str
     import_audio = _audio_importer()
     if import_audio is None:
         return _redirect("/import", err="Audio import is not available yet (sources/audio_file.py is missing).")
+    if deal_id:
+        with _db(request) as conn:
+            if repo.own_deal(conn, deal_id) is None:              # unknown, or someone else's: not found
+                raise HTTPException(404, "deal not found")
     inbox = Path(config.DATA_DIR) / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     suffix = re.sub(r"[^a-z0-9.]", "", Path(file.filename or "").suffix.lower())[:10] or ".audio"
