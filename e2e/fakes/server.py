@@ -78,7 +78,7 @@ STATE = {
     "sent": [],             # Gmail sends
     "drafts": [],
     "model_calls": [],
-    "model_rules": [],      # [{"system": regex, "prompt_tokens": n, "completion_tokens": n}]
+    "model_rules": [],      # [{"system": regex, "prompt_tokens": n, "completion_tokens": n, "delay_s": s?}]
 }
 RECORDERS = FakeRecorders()
 
@@ -336,14 +336,17 @@ class Handler(BaseHTTPRequestHandler):
         fmt = body.get("response_format") or {}
         spec = fmt.get("json_schema") or {}
         name, schema = spec.get("name") or "", spec.get("schema") or {}
-        prompt_tokens, completion_tokens = 1000, 200
+        prompt_tokens, completion_tokens, delay_s = 1000, 200, 0.0
         with LOCK:
             for rule in STATE["model_rules"]:
                 if re.search(rule["system"], system):
                     prompt_tokens, completion_tokens = rule["prompt_tokens"], rule["completion_tokens"]
+                    delay_s = float(rule.get("delay_s") or 0)
             STATE["model_calls"].append({"schema": name, "model": body.get("model"), "at": time.time(),
                                          "prompt_tokens": prompt_tokens,
                                          "system_head": system[:160], "prompt_len": len(prompt)})
+        if delay_s:
+            time.sleep(delay_s)             # a slow model: the serverless e2e makes a drain outlast the cron cadence
         if fmt.get("type") == "json_schema":
             content = json.dumps(canned.answer(name, schema))
         elif fmt.get("type") == "json_object":

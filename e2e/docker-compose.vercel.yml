@@ -1,0 +1,172 @@
+# End-to-end check of the SERVERLESS (Vercel) deployment, simulated locally: `e2e/run.sh vercel`.
+# docs/deploy-vercel.md "How it was tested"; the container run is e2e/docker-compose.yml.
+#
+# What Vercel's execution model is, reproduced:
+#   web      two independent instances serving ONLY the Vercel entrypoint (salescoach.vercel_app:app, the module
+#            [tool.vercel] names), under a plain ASGI server. No worker, no scheduler process, no role `all`: the app
+#            starts no thread. The root filesystem is READ-ONLY; /tmp is the only writable place (tmpfs), as in a
+#            function. The environment is what a Vercel project with Neon from the Marketplace has: the integration's
+#            DATABASE_URL / DATABASE_URL_UNPOOLED / PG* / POSTGRES_* name the OWNER role (the app removes them at cold
+#            start), SALESCOACH_DATABASE_URL names the app role, VERCEL=1 and a CRON_SECRET.
+#   proxy    the edge (e2e/vercel/proxy.py): round-robin PER REQUEST across the instances, a 4.5 MB body limit,
+#            X-Forwarded-For set, a maxDuration timeout. Published on 127.0.0.1:18140, the public URL.
+#   cron     Vercel Cron (e2e/vercel/cron.py): GET /cron/drain and /cron/tick with the bearer secret every few
+#            seconds, through the edge, never waiting for the previous call (overlaps happen, as on Vercel).
+#   bootstrap  what the deployer runs once from their own machine as the owner: `salescoach app-role`, `migrate`.
+# db and fakes are the container run's own. Host ports as there: 18140, 19000, 15432 (127.0.0.1 only).
+name: sc-e2e-vercel
+
+x-app-env: &app-env
+  SALESCOACH_MODE: cloud
+  VERCEL: "1"
+  VERCEL_ENV: production
+  SALESCOACH_DATABASE_URL: postgresql://salescoach_app:app-e2e-vercel-password@db:5432/salescoach
+  # What the Neon integration injects: the OWNER's URLs and parts. The app must never use them.
+  DATABASE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
+  DATABASE_URL_UNPOOLED: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
+  POSTGRES_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
+  PGHOST: db
+  PGUSER: salescoach_owner
+  PGPASSWORD: owner-e2e
+  PGDATABASE: salescoach
+  CRON_SECRET: e2e-cron-secret-that-is-long-enough-0123456789
+  SALESCOACH_CRON_DRAIN_S: "4"            # claim for 4 s per call (Vercel: 50 s of a one-minute cadence)
+  SALESCOACH_CRON_STALE_S: "30"           # the cadence here is 5 s, not 60
+  SALESCOACH_PUBLIC_URL: http://127.0.0.1:18140
+  SALESCOACH_SESSION_SECRET: e2e-session-secret-that-is-long-and-random-enough-0123456789
+  GOOGLE_CLIENT_ID: e2e-client.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET: e2e-client-secret
+  GOOGLE_ALLOWED_DOMAINS: tessel.test
+  SALESCOACH_BOOTSTRAP_ADMIN: admin@tessel.test
+  SALESCOACH_TOKEN_KEYS: "e2e1:ZTJlLXRva2VuLWtleS0zMi1ieXRlcy1sb25nLi4uLi4="
+  # The fakes. Honoured only because SALESCOACH_E2E=1 (salescoach/endpoints.py).
+  SALESCOACH_E2E: "1"
+  GOOGLE_OAUTH_BASE: http://fakes:9000
+  GOOGLE_API_BASE: http://fakes:9000
+  SALESCOACH_FIREFLIES_URL: http://fakes:9000/fireflies/graphql
+  SALESCOACH_FATHOM_BASE: http://fakes:9000/fathom/external/v1
+  LLM_API_KEY: e2e-llm-key
+  PORT: "8140"
+  HOME: /tmp
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: salescoach_owner
+      POSTGRES_PASSWORD: owner-e2e
+      POSTGRES_DB: salescoach
+    ports: ["127.0.0.1:15432:5432"]
+    networks: [e2e]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salescoach_owner -d salescoach"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  bootstrap:
+    image: sc-e2e-vercel-app:latest
+    build: {context: .., dockerfile: Dockerfile}
+    networks: [e2e]
+    environment:
+      DATABASE_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach
+      IMPORT_MIGRATE_URL: postgresql://salescoach_owner:owner-e2e@db:5432/salescoach_import
+      APP_ROLE_PASSWORD: app-e2e-vercel-password
+    volumes: ["./vercel/bootstrap.py:/e2e/bootstrap.py:ro"]
+    tmpfs: [/data]
+    entrypoint: ["python", "/e2e/bootstrap.py"]
+    command: []
+    depends_on:
+      db: {condition: service_healthy}
+    restart: "no"
+
+  fakes:
+    image: sc-e2e-vercel-app:latest
+    networks:
+      e2e:
+        ipv4_address: 10.231.77.10      # the model provider's base URL must be a private address for plain http
+    ports: ["127.0.0.1:19000:9000"]
+    environment:
+      GOOGLE_CLIENT_ID: e2e-client.apps.googleusercontent.com
+      GOOGLE_CLIENT_SECRET: e2e-client-secret
+      GOOGLE_ALLOWED_DOMAINS: tessel.test
+      E2E_REDIRECT_PREFIX: http://127.0.0.1:18140/auth/
+      E2E_LIB: /e2e-lib
+      PORT: "9000"
+    volumes:
+      - ./fakes:/e2e/fakes:ro
+      - ../tests/recorder_fakes.py:/e2e-lib/recorder_fakes.py:ro
+    tmpfs: [/data]
+    entrypoint: ["python", "/e2e/fakes/server.py"]
+    command: []
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/_health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  web:
+    image: sc-e2e-vercel-app:latest
+    deploy: {replicas: 2}
+    networks: [e2e]
+    environment: *app-env
+    user: "1000:1000"
+    read_only: true                     # the bundle is read-only on Vercel ...
+    tmpfs: [/tmp]                       # ... and /tmp is the only place a function may write
+    entrypoint: []
+    command: ["python", "-m", "uvicorn", "salescoach.vercel_app:app", "--host", "0.0.0.0", "--port", "8140",
+              "--no-access-log"]
+    healthcheck:
+      test: ["CMD", "salescoach", "health", "--role", "web"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+      fakes: {condition: service_healthy}
+
+  proxy:
+    image: sc-e2e-vercel-app:latest
+    networks: [e2e]
+    ports: ["127.0.0.1:18140:8140"]
+    environment:
+      UPSTREAM_HOST: web
+      UPSTREAM_PORT: "8140"
+      MAX_DURATION_S: "800"
+      PORT: "8140"
+    volumes: ["./vercel/proxy.py:/e2e/proxy.py:ro"]
+    read_only: true
+    tmpfs: [/tmp]
+    entrypoint: ["python", "/e2e/proxy.py"]
+    command: []
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8140/_sim/instances', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      web: {condition: service_healthy}
+
+  cron:
+    image: sc-e2e-vercel-app:latest
+    networks: [e2e]
+    environment:
+      EDGE: http://proxy:8140
+      EVERY_S: "5"
+      CRON_SECRET: e2e-cron-secret-that-is-long-enough-0123456789
+      DEPLOYMENT_HOST: sc-e2e.vercel.app
+      PYTHONUNBUFFERED: "1"
+    volumes: ["./vercel/cron.py:/e2e/cron.py:ro"]
+    read_only: true
+    tmpfs: [/tmp]
+    entrypoint: ["python", "/e2e/cron.py"]
+    command: []
+    healthcheck: {disable: true}          # the image's own check is for an app process; this is a caller
+    depends_on:
+      proxy: {condition: service_healthy}
+
+networks:
+  e2e:
+    ipam:
+      config:
+        - subnet: 10.231.77.0/24

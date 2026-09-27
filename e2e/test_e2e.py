@@ -24,6 +24,10 @@ import httpx
 import pytest
 
 pytestmark = pytest.mark.skipif(os.environ.get("E2E") != "1", reason="end-to-end: set E2E=1 (e2e/run.sh)")
+MODE = os.environ.get("E2E_MODE", "container")          # container: web + worker + schedulers; vercel: the simulation
+VERCEL = MODE == "vercel"
+container_only = pytest.mark.skipif(VERCEL, reason="about the worker and scheduler processes, which Vercel has none of")
+vercel_only = pytest.mark.skipif(not VERCEL, reason="about the serverless simulation (e2e/run.sh vercel)")
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -33,7 +37,9 @@ FAKES_INSIDE = "http://fakes:9000"
 OWNER_DB = os.environ.get("E2E_DB", "postgresql://salescoach_owner:owner-e2e@127.0.0.1:15432/salescoach")
 IMPORT_DB = OWNER_DB.rsplit("/", 1)[0] + "/salescoach_import"
 IMPORT_DB_INSIDE = "postgresql://salescoach_owner:owner-e2e@db:5432/salescoach_import"
-PROJECT = ["docker", "compose", "-p", "sc-e2e", "-f", str(HERE / "docker-compose.yml")]
+PROJECT = (["docker", "compose", "-p", "sc-e2e-vercel", "-f", str(HERE / "docker-compose.vercel.yml")] if VERCEL
+           else ["docker", "compose", "-p", "sc-e2e", "-f", str(HERE / "docker-compose.yml")])
+CRON_SECRET = "e2e-cron-secret-that-is-long-enough-0123456789"         # e2e/docker-compose.vercel.yml
 MODEL_BASE = "http://10.231.77.10:9000/v1"
 MODEL = "claude-sonnet-5"                      # priced in config/models.yaml: the budget can count it
 
@@ -102,13 +108,16 @@ class Browser:
         self.c = httpx.Client(base_url=WEB, follow_redirects=False, timeout=30,
                               headers={"origin": WEB, "accept": "text/html"})
 
-    def get(self, path, **kw):
+    def get(self, path, route=None, **kw):
+        """`route` (the serverless simulation): pin this request to instance n at the edge (e2e/vercel/proxy.py)."""
+        if route is not None:
+            kw["headers"] = {**kw.get("headers", {}), "x-sim-route": str(route)}
         return self.c.get(path, **kw)
 
     def post(self, path, data=None, **kw):
         return self.c.post(path, data=data or {}, **kw)
 
-    def _google(self, start: httpx.Response) -> httpx.Response:
+    def _google(self, start: httpx.Response, route=None) -> httpx.Response:
         """Follow the app's redirect to Google (the fake approves as this person) and back to the app."""
         assert start.status_code == 303, start.text[:300]
         target = start.headers["location"]
@@ -119,7 +128,7 @@ class Browser:
         assert google.status_code == 302, google.text
         back = google.headers["location"]
         assert back.startswith(WEB + "/auth/"), back
-        return self.c.get(back[len(WEB):])
+        return self.get(back[len(WEB):], route=route)
 
     def sign_in(self):
         done = self._google(self.get("/auth/google"))
@@ -162,6 +171,7 @@ def email_of(call_id, status=None):
 
 # ---- 1. the processes are up ---------------------------------------------------------------------------
 
+@container_only
 def test_health_of_web_worker_and_both_schedulers():
     r = httpx.get(WEB + "/health", timeout=10)
     assert r.status_code == 200
@@ -181,6 +191,63 @@ def test_health_of_web_worker_and_both_schedulers():
     EVIDENCE["health"] = {"workers": len(live(body["processes"]["workers"])),
                           "schedulers": len(live(body["processes"]["schedulers"])),
                           "leader": body["processes"]["leader"]["host"]}
+
+
+def _cron_log():
+    """Every cron call so far, as the simulated Vercel Cron logged them (e2e/vercel/cron.py)."""
+    out = []
+    for line in compose("logs", "--no-color", "--no-log-prefix", "cron").stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("cron") in ("drain", "tick"):
+            out.append(row)
+    return out
+
+
+def _cron(job):
+    """One cron call as Vercel makes it: the bearer secret, the deployment's own URL as Host, through the edge."""
+    return httpx.get(f"{WEB}/cron/{job}", timeout=900, headers={
+        "authorization": f"Bearer {CRON_SECRET}", "host": "sc-e2e.vercel.app", "user-agent": "vercel-cron/1.0"})
+
+
+@vercel_only
+def test_serverless_instances_run_nothing_in_the_background_and_the_cron_is_the_worker():
+    sim = httpx.get(WEB + "/_sim/instances", timeout=10).json()
+    assert len(sim["instances"]) == 2, sim
+    seen, bodies = set(), []
+    for _ in range(6):
+        r = httpx.get(WEB + "/health", timeout=10)
+        assert r.status_code == 200, r.text
+        seen.add(r.headers["x-sim-instance"])
+        bodies.append(r.json())
+    assert seen == set(sim["instances"])                            # round robin: consecutive requests, both instances
+    for body in bodies:
+        assert body["platform"] == "vercel" and body["role"] == "web" and body["db"] == "ok"
+        assert body["processes"]["workers"] == [] and body["processes"]["schedulers"] == []   # no process heartbeats
+    body = wait_until("a fresh cron drain and tick", lambda: (lambda b: b if b["worker"] == "cron" and b["cron"]["tick"]
+                      else None)(httpx.get(WEB + "/health", timeout=10).json()), timeout=60)
+    calls = wait_until("cron calls served by both instances", lambda: (lambda c: c if len(
+        {x["instance"] for x in c if x["status"] == 200}) == 2 else None)(_cron_log()), timeout=60)
+    assert {c["cron"] for c in calls if c["status"] == 200} == {"drain", "tick"}
+    assert all(c["status"] == 200 for c in calls), [c for c in calls if c["status"] != 200][:3]
+    assert _cron("drain").status_code == 200
+    refused = httpx.get(f"{WEB}/cron/drain", timeout=30, headers={"authorization": "Bearer not-the-secret"})
+    assert refused.status_code == 401 and httpx.get(f"{WEB}/cron/tick", timeout=30).status_code == 401
+    for index in (1, 2):
+        ro = compose("exec", "--index", str(index), "web", "sh", "-c", "touch /app/written-by-the-app", check=False)
+        assert ro.returncode != 0 and "Read-only file system" in ro.stderr, (index, ro.stderr)
+        assert compose("exec", "--index", str(index), "web", "sh", "-c", "touch /tmp/ok", check=False).returncode == 0
+        health = compose("exec", "--index", str(index), "web", "salescoach", "health", "--role", "web", check=False)
+        assert health.returncode == 0, (index, health.stdout, health.stderr)
+    # The Neon-style environment names the OWNER everywhere; only the app role ever connects from an instance.
+    users_seen = {r["usename"] for r in q("SELECT DISTINCT usename FROM pg_stat_activity WHERE datname = 'salescoach' "
+                                          "AND host(client_addr) = ANY(%s)", sim["instances"])}
+    assert users_seen == {"salescoach_app"}, users_seen
+    EVIDENCE["serverless"] = {"instances": len(sim["instances"]), "health_answered_by": len(seen),
+                              "cron_calls_so_far": len(calls), "instance_db_roles": sorted(users_seen),
+                              "worker": body["worker"], "drain": {k: body["cron"]["drain"].get(k) for k in ("handled", "stopped")}}
 
 
 # ---- 2. the bootstrap admin sets the org up -----------------------------------------------------------
@@ -246,6 +313,20 @@ def test_everyone_signs_in_through_google_and_fills_their_profile():
         assert person.get("/").status_code == 200
         S[email] = person
     assert {r["status"] for r in q("SELECT status FROM users WHERE email IN (%s,%s,%s,%s)", A, B, M, C)} == {"active"}
+
+
+@vercel_only
+def test_a_sign_in_started_on_one_instance_completes_on_the_other():
+    person = Browser(M)
+    start = person.get("/auth/google", route=0)
+    done = person._google(start, route=1)
+    assert done.status_code == 303 and person.c.cookies, done.text[:300]
+    assert start.headers["x-sim-instance"] != done.headers["x-sim-instance"]
+    for route in (0, 1):
+        page = person.get("/", route=route)
+        assert page.status_code == 200 and NAMES[M].split()[0] in page.text
+    EVIDENCE["cross_instance_signin"] = {"started_on": start.headers["x-sim-instance"],
+                                         "completed_on": done.headers["x-sim-instance"], "signed_in": True}
 
 
 # ---- 4. recorders: each rep's own account, the same meeting ---------------------------------------------
@@ -345,6 +426,25 @@ def test_rep_b_gets_404_for_everything_of_rep_a():
     EVIDENCE["b_404"] = len(gets) + len(posts)
 
 
+@vercel_only
+def test_on_vercel_audio_upload_and_the_live_coach_are_off_and_uploads_meet_the_body_limit():
+    a = S[A]
+    page = a.get("/import")
+    assert page.status_code == 200 and 'action="/import/audio"' not in page.text
+    assert "Recording upload is not available on this deployment" in page.text
+    refused = a.c.post("/import/audio", files={"file": ("call.wav", b"RIFF0000WAVE", "audio/wav")})
+    assert refused.status_code == 303 and "not available" in flash(refused)
+    assert a.get("/coach/live/stream").status_code == 404
+    near = b"Me: hello there\n" * 275_000                              # 4.4 MB: through the edge, over the app's cap
+    r = a.c.post("/import/file", files={"file": ("big.txt", near, "text/plain")})
+    assert r.status_code == 413 and "the limit for this upload is 4.2 MB" in r.text, (r.status_code, r.text[:200])
+    over = b"x" * 4_600_000                                             # 4.6 MB: the edge refuses it, like Vercel
+    r = a.c.post("/import/file", files={"file": ("bigger.txt", over, "text/plain")})
+    assert r.status_code == 413 and "FUNCTION_PAYLOAD_TOO_LARGE" in r.text
+    EVIDENCE["serverless_limits"] = {"audio": "off", "live_stream": 404, "4.4MB": "413 app cap 4.2 MB",
+                                     "4.6MB": "413 at the edge"}
+
+
 # ---- 6. the manager ---------------------------------------------------------------------------------------
 
 def test_manager_sees_both_reps_views_comments_and_cannot_send():
@@ -420,6 +520,37 @@ def test_a_tiny_budget_defers_b_without_failing_and_without_blocking_a():
                           "a_versions": [version_a, email_of(a_call)["version"]]}
 
 
+@vercel_only
+def test_overlapping_cron_drains_run_an_event_exactly_once():
+    a, call_a = S[A], S["call"][A]
+    budget = {"system": "follow-up email Bina sends", "prompt_tokens": 1_000_000, "completion_tokens": 0}
+    slow = {"system": "follow-up email Asha sends", "prompt_tokens": 1000, "completion_tokens": 200, "delay_s": 12}
+    fakes("POST", "/_control/model", json={"rules": [budget, slow]})
+    drafts = lambda: sum(1 for c in fakes("GET", "/_control/model")["calls"] if c["schema"] == "EmailDraft")  # noqa: E731
+    try:
+        before, drafted = email_of(call_a)["version"], drafts()
+        t0 = time.time()
+        r = a.post(f"/calls/{call_a}/redraft", {})
+        assert r.status_code == 303, r.text[:300]
+        wait_until("A's slow redraft", lambda: (email_of(call_a) or {}).get("version", 0) > before, timeout=120)
+        time.sleep(1)
+        assert email_of(call_a)["version"] == before + 1                     # one new version ...
+        assert drafts() == drafted + 1                                        # ... from one model call
+        event = q1("SELECT status, attempts, type FROM wf_events WHERE owner=%s ORDER BY id DESC LIMIT 1", uid(A))
+        assert (event["status"], event["attempts"]) == ("done", 1), event
+        calls = [c for c in _cron_log() if c["cron"] == "drain" and c["status"] == 200 and c["start"] >= t0 - 1]
+        handler = max((c for c in calls if c["handled"] >= 1), key=lambda c: c["end"] - c["start"])
+        overlapping = [c for c in calls if c is not handler and c["start"] < handler["end"] and c["end"] > handler["start"]]
+        assert handler["end"] - handler["start"] >= 12 and overlapping, (handler, calls)
+        assert all(c["handled"] == 0 for c in overlapping), overlapping    # they found A's owner locked: skipped it
+    finally:
+        fakes("POST", "/_control/model", json={"rules": [budget]})
+    S["email"] = email_of(call_a, "drafted")["id"] if email_of(call_a, "drafted") else S["email"]
+    EVIDENCE["overlapping_drains"] = {"handler_s": round(handler["end"] - handler["start"], 1),
+                                      "overlapping_drains": len(overlapping), "email_versions": [before, before + 1],
+                                      "model_calls": 1, "event": dict(event)}
+
+
 # ---- 8. A sends their own follow-up from their own Gmail ------------------------------------------------
 
 def test_rep_a_connects_gmail_and_sends_their_own_follow_up():
@@ -468,6 +599,7 @@ def _live_schedulers():
     return beats
 
 
+@container_only
 def test_exactly_one_scheduler_leads_and_a_standby_takes_over():
     beats = wait_until("two live scheduler heartbeats", lambda: (lambda b: b if len(b) == 2 else None)(_live_schedulers()),
                        timeout=40)
@@ -490,6 +622,37 @@ def test_exactly_one_scheduler_leads_and_a_standby_takes_over():
     S["takeover_s"] = round(took, 1)
     S["leader"] = {"old": lead["host"], "new": new["host"]}
     EVIDENCE["leader"] = {**S["leader"], "takeover_s": S["takeover_s"], "advisory_locks_before": len(locks)}
+
+
+@vercel_only
+def test_overlapping_cron_ticks_run_each_duty_once():
+    import threading
+    compose("pause", "cron")                                               # only this test's calls, for a moment
+    try:
+        with db() as conn:                                                 # every duty due now (an operator act)
+            conn.execute("DELETE FROM state WHERE key LIKE 'ops:cron:duty:%%'")
+        barrier, results = threading.Barrier(4), []
+
+        def one():
+            barrier.wait(timeout=10)
+            r = _cron("tick")
+            results.append((r.status_code, r.json(), r.headers.get("x-sim-instance")))
+        threads = [threading.Thread(target=one) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=300)
+    finally:
+        compose("unpause", "cron")
+    assert all(code == 200 for code, _b, _i in results), results
+    ran = [name for _c, body, _i in results for name in body.get("ran", [])]
+    skipped = [body for _c, body, _i in results if "skipped" in body]
+    assert ran and len(ran) == len(set(ran)), ran                          # each duty ran once, in one tick
+    assert skipped, results                                                # the others found the lock held
+    duty_rows = q("SELECT key, value FROM state WHERE key LIKE 'ops:cron:duty:%%'")
+    assert {r["key"].rsplit(":", 1)[1] for r in duty_rows} == set(ran)
+    EVIDENCE["overlapping_ticks"] = {"ticks": len(results), "ran_once": sorted(ran), "skipped": len(skipped),
+                                     "instances": sorted({i for _c, _b, i in results})}
 
 
 # ---- 10. offboarding B hands B's work to A ---------------------------------------------------------------
@@ -528,9 +691,15 @@ def test_import_sqlite_round_trips_a_laptop_install(tmp_path):
     assert built.returncode == 0, built.stderr[-2000:]
     counts = json.loads(built.stdout.strip().splitlines()[-1])["counts"]
     assert counts["calls"] == 2 and counts["emails"] >= 1 and counts["loops"] > 0
-    compose("cp", str(path), "web:/tmp/laptop.db")
-    run = compose("exec", "-e", f"DATABASE_MIGRATE_URL={IMPORT_DB_INSIDE}", "web",
-                  "salescoach", "import-sqlite", "/tmp/laptop.db", "--as", "maya@tessel.test", check=False)
+    if VERCEL:
+        # An operator command, run from the deployer's own machine against the owner URL (no function runs it).
+        run = compose("run", "--rm", "--no-deps", "-v", f"{path}:/in/laptop.db:ro", "-e",
+                      f"DATABASE_MIGRATE_URL={IMPORT_DB_INSIDE}", "--entrypoint", "salescoach", "bootstrap",
+                      "import-sqlite", "/in/laptop.db", "--as", "maya@tessel.test", check=False)
+    else:
+        compose("cp", str(path), "web:/tmp/laptop.db")
+        run = compose("exec", "-e", f"DATABASE_MIGRATE_URL={IMPORT_DB_INSIDE}", "web",
+                      "salescoach", "import-sqlite", "/tmp/laptop.db", "--as", "maya@tessel.test", check=False)
     assert run.returncode == 0, run.stdout + run.stderr
     user = q1("SELECT id, role, status FROM users WHERE email='maya@tessel.test'", url=IMPORT_DB)
     assert (user["role"], user["status"]) == ("rep", "active")
@@ -580,7 +749,7 @@ EXPECTED_ERRORS = ("BudgetExceeded", "budget for today is used up")      # step 
 
 def test_zy_no_unexpected_exception_in_any_process_log():
     """Every traceback the app processes logged during the run must be one a step above caused on purpose."""
-    logs = compose("logs", "--no-color", "web", "worker", "scheduler").stdout
+    logs = compose("logs", "--no-color", *(("web", "proxy", "cron") if VERCEL else ("web", "worker", "scheduler"))).stdout
     blocks, current = [], {}                                     # compose interleaves the services' lines, so
     for line in logs.splitlines():                               # each service's traceback is followed on its own
         service, text = (line.split("|", 1)[0].strip(), line.split("|", 1)[1][1:]) if "|" in line else ("", line)
