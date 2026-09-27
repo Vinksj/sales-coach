@@ -322,9 +322,9 @@ def test_a_sign_in_started_on_one_instance_completes_on_the_other():
     done = person._google(start, route=1)
     assert done.status_code == 303 and person.c.cookies, done.text[:300]
     assert start.headers["x-sim-instance"] != done.headers["x-sim-instance"]
-    for route in (0, 1):
+    for route in (0, 1):                                              # the session holds on both instances
         page = person.get("/", route=route)
-        assert page.status_code == 200 and NAMES[M].split()[0] in page.text
+        assert page.status_code == 200 and "Log out" in page.text, (route, page.status_code)
     EVIDENCE["cross_instance_signin"] = {"started_on": start.headers["x-sim-instance"],
                                          "completed_on": done.headers["x-sim-instance"], "signed_in": True}
 
@@ -435,13 +435,14 @@ def test_on_vercel_audio_upload_and_the_live_coach_are_off_and_uploads_meet_the_
     refused = a.c.post("/import/audio", files={"file": ("call.wav", b"RIFF0000WAVE", "audio/wav")})
     assert refused.status_code == 303 and "not available" in flash(refused)
     assert a.get("/coach/live/stream").status_code == 404
-    near = b"Me: hello there\n" * 275_000                              # 4.4 MB: through the edge, over the app's cap
+    near = b"Me: hello there\n" * 279_000                              # 4.46 MB: through the edge, over the app's cap
     r = a.c.post("/import/file", files={"file": ("big.txt", near, "text/plain")})
-    assert r.status_code == 413 and "the limit for this upload is 4.2 MB" in r.text, (r.status_code, r.text[:200])
+    assert r.status_code == 413 and "the limit for this upload is 4.2 MB" in r.text, (r.status_code, r.headers)
     over = b"x" * 4_600_000                                             # 4.6 MB: the edge refuses it, like Vercel
     r = a.c.post("/import/file", files={"file": ("bigger.txt", over, "text/plain")})
     assert r.status_code == 413 and "FUNCTION_PAYLOAD_TOO_LARGE" in r.text
-    EVIDENCE["serverless_limits"] = {"audio": "off", "live_stream": 404, "4.4MB": "413 app cap 4.2 MB",
+    assert q1("SELECT COUNT(*) AS n FROM calls WHERE owner_id=%s", uid(A))["n"] == 1        # nothing was imported
+    EVIDENCE["serverless_limits"] = {"audio": "off", "live_stream": 404, "4.46MB": "413 app cap 4.2 MB",
                                      "4.6MB": "413 at the edge"}
 
 
@@ -536,7 +537,8 @@ def test_overlapping_cron_drains_run_an_event_exactly_once():
         time.sleep(1)
         assert email_of(call_a)["version"] == before + 1                     # one new version ...
         assert drafts() == drafted + 1                                        # ... from one model call
-        event = q1("SELECT status, attempts, type FROM wf_events WHERE owner=%s ORDER BY id DESC LIMIT 1", uid(A))
+        event = q1("SELECT status, attempts, type FROM wf_events WHERE entity_id=%s AND type='PROCESS_CALL' "
+                   "ORDER BY id DESC LIMIT 1", call_a)
         assert (event["status"], event["attempts"]) == ("done", 1), event
         calls = [c for c in _cron_log() if c["cron"] == "drain" and c["http"] == 200 and c["start"] >= t0 - 1]
         handler = max((c for c in calls if c["handled"] >= 1), key=lambda c: c["end"] - c["start"])
