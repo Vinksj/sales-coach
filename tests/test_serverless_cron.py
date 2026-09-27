@@ -161,3 +161,46 @@ def test_a_drain_connection_is_its_own_and_guarded(db):
     finally:
         conn.close()
     assert stores._pg_pools                        # the pool is untouched by it; the drain never holds a pooled lock
+
+
+def test_the_followups_duty_says_when_to_run_again_with_nobody_acting_in_cloud_mode(monkeypatch):
+    """Cloud: the scheduler acts for nobody, and asking the seller's timezone raised NoActor, which ended the
+    scheduler process's follow-up thread (and failed every cron tick). It wakes on a fixed tick instead; each rep's
+    round keeps to that rep's own run_at."""
+    from salescoach import identity
+    from salescoach.automation import scheduler
+    monkeypatch.setenv(identity.MODE_ENV, "cloud")
+    with identity.activate(None):
+        followups = next(d for d in scheduler.default_duties() if d.name == "followups")
+        assert followups.interval_s() == scheduler.FOLLOWUPS_CLOUD_TICK_S
+
+
+def test_a_duty_that_fails_to_schedule_costs_neither_the_tick_nor_the_thread(db, monkeypatch):
+    from salescoach.automation import scheduler
+    ran = []
+
+    def broken():
+        raise RuntimeError("no timezone to read")
+    bad = Duty("bad", lambda conn: ran.append("bad"), broken)
+    good = Duty("good", lambda conn: ran.append("good"), lambda: 600.0)
+    result = cron.tick(duties=[bad, good])
+    assert result["failed"] == ["bad"] and "good" in result["ran"] and ran == ["good"]
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("once")
+        return 600.0
+
+    class Stop:                                     # wait() says "not stopped" three times, then stops
+        def __init__(self):
+            self.n = 0
+
+        def wait(self, _delay):
+            self.n += 1
+            return self.n > 3
+    ran.clear()
+    scheduler._loop(Duty("flaky", lambda conn: ran.append("flaky"), flaky, first_delay_s=0), None, Stop())
+    assert calls["n"] == 3 and ran == ["flaky", "flaky"]           # the first round failed; the thread went on

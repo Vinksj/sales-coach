@@ -173,7 +173,7 @@ def tick(db_path=None, budget_s=None, duties=None, clock=None) -> dict:
     leader = CronLeader(db_path)
     if not leader.try_acquire():
         return {"skipped": "another tick (or a scheduler process) holds the scheduler lock", "ran": []}
-    ran, deferred, not_due = [], [], []
+    ran, deferred, not_due, failed = [], [], [], []
     try:
         conn = ops._open(db_path)
         try:
@@ -190,12 +190,17 @@ def tick(db_path=None, budget_s=None, duties=None, clock=None) -> dict:
                 not_due.append(duty.name)
                 continue
             t0 = time.monotonic()
-            delay = scheduler.run_round(duty, db_path)
+            try:
+                delay = scheduler.run_round(duty, db_path)
+            except Exception:                      # one duty's failure never costs the others their turn
+                log.exception("cron tick: %s could not run a round", duty.name)
+                delay = scheduler.RETRY_AFTER_ERROR_S
+                failed.append(duty.name)
             _schedule(db_path, duty.name, moment, delay, time.monotonic() - t0)
             ran.append(duty.name)
     finally:
         leader.release()
-    result = {"ran": ran, "not_due": not_due, "deferred": deferred,
+    result = {"ran": ran, "not_due": not_due, "deferred": deferred, "failed": failed,
               "duration_s": round(time.monotonic() - started, 2), "budget_s": budget}
     _record(db_path, TICK_KEY, result)
     return result

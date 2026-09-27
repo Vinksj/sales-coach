@@ -39,6 +39,7 @@ log = logging.getLogger("salescoach.automation")
 
 
 RETRY_AFTER_ERROR_S = 15 * 60
+FOLLOWUPS_CLOUD_TICK_S = 15 * 60      # cloud: wake this often; run_followups keeps each rep to their own run_at, once a day
 
 
 class Unavailable(RuntimeError):
@@ -146,7 +147,11 @@ def run_round(duty: Duty, db_path, stop=None) -> float:
 def _loop(duty: Duty, db_path, stop: threading.Event):
     delay = duty.first_delay_s
     while not stop.wait(delay):
-        delay = run_round(duty, db_path, stop)
+        try:
+            delay = run_round(duty, db_path, stop)
+        except Exception:                          # a duty that cannot even say when to run again must not end the thread
+            log.exception("%s: could not run a round", duty.name)
+            delay = RETRY_AFTER_ERROR_S
 
 
 def start(db_path, stop: threading.Event, duties: Optional[list] = None) -> list[threading.Thread]:
@@ -251,10 +256,19 @@ def run_autosend(conn) -> dict:
     return autosend.run_once(conn, lambda: gmail_for(conn))
 
 
+def followups_interval() -> float:
+    """Until the next follow-up round. Local: the seller's run_at (09:30) in their timezone. Cloud: every rep has a
+    timezone of their own and the round runs for each rep in their own session, where run_followups waits for that
+    rep's run_at and runs once a day; the scheduler itself acts for nobody (there is no timezone to read here: asking
+    for one raised NoActor and ended the thread), so it wakes every FOLLOWUPS_CLOUD_TICK_S."""
+    if identity.cloud():
+        return FOLLOWUPS_CLOUD_TICK_S
+    return seconds_until(common.cfg("followup").get("run_at", "09:30"))
+
+
 def default_duties() -> list[Duty]:
-    run_at = lambda: seconds_until(common.cfg("followup").get("run_at", "09:30"))
     return [
-        Duty("followups", run_followups, run_at, first_delay_s=45),
+        Duty("followups", run_followups, followups_interval, first_delay_s=45),
         _replies_duty(),
         Duty("calendar", run_calendar, lambda: float(common.cfg("calendar").get("scan_hours", 2)) * 3600,
              first_delay_s=90),
