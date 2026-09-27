@@ -159,8 +159,13 @@ _pg_prepare = True                         # False disables server-side prepared
 _SCHEMA_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+SERVERLESS_POOL_SIZE = 5                   # per function instance; each instance is one of many (serverless.py)
+SERVERLESS_MAX_IDLE_S = 60.0
+
+
 def pool_size() -> int:
-    return int(os.environ.get("SALESCOACH_PG_POOL_SIZE", "16"))
+    from .. import serverless
+    return int(os.environ.get("SALESCOACH_PG_POOL_SIZE") or (SERVERLESS_POOL_SIZE if serverless.vercel() else 16))
 
 
 def _pool(url: str):
@@ -168,11 +173,18 @@ def _pool(url: str):
         pool = _pg_pools.get(url)
         if pool is None:
             from psycopg_pool import ConnectionPool
+            from .. import serverless
             kwargs = {"autocommit": True}
             if not _pg_prepare:
                 kwargs["prepare_threshold"] = None
+            extra = {}
+            if serverless.vercel():
+                # An instance is frozen between requests and may be thawed after the database closed its idle
+                # connections (a Neon compute suspends when idle): check each connection as it is handed out, and
+                # let the ones beyond the first go after a minute idle, so a fleet of instances holds few.
+                extra = {"check": ConnectionPool.check_connection, "max_idle": SERVERLESS_MAX_IDLE_S}
             pool = ConnectionPool(url, min_size=1, max_size=pool_size(), kwargs=kwargs, open=True,
-                                  name="salescoach", timeout=30, reset=_reset_pooled)
+                                  name="salescoach", timeout=30, reset=_reset_pooled, **extra)
             _pg_pools[url] = pool
         return pool
 

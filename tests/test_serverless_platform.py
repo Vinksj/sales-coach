@@ -101,3 +101,25 @@ def test_a_pooler_url_is_recognised():
     assert not serverless.pooled_url("postgresql://u:p@db:5432/salescoach")
     problem = serverless.pooled_problem("postgresql://u:p@ep-a-pooler.x.neon.tech/db", "SALESCOACH_DATABASE_URL")
     assert "SALESCOACH_DATABASE_URL" in problem and "ep-a-pooler.x.neon.tech" in problem and ":p@" not in problem
+
+
+def test_the_pool_is_small_and_checked_on_vercel(clean_env):
+    assert stores.pool_size() == 16
+    clean_env.setenv("VERCEL", "1")
+    assert stores.pool_size() == stores.SERVERLESS_POOL_SIZE
+    clean_env.setenv("SALESCOACH_PG_POOL_SIZE", "3")
+    assert stores.pool_size() == 3
+
+
+@pytest.mark.postgres_only
+def test_a_vercel_pool_hands_out_checked_connections(db, clean_env):
+    from psycopg_pool import ConnectionPool
+    import conftest
+    stores.close_pools()
+    clean_env.setenv("VERCEL", "1")
+    try:
+        pool = stores._pool(conftest.APP_URL)
+        assert pool.max_size == stores.SERVERLESS_POOL_SIZE and pool.max_idle == stores.SERVERLESS_MAX_IDLE_S
+        assert pool._check == ConnectionPool.check_connection
+    finally:
+        stores.close_pools()
