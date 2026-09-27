@@ -230,6 +230,9 @@ def dialect():
 def store_backend(monkeypatch):
     """SQLite: DATABASE_URL is never inherited from the machine. Postgres: every stores.sales() in this
     test (any thread) lands in one fresh schema, made on first use and dropped at the end."""
+    monkeypatch.delenv("SALESCOACH_DATABASE_URL", raising=False)       # never inherited: it would win over both
+    monkeypatch.delenv("SALESCOACH_PLATFORM", raising=False)           # nor a serverless platform from the machine
+    monkeypatch.delenv("VERCEL", raising=False)
     if not PG_URL:
         monkeypatch.delenv("DATABASE_URL", raising=False)
         yield None

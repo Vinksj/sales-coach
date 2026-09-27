@@ -34,10 +34,14 @@ log = logging.getLogger("salescoach.store")
 
 
 def db_path():
-    """Where the store is: DATABASE_URL (a postgresql:// URL) wins, then SALES_DB, then the data folder."""
-    url = os.environ.get("DATABASE_URL")
-    if url and db.is_postgres_url(url):
-        return url
+    """Where the store is: SALESCOACH_DATABASE_URL, then DATABASE_URL (a postgresql:// URL), then SALES_DB, then the
+    data folder. SALESCOACH_DATABASE_URL exists for platforms whose database integration owns DATABASE_URL and fills
+    it with the OWNER role's URL (the Vercel Marketplace's Neon, docs/deploy-vercel.md): the app role's URL goes
+    there instead, and serverless.scrub_owner_env() removes the owner's."""
+    for name in ("SALESCOACH_DATABASE_URL", "DATABASE_URL"):
+        url = os.environ.get(name)
+        if url and db.is_postgres_url(url):
+            return url
     return Path(os.environ.get("SALES_DB", config.DATA_DIR / "sales.db"))
 
 

@@ -38,15 +38,19 @@ from typing import Optional
 
 import yaml
 
+from . import serverless
+
 log = logging.getLogger("salescoach.config")
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.environ.get("SALESCOACH_CONFIG", ROOT / "config"))
-DATA_DIR = Path(os.environ.get("SALESCOACH_DATA", ROOT / "data"))
+# On a serverless platform (serverless.py: Vercel) the bundle is read-only and only /tmp is writable, so both
+# default under /tmp there; everywhere else the defaults are what they always were.
+DATA_DIR = Path(os.environ.get("SALESCOACH_DATA", serverless.default_data_dir() or ROOT / "data"))
 # Not under ~/.claude: the model sandboxes run `claude -p` with this as cwd, and a CLAUDE.md in an
 # ancestor directory (~/.claude/CLAUDE.md) would be project memory the agents must never see.
-RUNTIME_DIR = Path(os.environ.get("SALESCOACH_RUNTIME",
-                                  Path.home() / "Library" / "Application Support" / "salescoach" / "runtime"))
+RUNTIME_DIR = Path(os.environ.get("SALESCOACH_RUNTIME", serverless.default_runtime_dir()
+                                  or Path.home() / "Library" / "Application Support" / "salescoach" / "runtime"))
 SECRETS_FILE = ROOT / "secrets.env"            # legacy location, read-only; set_secret never writes here
 
 
