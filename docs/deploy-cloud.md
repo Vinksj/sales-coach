@@ -6,6 +6,10 @@ customer's Workspace domain, each rep connecting their own Gmail and Calendar, a
 web, worker and scheduler processes from the same image. Nothing here applies to a laptop install;
 nothing on a laptop install changes.
 
+On Vercel there are no long-lived processes: the web app runs as functions and the worker and the scheduler as two
+cron endpoints. Everything on this page about the org, Google, roles and data applies there too; what differs (and
+the steps) is in [deploy-vercel.md](deploy-vercel.md).
+
 ## What cloud mode changes
 
 - Sign-in is Google only. There is no password; `/login` offers "Sign in with Google". Only

@@ -121,7 +121,8 @@ the web app, the pipeline, transcript upload, the webhook, Fireflies and Fathom,
 model provider work hosted; live capture, the overlay, local transcription, the Claude CLI
 provider, Granola, the calendar and (until an in-app OAuth flow exists) Gmail do not. Set
 `SALESCOACH_PASSWORD` and `SALESCOACH_PUBLIC_URL`; without a password, `serve` refuses to bind to
-anything but localhost.
+anything but localhost. A team install (cloud mode) runs on a container host
+([docs/deploy-cloud.md](docs/deploy-cloud.md)) or on Vercel with Neon ([docs/deploy-vercel.md](docs/deploy-vercel.md)).
 
 ## Your data stays on your machine
 
@@ -344,6 +345,7 @@ and services are replaced by fakes.
 - [docs/learning.md](docs/learning.md): what is learned, thresholds, how to correct it
 - [docs/architecture.md](docs/architecture.md): pipeline, event bus, plugins, stores, safety checks
 - [docs/deploy-cloud.md](docs/deploy-cloud.md): running it for a team (cloud mode, Postgres, Google sign-in)
+- [docs/deploy-vercel.md](docs/deploy-vercel.md): the team install on Vercel (functions, Neon, cron instead of worker processes)
 - [docs/manager.md](docs/manager.md): what a manager sees and can do, what they cannot, and what reps should know
 - [docs/design-setup-and-learning.md](docs/design-setup-and-learning.md): the design note behind the generalisation
 - [docs/review-2026-09-12.md](docs/review-2026-09-12.md): two safety reviews and their fixes
