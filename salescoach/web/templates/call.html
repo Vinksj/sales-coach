@@ -58,7 +58,7 @@
   <h2>{% if current_step %}Now: {{ current_step.label }}{% elif rerun and job %}Queued: from {{ (job.payload|fromjson({})).get('from')|step_label }}{% else %}Queued{% endif %}</h2>
   <ol class="steps">{% for s in steps %}<li class="step step-{{ s.status }}">{{ s.label }}</li>{% endfor %}</ol>
   <p class="meta">This page refreshes by itself.{% if job and not budget_wait %} Job {{ job.status }}, attempt {{ job.attempts }}.{% endif %}
-    {% if not nav_worker_on %} The worker is not running in this server, so nothing will move until <span class="mono">salescoach serve</span> or <span class="mono">salescoach work</span> runs.{% endif %}</p>
+    {% if not nav_worker_on %}{% if serverless() %} The scheduled drain has not run in the last few minutes, so nothing will move until it does (the deployment's cron jobs: docs/deploy-vercel.md).{% else %} The worker is not running in this server, so nothing will move until <span class="mono">salescoach serve</span> or <span class="mono">salescoach work</span> runs.{% endif %}{% endif %}</p>
 </section>
 {% endif %}
 

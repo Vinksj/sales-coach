@@ -30,8 +30,8 @@
 
   <form method="post" action="/import/file" enctype="multipart/form-data" class="card stack">
     <div class="eyebrow">Upload a transcript from any recorder</div>
-    <label>Transcript file<input type="file" name="file" accept=".txt,.vtt,.srt,.json,.md,text/plain,text/vtt,application/json" required>
-      <span class="hint">Otter, Fireflies, Fathom, tl;dv, Zoom, Meet, Teams, Gong: export the transcript (.txt, .vtt, .srt or .json) and drop it here. The same file is never imported twice.</span></label>
+    <label>Transcript file<input type="file" name="file" accept=".txt,.vtt,.srt,.json,.md,text/plain,text/vtt,application/json" required{% if file_limit %} data-max-bytes="{{ file_limit }}" data-max-label="{{ file_limit_label }}"{% endif %}>
+      <span class="hint">Otter, Fireflies, Fathom, tl;dv, Zoom, Meet, Teams, Gong: export the transcript (.txt, .vtt, .srt or .json) and drop it here. The same file is never imported twice.{% if file_limit_label %} Up to {{ file_limit_label }}.{% endif %}</span></label>
     <label>Title<input name="title" placeholder="Taken from the file if empty"></label>
     <label>Your name in this transcript<input name="me_label" placeholder="Only if it is not the name in your profile">
       <span class="hint">Leave empty: the coach recognises your name and aliases, and asks when it cannot tell.</span></label>
@@ -39,6 +39,12 @@
     <button class="btn btn-primary">Import transcript file</button>
   </form>
 
+  {% if audio_off %}
+  <div class="card stack">
+    <div class="eyebrow">Upload a recording</div>
+    <p class="callout">{{ audio_off }}</p>
+  </div>
+  {% else %}
   <form method="post" action="/import/audio" enctype="multipart/form-data" class="card stack">
     <div class="eyebrow">Upload a recording</div>
     {% if not audio_available %}
@@ -50,5 +56,7 @@
     {{ common_fields() }}
     <button class="btn btn-primary"{% if not audio_available %} disabled{% endif %}>Import recording</button>
   </form>
+  {% endif %}
 </div>
+<script src="/static/upload_limit.js" defer></script>
 {% endblock %}

@@ -41,7 +41,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .. import budget, config, hosted, identity, ops, repo, seller
+from .. import budget, config, hosted, identity, ops, repo, seller, serverless
 from ..execution import policy, tokens
 from ..manager import access, comments, views
 from ..memory import patterns
@@ -221,7 +221,7 @@ templates.env.globals.update(brand=seller.company, tz_label=seller.tz_label, lan
                              hosted=hosted.is_hosted, cloud=identity.cloud,
                              me_user_id=lambda: getattr(identity.current_actor(required=False), "user_id", None),
                              me_role=lambda: getattr(identity.current_actor(required=False), "role", None),
-                             consent_notice=_consent_notice, jarvis_on=_jarvis_on,
+                             consent_notice=_consent_notice, jarvis_on=_jarvis_on, serverless=serverless.vercel,
                              budget_waiting_text=budget.WAITING_TEXT)
 
 
@@ -454,7 +454,13 @@ def upload_limit(path: str):
         mb = float(os.environ.get(env) or default)
     except ValueError:
         mb = default
-    return int(mb * 1024 * 1024)
+    return serverless.body_limit(int(mb * 1024 * 1024))       # Vercel: under the platform's 4.5 MB request body limit
+
+
+def limit_label(limit: int) -> str:
+    """"20 MB", "4.4 MB": what an upload's cap is called in a refusal and next to the file field."""
+    mb = limit / (1024 * 1024)
+    return f"{mb:.0f} MB" if mb == int(mb) else f"{mb:.1f} MB"
 
 
 class UploadLimit:
@@ -472,7 +478,7 @@ class UploadLimit:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         declared = headers.get("content-length", "")
-        too_big = PlainTextResponse(f"Too large: the limit for this upload is {limit // (1024 * 1024)} MB.",
+        too_big = PlainTextResponse(f"Too large: the limit for this upload is {limit_label(limit)}.",
                                     status_code=413)
         if declared.isdigit() and int(declared) > limit:
             await too_big(scope, receive, send)
@@ -572,6 +578,8 @@ def _default_live_factory():
 
 
 def _default_hub():
+    if serverless.vercel():                  # an in-process hub reaches one instance's subscribers only: none here
+        return None
     try:
         from ..live import hub as hub_module
     except Exception:
@@ -633,6 +641,13 @@ def worker_on(app, conn=None) -> bool:
     thread = getattr(app.state, "worker_thread", None)
     if thread is not None and thread.is_alive():
         return True
+    if getattr(app.state, "platform", None) == serverless.VERCEL and conn is not None:
+        # Serverless: no worker process and no heartbeat; the cron drain (salescoach/cron.py) is the worker,
+        # and it is "on" while its last successful call is fresh.
+        try:
+            return ops.cron_worker_live(conn)
+        except Exception:
+            return False
     if getattr(app.state, "role", "all") == "web" and conn is not None:
         try:
             return any(not b["stale"] for b in ops.read_heartbeats(conn)["workers"])
@@ -983,7 +998,8 @@ def create_app(start_worker: bool = True, db_path=None, gmail_factory=None, live
         raise ValueError(f"create_app serves HTTP: role must be all or web, not {role!r}")
     app = FastAPI(title="Sales Coach", lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.role = role
-    app.state.start_worker = start_worker and role == "all"
+    app.state.platform = serverless.platform()
+    app.state.start_worker = start_worker and role == "all" and not serverless.vercel()
     app.state.heartbeats = heartbeats
     app.state.started_at = stores.now()
     # Tests post from a fixed origin to TestClient's "testserver" host; a real server trusts only itself.
@@ -1052,11 +1068,20 @@ def health(request: Request):
                 processes = ops.read_heartbeats(conn)
         except Exception:                           # the store answered SELECT 1 a moment ago; do not 503 on this
             pass
+    worker = "running" if thread is not None and thread.is_alive() else "off"
+    platform = getattr(request.app.state, "platform", "container")
+    cron_state = processes.pop("cron", None)            # a container's answer keeps its shape (tests/test_hosted.py)
     body = {"status": "ok" if db_state == "ok" else "error", "version": _version(), "db": db_state,
             "role": getattr(request.app.state, "role", "all"),
-            "worker": "running" if thread is not None and thread.is_alive() else "off",
+            "worker": worker,
             "processes": processes,
             "configured": bool(seller.is_configured())}
+    if platform == serverless.VERCEL:
+        # Serverless: the worker and the scheduler are cron calls (salescoach/cron.py); their last runs say whether
+        # anything is handling the queue, as a heartbeat does for a worker process.
+        drain = (cron_state or {}).get("drain")
+        body.update(platform=platform, cron=cron_state or {"drain": None, "tick": None},
+                    worker="cron" if drain is not None and not drain.get("stale") else "cron (no recent drain)")
     return JSONResponse(body, status_code=200 if db_state == "ok" else 503)
 
 
@@ -2019,7 +2044,9 @@ def _coach_page(request: Request, conn, subject: str):
 def import_page(request: Request):
     with _db(request) as conn:
         return render(request, conn, "import.html", deals=_deals(conn), people=_people(conn),
-                      audio_available=_audio_importer() is not None, layouts=AUDIO_LAYOUTS)
+                      audio_available=_audio_importer() is not None and not serverless.vercel(),
+                      audio_off=serverless.AUDIO_OFF if serverless.vercel() else None, layouts=AUDIO_LAYOUTS,
+                      file_limit=upload_limit("/import/file"), file_limit_label=limit_label(upload_limit("/import/file")))
 
 
 def _started_at(raw):
@@ -2070,6 +2097,8 @@ def import_text_post(request: Request, text: str = Form(""), title: str = Form("
 def import_audio_post(request: Request, file: UploadFile = File(...), title: str = Form(""), deal_id: str = Form(""),
                       lang_mode: str = Form("auto"), layout: str = Form("stereo_me_left"),
                       participants: list[str] = Form(default=[])):
+    if serverless.vercel():              # no ffmpeg, no long-running worker to transcribe (docs/deploy-vercel.md)
+        return _redirect("/import", err=serverless.AUDIO_OFF)
     if not seller.is_configured():
         return _redirect("/setup", err=NOT_CONFIGURED)
     import_audio = _audio_importer()
@@ -2094,7 +2123,7 @@ def import_audio_post(request: Request, file: UploadFile = File(...), title: str
             for chunk in iter(lambda: file.file.read(1 << 20), b""):
                 copied += len(chunk)
                 if limit is not None and copied > limit:
-                    return _redirect("/import", err=f"Too large: the limit for a recording is {limit // (1024 * 1024)} MB.")
+                    return _redirect("/import", err=f"Too large: the limit for a recording is {limit_label(limit)}.")
                 fh.write(chunk)
         with _db(request) as conn:
             try:

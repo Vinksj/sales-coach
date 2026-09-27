@@ -154,9 +154,18 @@ def _db(request: Request):
     return stores.sales(getattr(request.app.state, "db_path", None))
 
 
+def _live_off():
+    """Serverless (Vercel): the stream and the replay live in one process's memory (the hub, the replay thread),
+    and a function instance keeps neither between requests. The post-call timeline (stored nudges) stays."""
+    from .. import serverless
+    if serverless.vercel():
+        raise HTTPException(404, serverless.LIVE_OFF)
+
+
 @router.get("/coach/live/stream")
 async def coach_stream(request: Request):
     from ..coach.engine import current_topic
+    _live_off()
     hub = _hub(request)
     topic = current_topic(_actor_id())         # the viewer's own screen, never another user's
     q = hub.subscribe(topic, maxsize=200)
@@ -259,6 +268,7 @@ def coach_timeline(request: Request, call_id: str, session: str | None = None):
 
 @router.post("/coach/replay/{call_id}")
 def coach_replay(request: Request, call_id: str, speed: float = Form(20.0), slow: str = Form("")):
+    _live_off()
     from .. import repo
     from ..coach import replay as replay_mod
     from ..coach.engine import publish_status

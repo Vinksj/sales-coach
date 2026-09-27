@@ -82,7 +82,7 @@
 </section>
 {% endif %}
 
-{% if has_turns %}
+{% if has_turns and not serverless() %}
 <section class="card">
   <div class="eyebrow">Replay</div>
   {% if replaying %}
