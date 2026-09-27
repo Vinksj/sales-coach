@@ -103,41 +103,50 @@ def _run_once(duty: Duty, conn) -> float | None:
     return None
 
 
+def run_round(duty: Duty, db_path, stop=None) -> float:
+    """One round of a duty: once for every active user (or once, org-level), each in that user's service
+    session. Returns the seconds until the next round: the duty's interval, shortened to retry an error or
+    lengthened while a dependency is unavailable. The scheduler's thread loops over this; on a serverless
+    platform a cron tick calls it for each duty that is due (salescoach/cron.py)."""
+    delay = duty.interval_s()
+    try:
+        with identity.activate(None):
+            conn = stores.sales(db_path)
+    except Exception:
+        log.exception("%s: cannot open sales.db", duty.name)
+        return delay
+    try:
+        if duty.per_user:
+            with conn.as_system():                     # who to run for: read before anyone is bound
+                targets = [u["id"] for u in users.active(conn)]
+        elif identity.cloud():
+            log.info("%s: an org-level duty does not run in cloud mode", duty.name)
+            return delay
+        else:
+            targets = [identity.LOCAL_USER]
+        for user_id in targets:
+            if getattr(stop, "is_set", lambda: False)():   # tests pass a duck with wait() only
+                break
+            try:
+                with identity.as_user(conn, user_id, mode=identity.SERVICE):
+                    retry = _run_once(duty, conn)
+            except identity.NoActor:
+                log.exception("%s: user %s is gone", duty.name, user_id)
+                continue
+            if retry is not None:
+                # An unavailable dependency backs the whole duty off; an error must not lose the day.
+                delay = max(delay, retry) if retry > RETRY_AFTER_ERROR_S else min(delay, retry)
+    except Exception:
+        log.exception("%s: round failed", duty.name)
+    finally:
+        conn.close()
+    return delay
+
+
 def _loop(duty: Duty, db_path, stop: threading.Event):
     delay = duty.first_delay_s
     while not stop.wait(delay):
-        delay = duty.interval_s()
-        try:
-            with identity.activate(None):
-                conn = stores.sales(db_path)
-        except Exception:
-            log.exception("%s: cannot open sales.db", duty.name)
-            continue
-        try:
-            if duty.per_user:
-                with conn.as_system():                     # who to run for: read before anyone is bound
-                    targets = [u["id"] for u in users.active(conn)]
-            elif identity.cloud():
-                log.info("%s: an org-level duty does not run in cloud mode", duty.name)
-                continue
-            else:
-                targets = [identity.LOCAL_USER]
-            for user_id in targets:
-                if getattr(stop, "is_set", lambda: False)():   # tests pass a duck with wait() only
-                    break
-                try:
-                    with identity.as_user(conn, user_id, mode=identity.SERVICE):
-                        retry = _run_once(duty, conn)
-                except identity.NoActor:
-                    log.exception("%s: user %s is gone", duty.name, user_id)
-                    continue
-                if retry is not None:
-                    # An unavailable dependency backs the whole duty off; an error must not lose the day.
-                    delay = max(delay, retry) if retry > RETRY_AFTER_ERROR_S else min(delay, retry)
-        except Exception:
-            log.exception("%s: round failed", duty.name)
-        finally:
-            conn.close()
+        delay = run_round(duty, db_path, stop)
 
 
 def start(db_path, stop: threading.Event, duties: Optional[list] = None) -> list[threading.Thread]:

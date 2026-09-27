@@ -9,6 +9,8 @@ Each module in this package may define any of:
   register_cli(subparsers)           CLI subcommands (each sets fn=...)
   start_background(db_path, stop)    duties for `salescoach serve`; start threads,
                                      return quickly, honour the stop Event
+  cron_duties()                      the same duties as scheduler.Duty objects, for a
+                                     serverless cron tick (salescoach/cron.py)
 Schema lives next to the module as <module>.sql (CREATE ... IF NOT EXISTS only);
 stores.sales() applies every plugins/*.sql on connect, without importing Python.
 
@@ -76,6 +78,20 @@ def register_cli(subparsers) -> None:
     for m in modules():
         if hasattr(m, "register_cli"):
             m.register_cli(subparsers)
+
+
+def cron_duties() -> list:
+    """Every plugin's scheduler duties (automation/scheduler.Duty), for a serverless cron tick (salescoach/cron.py),
+    which runs the ones that are due instead of starting threads. A plugin that fails to list its duties is
+    logged and skipped, like one that fails to start them."""
+    out = []
+    for m in modules():
+        if hasattr(m, "cron_duties"):
+            try:
+                out.extend(m.cron_duties())
+            except Exception:
+                log.exception("plugin %s cron duties failed", m.__name__)
+    return out
 
 
 def start_background(db_path, stop) -> None:

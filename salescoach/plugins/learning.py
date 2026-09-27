@@ -88,10 +88,15 @@ def register(workflow):
 
 # ---- serve -------------------------------------------------------------------------------------
 
+def cron_duties() -> list:
+    """The daily recompute, as a scheduler duty (a thread under `serve`, a cron tick on a serverless platform)."""
+    from ..automation.scheduler import Duty
+    return [Duty("learning", lambda conn: run_recompute(conn, trigger="daily"), lambda: DAILY_S, first_delay_s=300)]
+
+
 def start_background(db_path, stop):
-    from ..automation.scheduler import Duty, start
-    start(db_path, stop, duties=[Duty("learning", lambda conn: run_recompute(conn, trigger="daily"),
-                                      lambda: DAILY_S, first_delay_s=300)])
+    from ..automation.scheduler import start
+    start(db_path, stop, duties=cron_duties())
 
 
 # ---- CLI -------------------------------------------------------------------------------------------

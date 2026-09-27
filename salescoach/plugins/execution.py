@@ -55,6 +55,12 @@ def start_background(db_path, stop):
     scheduler.start(db_path, stop)
 
 
+def cron_duties() -> list:
+    """The same duties for a serverless cron tick (salescoach/cron.py)."""
+    from ..automation import scheduler
+    return scheduler.default_duties()
+
+
 # ---- CLI --------------------------------------------------------------------------------
 
 def _conn():

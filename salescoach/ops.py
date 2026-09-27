@@ -90,9 +90,22 @@ def write_heartbeat(conn, kind: str, **fields) -> None:
         conn.commit()
 
 
+CRON_STALE_ENV = "SALESCOACH_CRON_STALE_S"
+CRON_STALE_S = 180.0                   # a serverless cron drain (every minute) older than this: the cron is not running
+
+
+def cron_stale_after() -> float:
+    try:
+        return max(1.0, float(os.environ.get(CRON_STALE_ENV) or CRON_STALE_S))
+    except ValueError:
+        return CRON_STALE_S
+
+
 def read_heartbeats(conn) -> dict:
-    """{"workers": [...], "schedulers": [...], "leader": {...}|None}, each entry with age_s and stale."""
-    out = {"workers": [], "schedulers": [], "leader": None}
+    """{"workers": [...], "schedulers": [...], "leader": {...}|None, "cron": {"drain", "tick"}}, each entry with
+    age_s and stale. "cron" is a serverless deployment's (salescoach/cron.py): the last drain and the last tick,
+    stale after SALESCOACH_CRON_STALE_S (default 180 s, three missed minutes)."""
+    out = {"workers": [], "schedulers": [], "leader": None, "cron": {"drain": None, "tick": None}}
     with conn.as_system():                 # /health and the health check read these before anyone signs in
         rows = conn.execute("SELECT key, value FROM state WHERE key LIKE 'ops:%'").fetchall()
     for row in rows:
@@ -103,6 +116,9 @@ def read_heartbeats(conn) -> dict:
         age = _age_s(body.get("at"))
         body = {**body, "age_s": None if age is None else round(age, 1), "stale": age is None or age > STALE_AFTER_S}
         key = row["key"]
+        if key in ("ops:cron:drain", "ops:cron:tick"):
+            out["cron"][key.rsplit(":", 1)[1]] = {**body, "stale": age is None or age > cron_stale_after()}
+            continue
         if key == "ops:scheduler:leader":
             out["leader"] = body
         elif key.startswith("ops:worker:") and key.endswith(":heartbeat"):
@@ -358,6 +374,12 @@ def _wait_for_signal(stop: threading.Event) -> None:
 
 
 # ---- the container health check ------------------------------------------------------------------------
+
+def cron_worker_live(conn) -> bool:
+    """A serverless deployment's "is anything handling the queue": the last cron drain is fresh."""
+    drain = read_heartbeats(conn)["cron"]["drain"]
+    return drain is not None and not drain["stale"]
+
 
 def check_health(role: str, db_path=None, port: Optional[int] = None) -> tuple[bool, str]:
     """`salescoach health`: a web/all process answers over HTTP; a worker or scheduler has no HTTP, so its

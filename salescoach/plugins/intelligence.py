@@ -168,6 +168,19 @@ def register_cli(sub):
 
 # ---- serve ----------------------------------------------------------------------------
 
+def _embed_for(conn) -> dict:
+    """One user's pending embeddings (the connection is bound to that user, service mode)."""
+    from ..intel import embed
+    return {"indexed": embed.index_pending(conn)}
+
+
+def cron_duties() -> list:
+    """The embed loop as a scheduler duty, for a serverless cron tick (salescoach/cron.py): every active user's
+    pending embeddings, as that user, every EMBED_EVERY_S. `serve` keeps its own thread (start_background)."""
+    from ..automation.scheduler import Duty
+    return [Duty("embed", _embed_for, lambda: EMBED_EVERY_S, first_delay_s=60, needs_profile=False)]
+
+
 def start_background(db_path, stop):
     def loop():
         from .. import identity, users

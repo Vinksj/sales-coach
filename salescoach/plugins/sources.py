@@ -57,6 +57,11 @@ def start_background(db_path, stop):
     start(db_path, stop, duties=background_duties())
 
 
+def cron_duties() -> list:
+    """The same duties for a serverless cron tick (salescoach/cron.py)."""
+    return background_duties()
+
+
 # ---- CLI ----------------------------------------------------------------------------------------
 
 def cmd_sources(args):

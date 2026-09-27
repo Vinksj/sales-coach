@@ -90,10 +90,14 @@ def _settle_failure(conn, event, exc):
         bus.fail(conn, event.event_id, f"{type(exc).__name__}: {exc}")
 
 
-def drain(conn, max_events: int = 100) -> int:
-    """Process pending events synchronously (CLI / tests). Returns the count handled."""
+def drain(conn, max_events: int = 100, deadline: float | None = None) -> int:
+    """Process pending events synchronously (CLI / tests / a serverless cron drain). Returns the count handled.
+    `deadline` (time.monotonic()) stops CLAIMING once passed: an event already claimed is handled to the end, and
+    everything not claimed stays pending for the next drain."""
     handled = 0
     while handled < max_events:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         event = bus.claim_next(conn)
         if event is None:
             break
