@@ -13,6 +13,7 @@ For the test only: `x-sim-route: <n>` pins a request to instance n (sorted by ad
 instance answered in `x-sim-instance`, and GET /_sim/instances lists the instances with their request counts.
 """
 import asyncio
+import http.cookiejar
 import itertools
 import json
 import os
@@ -28,7 +29,18 @@ HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", 
        "upgrade", "content-length", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip"}
 _turn = itertools.count()
 HITS: dict = {}
-client = httpx.AsyncClient(timeout=httpx.Timeout(MAX_DURATION_S, connect=5.0), follow_redirects=False)
+# An edge never keeps cookies: a jar that refuses every cookie, or the first sign-in's session would ride along on
+# everyone's later requests (httpx clients keep what Set-Cookie says by default).
+class _NoCookies(http.cookiejar.CookieJar):
+    def extract_cookies(self, response, request):
+        return None
+
+    def set_cookie(self, cookie):
+        return None
+
+
+client = httpx.AsyncClient(timeout=httpx.Timeout(MAX_DURATION_S, connect=5.0), follow_redirects=False,
+                           cookies=_NoCookies())
 
 
 def instances() -> list:

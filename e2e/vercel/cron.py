@@ -3,8 +3,8 @@
 Every EVERY_S seconds it calls GET /cron/drain and GET /cron/tick through the edge (the proxy), the way Vercel does:
 `Authorization: Bearer $CRON_SECRET`, `user-agent: vercel-cron/1.0`, the deployment's own URL as Host (not the
 public one), and WITHOUT waiting for the previous call to finish, so a slow drain overlaps the next one exactly as
-Vercel's crons may overlap. Each call is logged as one JSON line (job, start, end, status and what the endpoint
-answered), which the test reads back. Vercel's own cadence is one minute; the simulation runs faster to keep the
+Vercel's crons may overlap. Each call is logged as one JSON line (job, start, end, the HTTP status and what the
+endpoint answered), which the test reads back. Vercel's own cadence is one minute; the simulation runs faster to keep the
 test short, which only makes overlaps more likely.
 """
 import json
@@ -35,8 +35,8 @@ def call(job: str) -> None:
         instance = r.headers.get("x-sim-instance")
     except httpx.HTTPError as exc:
         status, body, instance = 0, {"error": type(exc).__name__}, None
-    line = {"cron": job, "start": round(start, 3), "end": round(time.time(), 3), "status": status,
-            "instance": instance, **{k: v for k, v in body.items() if k != "job"}}
+    line = {**{k: v for k, v in body.items() if k != "job"}, "cron": job, "start": round(start, 3),
+            "end": round(time.time(), 3), "http": status, "instance": instance}
     sys.stdout.write(json.dumps(line) + "\n")
     sys.stdout.flush()
 

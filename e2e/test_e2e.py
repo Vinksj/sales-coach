@@ -229,9 +229,9 @@ def test_serverless_instances_run_nothing_in_the_background_and_the_cron_is_the_
     body = wait_until("a fresh cron drain and tick", lambda: (lambda b: b if b["worker"] == "cron" and b["cron"]["tick"]
                       else None)(httpx.get(WEB + "/health", timeout=10).json()), timeout=60)
     calls = wait_until("cron calls served by both instances", lambda: (lambda c: c if len(
-        {x["instance"] for x in c if x["status"] == 200}) == 2 else None)(_cron_log()), timeout=60)
-    assert {c["cron"] for c in calls if c["status"] == 200} == {"drain", "tick"}
-    assert all(c["status"] == 200 for c in calls), [c for c in calls if c["status"] != 200][:3]
+        {x["instance"] for x in c if x["http"] == 200}) == 2 else None)(_cron_log()), timeout=60)
+    assert {c["cron"] for c in calls if c["http"] == 200} == {"drain", "tick"}
+    assert all(c["http"] == 200 for c in calls), [c for c in calls if c["http"] != 200][:3]
     assert _cron("drain").status_code == 200
     refused = httpx.get(f"{WEB}/cron/drain", timeout=30, headers={"authorization": "Bearer not-the-secret"})
     assert refused.status_code == 401 and httpx.get(f"{WEB}/cron/tick", timeout=30).status_code == 401
@@ -538,7 +538,7 @@ def test_overlapping_cron_drains_run_an_event_exactly_once():
         assert drafts() == drafted + 1                                        # ... from one model call
         event = q1("SELECT status, attempts, type FROM wf_events WHERE owner=%s ORDER BY id DESC LIMIT 1", uid(A))
         assert (event["status"], event["attempts"]) == ("done", 1), event
-        calls = [c for c in _cron_log() if c["cron"] == "drain" and c["status"] == 200 and c["start"] >= t0 - 1]
+        calls = [c for c in _cron_log() if c["cron"] == "drain" and c["http"] == 200 and c["start"] >= t0 - 1]
         handler = max((c for c in calls if c["handled"] >= 1), key=lambda c: c["end"] - c["start"])
         overlapping = [c for c in calls if c is not handler and c["start"] < handler["end"] and c["end"] > handler["start"]]
         assert handler["end"] - handler["start"] >= 12 and overlapping, (handler, calls)
