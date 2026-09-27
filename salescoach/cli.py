@@ -22,6 +22,8 @@
   salescoach export --user EMAIL [--out FILE]  one user's own data, a zip of JSON files (admins)
   salescoach retention [--dry-run]        what the org's retention.days would delete (or deletes it)
   salescoach status
+  salescoach app-role [--password-stdin]  create the app role (salescoach_app) as the owner, print its URL
+  salescoach vercel-build                 a Vercel build step: migrate only on production, when asked to
 """
 import argparse
 import json
@@ -397,8 +399,15 @@ def cmd_status(args):
 def cmd_migrate(args):
     """Bring the Postgres schema up to this build (or, with --check, say whether it is)."""
     import os
+    from . import serverless
     from .store import db, pgmigrate, stores
     url = args.url or os.environ.get("DATABASE_MIGRATE_URL") or os.environ.get("DATABASE_URL")
+    pooled = url and db.is_postgres_url(url) and serverless.pooled_problem(url, "the migration URL")
+    if pooled:
+        # The migrator holds a session advisory lock and sets row_security for its session: a transaction-mode
+        # pooler would run them on whichever server connection is free. Refused, never half-applied.
+        print(f"migrate: {pooled}", file=sys.stderr)
+        return 2
     if not url or not db.is_postgres_url(url):
         # SQLite migrates itself on open (store/migrate.py); opening the store is the migration.
         conn = stores.sales()
@@ -425,6 +434,114 @@ def cmd_migrate(args):
         return 0 if current == expected and not stale else 1
     finally:
         conn.close()
+
+
+APP_ROLE_NAME = "salescoach_app"
+
+
+def cmd_app_role(args):
+    """Create the role the app serves as (docs/deploy-vercel.md, docs/deploy-cloud.md): LOGIN, NOSUPERUSER,
+    NOBYPASSRLS, NOCREATEDB, NOCREATEROLE, owning nothing, with CONNECT on this database; `salescoach migrate` grants
+    it the tables (store/pg/rls.sql). Run as the OWNER role (DATABASE_MIGRATE_URL or --url, a direct URL), which
+    must be able to create roles and must itself bypass row-level security (the migrator needs every row). Prints
+    the app role's URL (the owner's host and database, the new role and password): SALESCOACH_DATABASE_URL on
+    Vercel, DATABASE_URL elsewhere. An existing app role is checked, not recreated; --password-stdin sets its
+    password to the one read from stdin (rotation)."""
+    import secrets
+    from urllib.parse import quote, urlsplit, urlunsplit
+    from . import serverless
+    from .lifecycle import owner
+    from .store import db
+    try:
+        url = owner.owner_url(args.url)
+    except owner.NoOwnerURL as exc:
+        print(f"app-role: {exc}", file=sys.stderr)
+        return 2
+    pooled = serverless.pooled_problem(url, "the owner URL")
+    if pooled:
+        print(f"app-role: {pooled}", file=sys.stderr)
+        return 2
+    password = None
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+        if len(password) < 16:
+            print("app-role: the password on stdin must be at least 16 characters", file=sys.stderr)
+            return 2
+    from psycopg import sql
+    conn = db.connect(url)
+    conn.system = True
+    try:
+        me, superuser, bypass, createrole = conn.execute(
+            "SELECT current_user, rolsuper, rolbypassrls, rolcreaterole FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+        dbname = conn.execute("SELECT current_database()").fetchone()[0]
+        print(f"owner role {me}: superuser {'yes' if superuser else 'no'}, BYPASSRLS {'yes' if bypass else 'no'}, "
+              f"CREATEROLE {'yes' if createrole else 'no'}")
+        if not (superuser or bypass):
+            print(f"app-role: {me} does not bypass row-level security, and the migrator must (it reads and backfills "
+                  "every row; app_owner_of() reads rows as the owner). Use the database's owner role (Neon: the "
+                  "project's owner, e.g. neondb_owner, which has BYPASSRLS), or grant it BYPASSRLS as a superuser",
+                  file=sys.stderr)
+            return 2
+        row = conn.execute("SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = ?",
+                           (args.name,)).fetchone()
+        role = sql.Identifier(args.name)
+        if row is None:
+            if not (superuser or createrole):
+                print(f"app-role: {me} cannot create roles (no CREATEROLE): create {args.name} as a role that can",
+                      file=sys.stderr)
+                return 2
+            password = password or secrets.token_urlsafe(32)
+            conn.raw.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE "
+                                     "NOINHERIT").format(role, sql.Literal(password)))
+            print(f"created role {args.name}: LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE")
+        else:
+            if any(row):
+                print(f"app-role: role {args.name} exists and is a superuser or has BYPASSRLS, CREATEDB or CREATEROLE: "
+                      f"row-level security would not bind it. ALTER ROLE {args.name} NOSUPERUSER NOBYPASSRLS "
+                      "NOCREATEDB NOCREATEROLE (as a superuser), then run this again", file=sys.stderr)
+                return 2
+            if password:
+                conn.raw.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(role, sql.Literal(password)))
+                print(f"role {args.name} exists; its password was replaced")
+            else:
+                print(f"role {args.name} exists and is fit to serve (no superuser, no BYPASSRLS); password unchanged")
+        conn.raw.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(dbname), role))
+    finally:
+        conn.close()
+    if password:
+        parts = urlsplit(url)
+        host = parts.hostname + (f":{parts.port}" if parts.port else "")
+        app_url = urlunsplit((parts.scheme, f"{quote(args.name, safe='')}:{quote(password, safe='')}@{host}",
+                              parts.path, parts.query, ""))
+        print("\nThe app role's URL (shown once; keep it in the platform's secret store):")
+        print(f"  {'SALESCOACH_DATABASE_URL' if serverless.vercel() or args.vercel else 'DATABASE_URL'}={app_url}")
+    print("Next: `salescoach migrate` with the owner URL grants it the tables (store/pg/rls.sql).")
+    return 0
+
+
+def cmd_vercel_build(args):
+    """A Vercel build step (docs/deploy-vercel.md, "Migrations"). It migrates ONLY when all three hold:
+    VERCEL_ENV=production (a preview build never touches the production database), SALESCOACH_MIGRATE_ON_BUILD=1
+    (opt-in: the default is to migrate by hand, before promoting) and DATABASE_MIGRATE_URL is set (scope it to the
+    Production environment only, so no preview build can even read it). Anything else: says why it skipped and
+    succeeds. A failed migration fails the build, so the deployment is never promoted onto a half-migrated schema."""
+    import os
+    env = (os.environ.get("VERCEL_ENV") or "").strip()
+    wanted = (os.environ.get("SALESCOACH_MIGRATE_ON_BUILD") or "").strip() == "1"
+    url = (os.environ.get("DATABASE_MIGRATE_URL") or "").strip()
+    why = None
+    if env != "production":
+        why = f"VERCEL_ENV is {env or 'unset'}, not production"
+    elif not wanted:
+        why = "SALESCOACH_MIGRATE_ON_BUILD is not 1 (migrate by hand: docs/deploy-vercel.md)"
+    elif not url:
+        why = "DATABASE_MIGRATE_URL is not set for Production"
+    if why:
+        print(f"vercel-build: migrations skipped: {why}")
+        return 0
+    print("vercel-build: production build, migrating with DATABASE_MIGRATE_URL")
+    return cmd_migrate(argparse.Namespace(url=url, check=False))
 
 
 def cmd_import_sqlite(args):
@@ -644,6 +761,16 @@ def main(argv=None):
     mg.add_argument("--check", action="store_true", help="exit 1 when the database is behind this build")
     mg.add_argument("--url", help="the postgresql:// URL to migrate (default: the environment)")
     mg.set_defaults(fn=cmd_migrate)
+
+    ar = sub.add_parser("app-role", help="create the app role (no superuser, no BYPASSRLS) as the owner; print its URL")
+    ar.add_argument("--url", help="the owner role's direct postgresql:// URL (default: DATABASE_MIGRATE_URL)")
+    ar.add_argument("--name", default=APP_ROLE_NAME, help=argparse.SUPPRESS)
+    ar.add_argument("--password-stdin", action="store_true", help="read the password from stdin (default: generate one)")
+    ar.add_argument("--vercel", action="store_true", help="print the URL as SALESCOACH_DATABASE_URL (Vercel)")
+    ar.set_defaults(fn=cmd_app_role)
+
+    sub.add_parser("vercel-build", help="Vercel build step: migrate on production when SALESCOACH_MIGRATE_ON_BUILD=1"
+                   ).set_defaults(fn=cmd_vercel_build)
 
     im = sub.add_parser("import-sqlite", help="import a single-user SQLite install into an empty Postgres org")
     im.add_argument("path", help="the local install's sales.db (never written: a migrated copy is read)")
