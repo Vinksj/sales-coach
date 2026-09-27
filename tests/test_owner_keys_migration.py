@@ -42,7 +42,7 @@ def test_migration_12_rescopes_both_keys_and_keeps_the_rows(tmp_path, monkeypatc
     raw.close()
     conn = stores.sales()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 13
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 14
         assert _unique_sets(conn, "pattern_observations") == [("owner_id", "family", "key", "subject")]
         rows = conn.execute("SELECT family, key, subject, excluded, owner_id FROM pattern_observations ORDER BY id").fetchall()
         assert [tuple(r) for r in rows] == [("seller", "a", "call:1", 1, "local"), ("seller", "b", "call:1", 0, "local")]
@@ -82,7 +82,7 @@ def test_migration_13_scopes_derived_outcomes_and_widens_access_log_keeping_the_
     raw.close()
     conn = stores.sales()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 13
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 14
         assert _unique_sets(conn, "derived_outcomes") == [("owner_id", "kind", "subject_type", "subject_id")]
         # the owner's own row about the same subject no longer collides with another user's
         conn.execute("INSERT INTO derived_outcomes(kind,subject_type,subject_id,value,computed_at,owner_id) "

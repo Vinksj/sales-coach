@@ -143,3 +143,24 @@ def test_refusals_on_one_instance_lock_the_address_on_another(cloud, fake):
     for client in (one, two):
         r = client.get(auth.GOOGLE_START)
         assert r.status_code == 429 and "Too many attempts" in r.text
+
+
+@pytest.mark.sqlite_only                     # PRAGMA user_version: the SQLite migration itself
+def test_migration_14_adds_the_sign_in_state_tables_to_a_version_13_database(tmp_path, monkeypatch):
+    from salescoach.store import stores
+    path = tmp_path / "v13.db"
+    monkeypatch.setenv("SALES_DB", str(path))
+    conn = stores.sales()
+    conn.execute("DROP TABLE auth_pending")
+    conn.execute("DROP TABLE auth_attempts")
+    conn.execute("PRAGMA user_version = 13")
+    conn.commit()
+    conn.close()
+    conn = stores.sales()
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == stores.SCHEMA_VERSION == 14
+        assert {"auth_pending", "auth_attempts"} <= {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert conn.columns("auth_pending") == ["state_hash", "client", "created", "data"]
+    finally:
+        conn.close()
