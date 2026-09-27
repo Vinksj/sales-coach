@@ -40,6 +40,9 @@ Decisions worth a line:
     Its write policies are the one OWNED exception (store/rls.OWNED_EXCEPTIONS says why).
   * access_log (Phase 7) is SYSTEM: bookkeeping about who looked at what, keyed on owner_user_id
     (whose object was viewed), insert-only.
+  * auth_pending and auth_attempts (serverless) are SYSTEM: a sign-in attempt between the redirect and the
+    callback (keyed by the sha256 of its unguessable state) and the sign-in rate limits' counted attempts. Both
+    are read and written before anyone is signed in, hold nothing of a rep's work, and expire within minutes.
 """
 
 OWNED = "OWNED"
@@ -82,6 +85,8 @@ TABLE_CLASS = {
 
     # -- Phase 7: a comment is the commented rep's (written by them or their manager); who-viewed-what is machinery
     "comments": OWNED, "access_log": SYSTEM,
+    # -- serverless: the sign-in flow's state between two requests, and its rate limits (machinery, nobody's data)
+    "auth_pending": SYSTEM, "auth_attempts": SYSTEM,
 }
 
 # Tables that exist on one backend only, and why.

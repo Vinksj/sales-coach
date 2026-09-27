@@ -648,3 +648,25 @@ CREATE TABLE IF NOT EXISTS access_log (
   viewed_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_access_log_entity ON access_log(entity_type, entity_id, viewed_at);
+
+-- Serverless (salescoach/serverless.py): what the sign-in flow keeps between two requests, which on a platform
+-- with many short-lived instances may land on different ones. SYSTEM machinery, never anyone's data.
+-- A sign-in or consent attempt between the redirect to Google and the callback (googleauth.StorePending, cloud
+-- mode): one use, ten minutes. Keyed by sha256 of the `state` the browser carries, never the state itself.
+CREATE TABLE IF NOT EXISTS auth_pending (
+  state_hash TEXT PRIMARY KEY,
+  client     TEXT,                              -- the address that started it: the per-address cap
+  created    REAL NOT NULL,                     -- epoch seconds
+  data       TEXT NOT NULL DEFAULT '{}'         -- json: nonce, PKCE verifier, kind, next, the browser binding's hash
+);
+CREATE INDEX IF NOT EXISTS idx_auth_pending_client ON auth_pending(client, created);
+CREATE INDEX IF NOT EXISTS idx_auth_pending_created ON auth_pending(created);
+-- The sign-in rate limits (hosted.StoreLimiter, cloud mode): one row per counted attempt, per limit (bucket:
+-- failures per address, per email, sign-in starts per address), kept for the limit's window.
+CREATE TABLE IF NOT EXISTS auth_attempts (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  bucket TEXT NOT NULL,
+  key    TEXT NOT NULL,
+  at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_key ON auth_attempts(bucket, key, at);

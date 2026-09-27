@@ -938,6 +938,51 @@ def _derived_outcomes_owner(conn):
 MIGRATIONS[13] = _derived_outcomes_owner
 
 
+# ---- 14 (2026-09-27, serverless: sign-in state in the database) ------------------------------------------
+# auth_pending (a sign-in or consent attempt between the redirect and the callback) and auth_attempts (the
+# sign-in rate limits) move out of process memory, so a callback or a counted failure reaching another instance
+# (Vercel: many short-lived instances) sees them. Used in cloud mode only; a local install carries the empty
+# tables for parity. The tail of schema-sales.sql verbatim; the Postgres side is store/pg/0010_auth_state.sql.
+AUTH_STATE_TABLES_V14 = """
+CREATE TABLE IF NOT EXISTS auth_pending (
+  state_hash TEXT PRIMARY KEY,
+  client     TEXT,
+  created    REAL NOT NULL,
+  data       TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_auth_pending_client ON auth_pending(client, created);
+CREATE INDEX IF NOT EXISTS idx_auth_pending_created ON auth_pending(created);
+CREATE TABLE IF NOT EXISTS auth_attempts (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  bucket TEXT NOT NULL,
+  key    TEXT NOT NULL,
+  at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_key ON auth_attempts(bucket, key, at)
+"""
+
+
+def _auth_state(conn):
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 14:     # another handle got here first
+            conn.execute("ROLLBACK")
+            return
+        for statement in AUTH_STATE_TABLES_V14.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute("PRAGMA user_version = 14")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+MIGRATIONS[14] = _auth_state
+
+
 def run(conn):
     """Apply every step above the database's version, in order; the version ends at the highest step
     applied."""

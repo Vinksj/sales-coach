@@ -103,7 +103,7 @@ def test_starting_sign_ins_is_rate_limited_per_address(cloud, fake):
         assert browser.get(auth.GOOGLE_START).status_code == 303
     r = browser.get(auth.GOOGLE_START)
     assert r.status_code == 429 and "Too many attempts" in r.text
-    assert len(auth.pending._items) <= googleauth.PENDING_PER_CLIENT       # and the store holds only the cap
+    assert auth.pending_for(browser.app).count() <= googleauth.PENDING_PER_CLIENT   # and the store holds only the cap
 
 
 def test_pending_caps_live_attempts_per_client_address():

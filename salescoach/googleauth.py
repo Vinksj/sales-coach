@@ -235,8 +235,9 @@ def authorization_url(redirect_uri: str, scopes, state: str, nonce: str, code_ch
 
 class Pending:
     """The server side of `state`: what a redirect promised the callback (nonce, PKCE verifier,
-    where to go next, which feature). One-shot, ten minutes, bounded; in memory, so one web process
-    per install (Phase 6 keeps the web role to one process; a restart only means signing in again).
+    where to go next, which feature). One-shot, ten minutes, bounded; in this process's memory. A cloud
+    install uses StorePending (the same contract, in the database), because its callback may reach another
+    web process or serverless instance; this class is the contract's reference and its unit tests' subject.
 
     Bounded twice: PENDING_PER_CLIENT live attempts per client address (a flood from one address only
     evicts that address's own attempts, never someone else's), then PENDING_MAX overall (oldest first).
@@ -279,6 +280,96 @@ class Pending:
         dead = [k for k, v in self._items.items() if now - v["at"] > self.ttl_s]
         for k in dead:
             self._items.pop(k, None)
+
+
+class StorePending:
+    """Pending, kept in the database (table auth_pending) instead of this process's memory: the one a cloud
+    install uses, because the callback may reach another web process or, on a serverless platform (Vercel), another
+    instance than the one that started the attempt. The same contract: begin() remembers an attempt and returns
+    (state, nonce, code_challenge); take() hands it back once, within the ttl; PENDING_PER_CLIENT live attempts per
+    client address (a flood evicts only that address's own, oldest first), then PENDING_MAX overall.
+
+    The row is keyed by sha256 of the state (the browser holds the state; a copy of the table does not), and taken
+    by DELETE: of two callbacks racing with one state, only the one whose DELETE removed the row gets it. Each call
+    opens its own store connection acting for nobody (the attempt belongs to no signed-in user yet)."""
+
+    def __init__(self, db_path=None, ttl_s: float = PENDING_TTL_S, max_items: int = PENDING_MAX,
+                 per_client: int = PENDING_PER_CLIENT, clock=time.time):
+        self.db_path, self.ttl_s, self.max_items, self.per_client, self.clock = db_path, ttl_s, max_items, per_client, clock
+
+    def _conn(self):
+        from . import identity
+        from .store import stores
+        with identity.activate(None):
+            return stores.sales(self.db_path)
+
+    @staticmethod
+    def _key(state: str) -> str:
+        return hashlib.sha256(state.encode()).hexdigest()
+
+    def begin(self, client: Optional[str] = None, **data) -> tuple[str, str, str]:
+        import json
+        state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        verifier, challenge = new_pkce()
+        now = self.clock()
+        body = {"nonce": nonce, "verifier": verifier, "at": now, "client": client, **data}
+        conn = self._conn()
+        try:
+            with conn.as_system():
+                conn.serialize("salescoach:auth_pending")          # the caps count exactly, whoever starts at once
+                conn.execute("DELETE FROM auth_pending WHERE created < ?", (now - self.ttl_s,))
+                if client is not None:
+                    conn.execute("DELETE FROM auth_pending WHERE state_hash IN (SELECT state_hash FROM auth_pending "
+                                 "WHERE client = ? ORDER BY created DESC, state_hash LIMIT ? OFFSET ?)",
+                                 (client, 1 << 30, max(0, self.per_client - 1)))
+                conn.execute("DELETE FROM auth_pending WHERE state_hash IN (SELECT state_hash FROM auth_pending "
+                             "ORDER BY created DESC, state_hash LIMIT ? OFFSET ?)", (1 << 30, max(0, self.max_items - 1)))
+                conn.execute("INSERT INTO auth_pending(state_hash, client, created, data) VALUES (?,?,?,?)",
+                             (self._key(state), client, now, json.dumps(body)))
+                conn.commit()
+        finally:
+            conn.close()
+        return state, nonce, challenge
+
+    def take(self, state: Optional[str]) -> Optional[dict]:
+        import json
+        if not state:
+            return None
+        key = self._key(state)
+        conn = self._conn()
+        try:
+            with conn.as_system():
+                row = conn.execute("SELECT created, data FROM auth_pending WHERE state_hash = ?", (key,)).fetchone()
+                if row is None:
+                    return None
+                gone = conn.execute("DELETE FROM auth_pending WHERE state_hash = ?", (key,)).rowcount
+                conn.commit()
+        finally:
+            conn.close()
+        if gone != 1 or self.clock() - float(row["created"]) > self.ttl_s:
+            return None                            # another callback took it first, or it expired
+        return json.loads(row["data"])
+
+    def peek(self, state: str) -> Optional[dict]:
+        """The attempt `state` names, NOT consumed (tests and support; nothing in a request path calls this)."""
+        import json
+        conn = self._conn()
+        try:
+            with conn.as_system():
+                row = conn.execute("SELECT data FROM auth_pending WHERE state_hash = ?", (self._key(state),)).fetchone()
+        finally:
+            conn.close()
+        return json.loads(row["data"]) if row is not None else None
+
+    def count(self, client: Optional[str] = None) -> int:
+        conn = self._conn()
+        try:
+            with conn.as_system():
+                if client is None:
+                    return conn.execute("SELECT COUNT(*) FROM auth_pending").fetchone()[0]
+                return conn.execute("SELECT COUNT(*) FROM auth_pending WHERE client = ?", (client,)).fetchone()[0]
+        finally:
+            conn.close()
 
 
 # ---- the ID token ---------------------------------------------------------------------------

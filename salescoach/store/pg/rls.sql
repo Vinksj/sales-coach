@@ -987,6 +987,18 @@ ALTER TABLE access_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE access_log NO FORCE ROW LEVEL SECURITY;
 CREATE POLICY access_log_select ON access_log FOR SELECT USING (owner_user_id = ANY (app_visible_owners()));
 CREATE POLICY access_log_insert ON access_log FOR INSERT WITH CHECK (viewer_id = app_actor_id() AND app_mode_ok() AND owner_user_id = ANY (app_visible_owners()) AND owner_user_id = app_entity_owner(entity_type, entity_id));
+-- auth_attempts: SYSTEM
+ALTER TABLE auth_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_attempts NO FORCE ROW LEVEL SECURITY;
+CREATE POLICY auth_attempts_select ON auth_attempts FOR SELECT USING (true);
+CREATE POLICY auth_attempts_insert ON auth_attempts FOR INSERT WITH CHECK (true);
+CREATE POLICY auth_attempts_delete ON auth_attempts FOR DELETE USING (true);
+-- auth_pending: SYSTEM
+ALTER TABLE auth_pending ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_pending NO FORCE ROW LEVEL SECURITY;
+CREATE POLICY auth_pending_select ON auth_pending FOR SELECT USING (true);
+CREATE POLICY auth_pending_insert ON auth_pending FOR INSERT WITH CHECK (true);
+CREATE POLICY auth_pending_delete ON auth_pending FOR DELETE USING (true);
 -- invites: SYSTEM
 ALTER TABLE invites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invites NO FORCE ROW LEVEL SECURITY;

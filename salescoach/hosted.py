@@ -254,3 +254,70 @@ class LoginLimiter:
     def succeeded(self, key: str) -> None:
         with self._lock:
             self._failures.pop(key or "?", None)
+
+
+class StoreLimiter:
+    """LoginLimiter's contract, counted in the database (table auth_attempts) instead of this process's memory:
+    what a cloud install uses, because consecutive sign-in attempts may reach different web processes or, on a
+    serverless platform (Vercel), different instances, and a limit counted per instance would multiply by their
+    number. `bucket` names the limit (failures per address, per email, sign-in starts per address). Rows older
+    than the window are deleted as new failures are counted, so the table holds one window's attempts at most.
+    Each call opens its own store connection acting for nobody (nobody is signed in yet)."""
+
+    def __init__(self, bucket: str, limit: int = LOGIN_LIMIT, window_s: int = LOGIN_WINDOW_S, db_path=None):
+        self.bucket, self.limit, self.window_s, self.db_path = bucket, limit, window_s, db_path
+
+    def _conn(self):
+        from . import identity
+        from .store import stores
+        with identity.activate(None):
+            return stores.sales(self.db_path)
+
+    def _run(self, fn):
+        conn = self._conn()
+        try:
+            with conn.as_system():
+                return fn(conn)
+        finally:
+            conn.close()
+
+    def retry_after(self, key: str, now: Optional[float] = None) -> int:
+        """Seconds until this key may try again; 0 when it may try now."""
+        now = now if now is not None else time.time()
+
+        def q(conn):
+            return conn.execute("SELECT COUNT(*) AS n, MIN(at) AS first FROM auth_attempts "
+                                "WHERE bucket = ? AND key = ? AND at > ?",
+                                (self.bucket, key or "?", now - self.window_s)).fetchone()
+        row = self._run(q)
+        if int(row["n"] or 0) < self.limit:
+            return 0
+        return max(1, int(self.window_s - (now - float(row["first"]))) + 1)
+
+    def failed(self, key: str, now: Optional[float] = None) -> None:
+        now = now if now is not None else time.time()
+
+        def w(conn):
+            conn.execute("DELETE FROM auth_attempts WHERE bucket = ? AND at <= ?", (self.bucket, now - self.window_s))
+            conn.execute("INSERT INTO auth_attempts(bucket, key, at) VALUES (?,?,?)", (self.bucket, key or "?", now))
+            conn.commit()
+        self._run(w)
+
+    def succeeded(self, key: str) -> None:
+        def w(conn):
+            conn.execute("DELETE FROM auth_attempts WHERE bucket = ? AND key = ?", (self.bucket, key or "?"))
+            conn.commit()
+        self._run(w)
+
+    def failures(self, key: str, now: Optional[float] = None) -> int:
+        """How many attempts the window holds for this key (tests and support)."""
+        now = now if now is not None else time.time()
+        return int(self._run(lambda conn: conn.execute(
+            "SELECT COUNT(*) FROM auth_attempts WHERE bucket = ? AND key = ? AND at > ?",
+            (self.bucket, key or "?", now - self.window_s)).fetchone()[0]))
+
+    def clear(self) -> None:
+        def w(conn):
+            conn.execute("DELETE FROM auth_attempts WHERE bucket = ?", (self.bucket,))
+            conn.commit()
+        self._run(w)

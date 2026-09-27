@@ -87,6 +87,10 @@ Policies, per class:
                    owner role (DATABASE_MIGRATE_URL) or as an admin.
           access_log: insert-only. The viewer logs their own view of an object they may read, under
                    its true owner (app_entity_owner); that owner and their managers read the log.
+          auth_pending, auth_attempts: open to the app role, no UPDATE. The sign-in flow keeps its state
+                   between the redirect and the callback, and counts refused attempts, before any actor
+                   exists (googleauth.StorePending, hosted.StoreLimiter); a pending row is keyed by sha256 of
+                   the unguessable state and taken by DELETE, once; rows expire within minutes.
           org_settings: SELECT open to the app role: config.load() reads the overlay from every
                    thread, including before any actor exists (the scheduler's intervals, the sign-in
                    page's brand, process start); it holds no per-user data and no secrets (those stay
@@ -514,6 +518,11 @@ SYSTEM_POLICIES = {
     "access_log": ("owner_user_id = ANY (app_visible_owners())",
                    "viewer_id = app_actor_id() AND app_mode_ok() AND owner_user_id = ANY (app_visible_owners()) "
                    "AND owner_user_id = app_entity_owner(entity_type, entity_id)", None, None),
+    # Serverless. The sign-in flow runs before anyone is bound, so no actor rule can apply (as for sessions); a
+    # pending attempt is found only by the sha256 of a state value its browser holds, and is taken by DELETE
+    # (one use); a counted attempt is an address or an email and a time. Neither is ever updated.
+    "auth_pending": (ANY, ANY, None, ANY),
+    "auth_attempts": (ANY, ANY, None, ANY),
 }
 
 

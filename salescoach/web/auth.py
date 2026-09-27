@@ -13,7 +13,8 @@ the gate resolves every request's user from a server-side session (salescoach/se
 together with the users row on EVERY request, so a disabled user or a revoked session is out at
 the next request. The flow, and what each step refuses (plans/sales-coach-cloud-research.md):
 
-  GET /auth/google         remembers state + nonce + a PKCE verifier server-side (googleauth.Pending)
+  GET /auth/google         remembers state + nonce + a PKCE verifier server-side, in the database
+                           (googleauth.StorePending: a callback may reach another process or instance)
                            and sends the browser to Google with scopes openid email profile, an
                            `hd` hint and the S256 challenge. It also gives THIS browser a random
                            binding value in a short-lived cookie (HttpOnly, SameSite=Lax, Secure over
@@ -30,7 +31,8 @@ the next request. The flow, and what each step refuses (plans/sales-coach-cloud-
                            invited or active user, or SALESCOACH_BOOTSTRAP_ADMIN (created once as
                            the first admin, under a lock, so two first callbacks make one row).
                            Anyone else sees "ask your admin for an invite". Failures count per
-                           client address AND per address signed in (five per fifteen minutes).
+                           client address AND per address signed in (five per fifteen minutes), counted
+                           in the database (hosted.StoreLimiter), so every instance sees the same count.
   GET /auth/connect/google?feature=gmail|calendar   a signed-in user grants a feature's scopes:
                            access_type=offline, prompt=consent, include_granted_scopes=true, so a
                            refresh token comes back and ONE grant per user grows (execution/tokens).
@@ -223,21 +225,47 @@ def _client(request: Request) -> str:
     return request.client.host if request.client else "?"
 
 
-def _limiter(request: Request, name: str = "login_limiter") -> hosted.LoginLimiter:
-    limiter = getattr(request.app.state, name, None)
+LIMITS = {"login_limiter": hosted.LOGIN_LIMIT, "email_limiter": hosted.LOGIN_LIMIT, "begin_limiter": BEGIN_LIMIT}
+
+
+def limiter_for(app, name: str = "login_limiter"):
+    """The rate limit `name` of this app. Cloud mode: counted in the database (hosted.StoreLimiter), so it holds
+    across web processes and serverless instances. The password login of a single-seller install: in this
+    process's memory (hosted.LoginLimiter; one process by construction), kept on app.state."""
+    if identity.cloud():
+        return hosted.StoreLimiter(name, limit=LIMITS.get(name, hosted.LOGIN_LIMIT), db_path=app.state.db_path)
+    limiter = getattr(app.state, name, None)
     if limiter is None:
-        limiter = hosted.LoginLimiter()
-        setattr(request.app.state, name, limiter)
+        limiter = hosted.LoginLimiter(limit=LIMITS.get(name, hosted.LOGIN_LIMIT))
+        setattr(app.state, name, limiter)
     return limiter
 
 
-def _begin_limiter(request: Request) -> hosted.LoginLimiter:
-    """Every start of a sign-in counts (not only failures): starting is what fills googleauth.Pending."""
-    limiter = getattr(request.app.state, "begin_limiter", None)
-    if limiter is None:
-        limiter = hosted.LoginLimiter(limit=BEGIN_LIMIT)
-        request.app.state.begin_limiter = limiter
-    return limiter
+def clear_limits(app) -> None:
+    """Forget every counted attempt (tests between the sections of a refusal test; an operator never needs it)."""
+    for name in LIMITS:
+        if identity.cloud():
+            limiter_for(app, name).clear()
+        elif hasattr(app.state, name):
+            setattr(app.state, name, hosted.LoginLimiter(limit=LIMITS[name]))
+
+
+def _limiter(request: Request, name: str = "login_limiter"):
+    return limiter_for(request.app, name)
+
+
+def _begin_limiter(request: Request):
+    """Every start of a sign-in counts (not only failures): starting is what fills the pending store."""
+    return limiter_for(request.app, "begin_limiter")
+
+
+def pending_for(app):
+    """Where sign-in attempts wait for their callback. Cloud mode: the database (googleauth.StorePending), because
+    the callback may reach another web process or serverless instance than the start did. Google sign-in exists in
+    cloud mode only; the in-memory store is the module's `pending` (its tests)."""
+    if identity.cloud():
+        return googleauth.StorePending(app.state.db_path)
+    return pending
 
 
 def _binding_hash(value: str) -> str:
@@ -338,7 +366,8 @@ def google_start(request: Request):
         return _render(request, status=429, next=nxt, error=_wait_message(wait))
     _begin_limiter(request).failed(who)
     binding = secrets.token_urlsafe(32)
-    state, nonce, challenge = pending.begin(client=who, kind="signin", next=nxt, browser=_binding_hash(binding))
+    state, nonce, challenge = pending_for(request.app).begin(client=who, kind="signin", next=nxt,
+                                                             browser=_binding_hash(binding))
     url = googleauth.authorization_url(_redirect_uri(request, GOOGLE_CALLBACK), googleauth.SIGNIN_SCOPES, state, nonce,
                                        challenge)
     response = RedirectResponse(url, status_code=303)
@@ -425,7 +454,7 @@ def google_callback(request: Request):
     if wait:
         return _render(request, status=429, next="/", error=_wait_message(wait))
     params = request.query_params
-    data = pending.take(params.get("state"))
+    data = pending_for(request.app).take(params.get("state"))
     if not data or data.get("kind") != "signin":
         ip_limiter.failed(who)
         return _render(request, status=400, next="/", error=EXPIRED_LINK)
@@ -500,7 +529,8 @@ def connect_start(request: Request):
     if not tokens.keys_configured():
         return _me_redirect(err="This install cannot hold a Google connection yet: SALESCOACH_TOKEN_KEYS is not set. "
                                 "Ask whoever runs it.")
-    state, nonce, challenge = pending.begin(client=_client(request), kind="connect", user_id=actor.user_id, feature=feature)
+    state, nonce, challenge = pending_for(request.app).begin(client=_client(request), kind="connect",
+                                                             user_id=actor.user_id, feature=feature)
     email = (actor.profile or {}).get("emails", [None])[0] if actor.profile else None
     scopes = (*googleauth.SIGNIN_SCOPES, *googleauth.FEATURE_SCOPES[feature])
     url = googleauth.authorization_url(_redirect_uri(request, CONNECT_CALLBACK), scopes, state, nonce, challenge,
@@ -517,7 +547,7 @@ def connect_callback(request: Request):
         _not_cloud(request)
     actor = identity.current_actor()
     params = request.query_params
-    data = pending.take(params.get("state"))
+    data = pending_for(request.app).take(params.get("state"))
     if not data or data.get("kind") != "connect" or data.get("user_id") != actor.user_id:
         return _me_redirect(err="That connection link has expired or was already used. Start again.")
     feature = data["feature"]

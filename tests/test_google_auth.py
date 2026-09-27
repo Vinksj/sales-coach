@@ -147,10 +147,8 @@ def sign_in(client, fake, invited=None, nxt=None, **headers):
 
 def reset_limits(client):
     """Between sections of a refusal test: the per-address limit is real (five failures) and would
-    otherwise stop the later sections from being about what they say."""
-    from salescoach import hosted
-    client.app.state.login_limiter = hosted.LoginLimiter()
-    client.app.state.email_limiter = hosted.LoginLimiter()
+    otherwise stop the later sections from being about what they say. Cloud mode counts in the database."""
+    auth.clear_limits(client.app)
 
 
 def invite(conn, email, role="rep", name=""):
@@ -409,7 +407,7 @@ def test_bootstrap_admin_is_created_once_under_two_concurrent_callbacks(cloud, f
 
     verifiers = {}
     for c, s, n in starts:                            # map each state's verifier to its nonce
-        verifiers[auth.pending._items[s]["verifier"]] = n
+        verifiers[auth.pending_for(app).peek(s)["verifier"]] = n
     minted = verifiers
 
     monkeypatch.setattr(googleauth, "transport", httpx.MockTransport(per_state))
@@ -457,15 +455,15 @@ def test_rate_limits_per_address_and_per_email(cloud, fake, monkeypatch):
     assert r.status_code == 429 and "Too many attempts" in r.text
     # ... while another person from that same fresh address still reaches the invite page
     assert attempt("198.51.100.99", "someone@tessel.test").status_code == 403
-    assert app.state.email_limiter.retry_after("nobody@tessel.test") > 0
-    assert app.state.login_limiter.retry_after("198.51.100.99") == 0
+    assert auth.limiter_for(app, "email_limiter").retry_after("nobody@tessel.test") > 0
+    assert auth.limiter_for(app, "login_limiter").retry_after("198.51.100.99") == 0
     # three refusals for a not-yet-invited person, then the invite, then a success clears her counter
     for i in range(3):
         assert attempt(f"198.51.100.{30 + i}", "asha@tessel.test").status_code == 403
-    assert app.state.email_limiter._failures.get("asha@tessel.test")
+    assert auth.limiter_for(app, "email_limiter").failures("asha@tessel.test") == 3
     invite(cloud, "asha@tessel.test")
     assert attempt("198.51.100.40", "asha@tessel.test").status_code == 303
-    assert app.state.email_limiter._failures.get("asha@tessel.test") is None
+    assert auth.limiter_for(app, "email_limiter").failures("asha@tessel.test") == 0
 
 
 @pytestmark_cloud
