@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "salescoach/vercel_app.py": {
+      "maxDuration": 800,
+      "excludeFiles": "{tests/**,e2e/**,docs/**,callcap/**,overlay/**,launchd/**,scripts/**,data/**,runtime/**,**/__pycache__/**,**/*.pyc}"
+    }
+  },
+  "crons": [
+    { "path": "/cron/drain", "schedule": "* * * * *" },
+    { "path": "/cron/tick", "schedule": "* * * * *" }
+  ]
+}

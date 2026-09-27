@@ -1,0 +1,30 @@
+# Not uploaded to Vercel (docs/deploy-vercel.md). A function needs salescoach/ and config/ (config.py reads the
+# tracked defaults beside the package) and pyproject.toml; everything else is the laptop app, the container deploy,
+# the tests or the docs.
+.git
+.github
+.venv
+.ruff_cache
+.pytest_cache
+**/__pycache__
+*.pyc
+data
+runtime
+secrets.env
+.env
+tests
+e2e
+docs
+callcap
+overlay
+launchd
+scripts
+Dockerfile
+.dockerignore
+docker-entrypoint.sh
+fly.toml
+render.yaml
+railway.json
+*.flac
+*.wav
+*.pcm

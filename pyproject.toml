@@ -81,6 +81,12 @@ salescoach = [
   "web/static/*",
 ]
 
+# Vercel (docs/deploy-vercel.md): the ASGI app a function serves. The Python runtime installs [project].dependencies
+# (not the `asr` extra: no MLX, no Whisper, no local models); vercel.json sets the function's limits and the crons,
+# .vercelignore keeps the laptop app, the tests and the docs out of the upload.
+[tool.vercel]
+entrypoint = "salescoach.vercel_app:app"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
